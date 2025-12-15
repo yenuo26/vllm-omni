@@ -1,9 +1,6 @@
-# Qwen-Image Offline Inference
+# Text-To-Image
 
-Source <https://github.com/vllm-project/vllm-omni/tree/main/examples/offline_inference/qwen_image>.
-
-
-This folder provides several entrypoints for experimenting with `Qwen/Qwen-Image` using vLLM-Omni:
+This folder provides several entrypoints for experimenting with `Qwen/Qwen-Image` `Tongyi-MAI/Z-Image-Turbo` using vLLM-Omni:
 
 - `text_to_image.py`: command-line script for single image generation with advanced options.
 - `web_demo.py`: lightweight Gradio UI for interactive prompt/seed/CFG exploration.
@@ -24,6 +21,7 @@ if __name__ == "__main__":
 
 ```bash
 python text_to_image.py \
+  --model Tongyi-MAI/Z-Image-Turbo \
   --prompt "a cup of coffee on the table" \
   --seed 42 \
   --cfg_scale 4.0 \
@@ -55,18 +53,3 @@ python gradio_demo.py --port 7862
 ```
 
 Then open `http://localhost:7862/` on your local browser to interact with the web UI.
-
-## Example materials
-
-??? abstract "gradio_demo.py"
-    ``````py
-    --8<-- "examples/offline_inference/qwen_image/gradio_demo.py"
-    ``````
-??? abstract "image_edit.py"
-    ``````py
-    --8<-- "examples/offline_inference/qwen_image/image_edit.py"
-    ``````
-??? abstract "text_to_image.py"
-    ``````py
-    --8<-- "examples/offline_inference/qwen_image/text_to_image.py"
-    ``````
