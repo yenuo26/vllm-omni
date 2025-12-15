@@ -6,6 +6,8 @@
 Configuration classes.
 
 - [vllm_omni.config.model.OmniModelConfig][]
+- [vllm_omni.distributed.omni_connectors.utils.config.ConnectorSpec][]
+- [vllm_omni.distributed.omni_connectors.utils.config.OmniTransferConfig][]
 
 ## EntryPoints
 
