@@ -13,7 +13,7 @@ import numpy as np
 from tqdm import tqdm
 
 import vllm.envs as envs
-from vllm.benchmarks.lib.utils import (convert_to_pytorch_benchmark_format,
+from vllm_omni.benchmarks.lib.utils import (convert_to_pytorch_benchmark_format,
                                        write_to_json)
 from vllm.engine.arg_utils import EngineArgs
 from vllm.inputs import PromptType

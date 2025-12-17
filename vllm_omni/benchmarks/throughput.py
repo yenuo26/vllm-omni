@@ -16,14 +16,14 @@ from tqdm import tqdm
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
 
-from vllm.benchmarks.datasets import (AIMODataset, BurstGPTDataset,
+from vllm_omni.benchmarks.datasets import (AIMODataset, BurstGPTDataset,
                                       ConversationDataset,
                                       InstructCoderDataset,
                                       PrefixRepetitionRandomDataset,
                                       RandomDataset, SampleRequest,
                                       ShareGPTDataset, SonnetDataset,
                                       VisionArenaDataset)
-from vllm.benchmarks.lib.utils import (convert_to_pytorch_benchmark_format,
+from vllm_omni.benchmarks.lib.utils import (convert_to_pytorch_benchmark_format,
                                        write_to_json)
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.inputs import TextPrompt, TokensPrompt
