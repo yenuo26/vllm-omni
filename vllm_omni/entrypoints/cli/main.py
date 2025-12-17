@@ -19,9 +19,11 @@ def main():
         from vllm.utils import FlexibleArgumentParser
 
         import vllm_omni.entrypoints.cli.serve
+        import vllm_omni.entrypoints.cli.benchmark.main
 
         CMD_MODULES = [
             vllm_omni.entrypoints.cli.serve,
+            vllm_omni.entrypoints.cli.benchmark.main,
         ]
 
         cli_env_setup()

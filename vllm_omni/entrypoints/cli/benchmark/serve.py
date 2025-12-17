@@ -14,11 +14,6 @@ class OmniBenchmarkServingSubcommand(BenchmarkSubcommandBase):
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         add_cli_args(parser)
-        parser.add_argument(
-            "--omni",
-            action="store_true",
-            help="Enable vLLM-benchmark-Omni mode"
-        )
 
     @staticmethod
     def cmd(args: argparse.Namespace) -> None:
