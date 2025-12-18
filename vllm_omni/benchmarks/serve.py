@@ -62,6 +62,7 @@ TERM_PLOTLIB_AVAILABLE = ((importlib.util.find_spec("termplotlib") is not None)
 @dataclass
 class MixBenchmarkMetrics(BenchmarkMetrics):
     audio_throughput: float
+    total_text_input: int
 
 
 
@@ -151,6 +152,7 @@ def calculate_metrics(
     """
     actual_output_lens: list[int] = []
     total_input = 0
+    total_text_input = 0
     completed = 0
     audio_completed = 0
     good_completed = 0
@@ -173,7 +175,8 @@ def calculate_metrics(
                     tokenizer(outputs[i].generated_text,
                               add_special_tokens=False).input_ids)
             actual_output_lens.append(output_len)
-            total_input += input_requests[i].prompt_len
+            total_text_input += input_requests[i].prompt_len
+            total_input += outputs[i].prompt_tokens
             tpot = 0
             if output_len > 1:
                 latency_minus_ttft = outputs[i].latency - outputs[i].ttft
@@ -280,6 +283,7 @@ def calculate_metrics(
     metrics = MixBenchmarkMetrics(
         completed=completed,
         total_input=total_input,
+        total_text_input=total_text_input,
         total_output=sum(actual_output_lens),
         request_throughput=completed / dur_s,
         request_goodput=good_completed / dur_s,
@@ -557,6 +561,7 @@ async def benchmark(
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):",
                                     benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
+    print("{:<40} {:<10}".format("Total text input tokens:", metrics.total_text_input))
     if isinstance(metrics, MixBenchmarkMetrics):
         print("{:<40} {:<10}".format("Total generated tokens:",
                                      metrics.total_output))
@@ -583,6 +588,7 @@ async def benchmark(
             "duration": benchmark_duration,
             "completed": metrics.completed,
             "total_input_tokens": metrics.total_input,
+            "total_text_input_tokens": metrics.total_text_input,
             "total_output_tokens": metrics.total_output,
             "request_throughput": metrics.request_throughput,
             "request_goodput":
@@ -844,7 +850,7 @@ def add_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--percentile-metrics",
         type=str,
-        default="ttft,tpot,itl",
+        default="ttft,tpot,itl,e2el",
         help="Comma-separated list of selected metrics to report percentils. "
         "This argument specifies the metrics to report percentiles. "
         "Allowed metric names are \"ttft\", \"tpot\", \"itl\", \"e2el\". ")

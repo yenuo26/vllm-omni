@@ -23,6 +23,7 @@ AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 @dataclass
 class MixRequestFuncOutput(RequestFuncOutput):
     output_audio_num: int = None
+    prompt_tokens: int = None
 
 async def async_request_openai_chat_completions(
     request_func_input: RequestFuncInput,
@@ -77,7 +78,6 @@ async def async_request_openai_chat_completions(
 
     output = MixRequestFuncOutput()
     output.prompt_len = request_func_input.prompt_len
-
     output.ttft = 0.0
     st = time.perf_counter()
     output.start_time = st
@@ -95,8 +95,10 @@ async def async_request_openai_chat_completions(
                         output.output_audio_num += 1
                 usage = data.get("usage")
                 output.output_tokens = usage.get("completion_tokens")
+                output.prompt_tokens = usage.get("prompt_tokens")
                 output.success = True
                 output.latency = time.perf_counter() - st
+                output.ttft = output.latency
             else:
                 output.error = response.reason or ""
                 output.success = False

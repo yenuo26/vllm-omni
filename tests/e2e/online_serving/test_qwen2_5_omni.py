@@ -41,6 +41,7 @@ def test_mix_to_audio(
         "vllm-omni",
         "bench",
         "serve",
+        "--omni",
         "--model",
         omni_server.model,
         "--host",
