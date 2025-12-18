@@ -1092,35 +1092,3 @@ def get_samples(args, tokenizer) -> list[SampleRequest]:
             raise ValueError(f"Unknown dataset: {args.dataset_name}") from err
 
     return input_requests
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
