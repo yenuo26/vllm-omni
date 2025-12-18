@@ -29,7 +29,7 @@ import torch
 import torchaudio
 from PIL import Image
 from transformers import PreTrainedTokenizerBase
-from vllm.benchmark.datasets import (RandomDataset, ShareGPTDataset, SpecBench,
+from vllm.benchmarks.datasets import (RandomDataset, ShareGPTDataset, SpecBench,
                                      SonnetDataset, BurstGPTDataset, ConversationDataset,
                                      VisionArenaDataset, MMVUDataset, InstructCoderDataset, MTBenchDataset,
                                      BlazeditDataset, AIMODataset, NextEditPredictionDataset, ASRDataset, MLPerfDataset,

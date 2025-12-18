@@ -42,7 +42,7 @@ from vllm_omni.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS, OPENAI_COMPATIBLE_BACKENDS)
 
 from vllm.benchmarks.datasets import SampleRequest
-from vllm.lib.endpoint_request_func import RequestFuncInput,RequestFuncOutput
+from vllm.benchmarks.lib.endpoint_request_func import RequestFuncInput,RequestFuncOutput
 from vllm.benchmarks.lib.ready_checker import wait_for_endpoint
 from vllm.benchmarks.lib.utils import (convert_to_pytorch_benchmark_format,
                                        write_to_json)

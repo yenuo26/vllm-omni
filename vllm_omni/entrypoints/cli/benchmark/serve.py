@@ -3,10 +3,10 @@
 import argparse
 
 from vllm_omni.benchmarks.serve import add_cli_args, main
-from vllm.entrypoints.cli.benchmark.base import BenchmarkSubcommandBase
+from vllm_omni.entrypoints.cli.benchmark.base import OmniBenchmarkSubcommandBase
 
 
-class OmniBenchmarkServingSubcommand(BenchmarkSubcommandBase):
+class OmniBenchmarkServingSubcommand(OmniBenchmarkSubcommandBase):
     """ The `serve` subcommand for vllm bench. """
     name = "serve"
     help = "Benchmark the online serving throughput."

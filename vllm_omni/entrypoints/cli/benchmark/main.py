@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import typing
 
-from vllm.entrypoints.cli.benchmark.base import BenchmarkSubcommandBase
+from vllm_omni.entrypoints.cli.benchmark.base import OmniBenchmarkSubcommandBase
 from vllm.entrypoints.cli.types import CLISubcommand
 from vllm.entrypoints.utils import VLLM_SUBCMD_PARSER_EPILOG
 
@@ -37,7 +37,7 @@ class OmniBenchmarkSubcommand(CLISubcommand):
         bench_subparsers = bench_parser.add_subparsers(required=True,
                                                        dest="bench_type")
 
-        for cmd_cls in BenchmarkSubcommandBase.__subclasses__():
+        for cmd_cls in OmniBenchmarkSubcommandBase.__subclasses__():
             cmd_subparser = bench_subparsers.add_parser(
                 cmd_cls.name,
                 help=cmd_cls.help,
