@@ -55,6 +55,12 @@ class OmniBenchmarkSubcommand(CLISubcommand):
 
             cmd_subparser.epilog = VLLM_SUBCMD_PARSER_EPILOG.format(
                 subcmd=f"{self.name} {cmd_cls.name}")
+            cmd_subparser.add_argument(
+                "--omni",
+                action="store_true",
+                default=True,
+                help="Enable benchmark-Omni mode (always enabled for omni commands)",
+            )
 
         return bench_parser
 
