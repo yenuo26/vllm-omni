@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 import torch
 import torchaudio
-from vllm.benchmarks.datasets import RandomMultiModalDataset
+from vllm.benchmarks.datasets import RandomMultiModalDataset, get_samples
 
 logger = logging.getLogger(__name__)
 
@@ -205,3 +205,33 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
             return "video"
         else:
             raise ValueError(f"Invalid multimodal item configuration: {config}")
+
+
+def get_omni_samples(args, tokenizer) -> list[SampleRequest]:
+    if args.dataset_name == "random-mm":
+        if args.backend not in [
+            "openai-chat"]:
+            raise ValueError(
+                "Multi-modal content (images) is only supported on "
+                "'openai-chat' backend."
+            )
+        dataset = OmniRandomMultiModalDataset(
+            random_seed=args.seed, dataset_path=args.dataset_path
+        )
+        input_requests = dataset.sample(
+            tokenizer=tokenizer,
+            num_requests=args.num_prompts,
+            prefix_len=args.random_prefix_len,
+            range_ratio=args.random_range_ratio,
+            input_len=args.random_input_len,
+            output_len=args.random_output_len,
+            base_items_per_request=args.random_mm_base_items_per_request,
+            limit_mm_per_prompt=args.random_mm_limit_mm_per_prompt,
+            num_mm_items_range_ratio=args.random_mm_num_mm_items_range_ratio,
+            bucket_config=args.random_mm_bucket_config,
+            request_id_prefix=args.request_id_prefix,
+            no_oversample=args.no_oversample,
+        )
+        return input_requests
+    else:
+        return get_samples(args, tokenizer)

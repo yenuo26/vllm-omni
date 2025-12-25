@@ -42,10 +42,10 @@ from vllm_omni.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS, OPENAI_COMPATIBLE_BACKENDS)
 from vllm_omni.benchmarks.lib.endpoint_request_func import MixRequestFuncOutput
 
-from vllm.benchmarks.datasets import SampleRequest
+from vllm.benchmarks.datasets import SampleRequest,add_dataset_parser
 from vllm.benchmarks.serve import (BenchmarkMetrics,EmbedBenchmarkMetrics,
                                    TaskType,get_request,check_goodput_args,save_to_pytorch_benchmark_format,add_cli_args)
-from vllm.benchmarks.datasets import get_samples,add_dataset_parser
+from vllm_omni.benchmarks.datasets import get_omni_samples
 from vllm.benchmarks.lib.endpoint_request_func import RequestFuncInput,RequestFuncOutput
 
 from vllm.benchmarks.lib.ready_checker import wait_for_endpoint
@@ -742,7 +742,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             "'--dataset-path' if required.")
 
     # Load the dataset.
-    input_requests = get_samples(args, tokenizer)
+    input_requests = get_omni_samples(args, tokenizer)
     goodput_config_dict = check_goodput_args(args)
 
     # Collect the sampling parameters.
