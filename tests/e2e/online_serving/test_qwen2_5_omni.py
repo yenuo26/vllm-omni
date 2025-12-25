@@ -10,6 +10,7 @@ from pathlib import Path
 import openai
 import pytest
 from vllm.assets.video import VideoAsset
+from tests.conftest import OmniServer
 
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
