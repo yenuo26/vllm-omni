@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
 This module defines a framework for sampling benchmark requests from various
 datasets. Each dataset subclass of BenchmarkDataset must implement sample
@@ -26,7 +24,6 @@ import torchaudio
 from vllm.benchmarks.datasets import RandomMultiModalDataset
 
 logger = logging.getLogger(__name__)
-
 
 def process_video(video: Any) -> Mapping[str, Any]:
     """
