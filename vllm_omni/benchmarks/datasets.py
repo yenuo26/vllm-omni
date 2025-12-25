@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 import torch
 import torchaudio
-from vllm.benchmarks.datasets import RandomMultiModalDataset, get_samples
+from vllm.benchmarks.datasets import RandomMultiModalDataset, get_samples, process_image
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
             raise ValueError(f"Invalid multimodal item configuration: {config}")
 
 
-def get_omni_samples(args, tokenizer) -> list[SampleRequest]:
+def get_omni_samples(args, tokenizer):
     if args.dataset_name == "random-mm":
         if args.backend not in [
             "openai-chat"]:

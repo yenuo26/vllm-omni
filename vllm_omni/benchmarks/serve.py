@@ -225,6 +225,7 @@ def calculate_metrics(
 
     # Find the time range across all successful requests
     successful_outputs = [output for output in outputs if output.success]
+    failed_outputs = [output for output in outputs if not output.success]
     if successful_outputs:
         min_start_time = min(output.start_time
                              for output in successful_outputs)
@@ -281,6 +282,7 @@ def calculate_metrics(
 
     metrics = MixBenchmarkMetrics(
         completed=completed,
+        failed=len(failed_outputs),
         total_input=total_input,
         total_text_input=total_text_input,
         total_output=sum(actual_output_lens),
@@ -343,13 +345,9 @@ async def benchmark(
     ramp_up_end_rps: Optional[int] = None,
     ready_check_timeout_sec: int = 600,
 ):
-    task_type = (TaskType.EMBEDDING if api_url.endswith("/v1/embeddings") else
-                 TaskType.GENERATION)
+    task_type = TaskType.GENERATION
     if endpoint_type in ASYNC_REQUEST_FUNCS:
-        if task_type == TaskType.EMBEDDING:
-            request_func = ASYNC_REQUEST_FUNCS["openai-embeddings"]
-        else:
-            request_func = ASYNC_REQUEST_FUNCS[endpoint_type]
+        request_func = ASYNC_REQUEST_FUNCS[endpoint_type]
     else:
         raise ValueError(f"Unknown backend: {endpoint_type}")
 
