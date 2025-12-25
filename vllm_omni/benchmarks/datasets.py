@@ -24,28 +24,6 @@ import numpy as np
 import torch
 import torchaudio
 from vllm.benchmarks.datasets import RandomMultiModalDataset
-from vllm.utils.import_utils import PlaceholderModule
-
-try:
-    from datasets import load_dataset
-except ImportError:
-    datasets = PlaceholderModule("datasets")
-    load_dataset = datasets.placeholder_attr("load_dataset")
-
-try:
-    import pandas as pd
-except ImportError:
-    pd = PlaceholderModule("pandas")
-
-try:
-    import librosa
-except ImportError:
-    librosa = PlaceholderModule("librosa")
-
-try:
-    from vllm.utils import FlexibleArgumentParser
-except ImportError:
-    from argparse import ArgumentParser as FlexibleArgumentParser
 
 logger = logging.getLogger(__name__)
 
