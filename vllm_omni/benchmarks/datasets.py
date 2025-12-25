@@ -35,7 +35,7 @@ from vllm.benchmarks.datasets import (RandomDataset, ShareGPTDataset, SpecBench,
                                      BlazeditDataset, AIMODataset, NextEditPredictionDataset, ASRDataset, MLPerfDataset,
                                      PrefixRepetitionRandomDataset, CustomDataset, SampleRequest, _ValidateDatasetArgs,
                                      process_image)
-from vllm.utils import PlaceholderModule
+from vllm.utils.import_utils import PlaceholderModule
 
 try:
     from datasets import load_dataset
