@@ -19,6 +19,7 @@ from typing import Any, cast, Dict
 
 import cv2
 import numpy as np
+import soundfile as sf
 import torch
 import torchaudio
 from vllm.benchmarks.datasets import RandomMultiModalDataset, get_samples, process_image
@@ -121,15 +122,15 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
         )
         audio_data = np.clip(audio_data, -1.0, 1.0)
         audio_tensor = torch.FloatTensor(audio_data.T)
+        audio_np = audio_tensor.numpy()
+
         buffer = io.BytesIO()
-        torchaudio.save(
-            buffer,
-            audio_tensor,
-            sample_rate,
-            format="mp3"
-        )
+
+        sf.write(buffer, audio_np.T, sample_rate, format="mp3")
+
         buffer.seek(0)
         audio_bytes = buffer.read()
+        buffer.close()
         return {
             'bytes': audio_bytes,
         }
