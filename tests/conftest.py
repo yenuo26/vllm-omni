@@ -8,7 +8,8 @@ import sys
 import time
 import yaml
 import base64
-from types import Dict, Any
+from typing import Dict, Any
+from pathlib import Path
 from vllm.logger import init_logger
 from vllm.utils import get_open_port
 
@@ -73,23 +74,95 @@ def dummy_messages_from_mix_data(
     ]
 
 
-def prepare_multimodal_base64_data(file_name: str, file_type: str) -> str:
+def prepare_multimodal_base64_data(file_name: str, file_type: str, num_frames: int =4) -> str:
     """Base64 encoded video, audio, image for testing."""
     if file_type.lower() == 'video':
-        asset = VideoAsset(name=file_name, num_frames=-1)
+        asset = VideoAsset(name=file_name, num_frames=num_frames)
         file_path = asset.video_path
     elif file_type.lower() == 'audio':
         asset = AudioAsset(name=file_name)
         file_path = asset.get_local_path()
     elif file_type.lower() == 'image':
         asset = ImageAsset(name=file_name)
-        file_path = asset.get_path()
+        file_path = asset.get_path("jpg")
     else:
         raise ValueError(f"Unsupported resource type: {file_type}")
 
     with open(file_path, "rb") as f:
         content = f.read()
         return base64.b64encode(content).decode("utf-8")
+
+def modify_stage_config(
+    yaml_path: str,
+    stage_id: int,
+    config_dict: Dict[str, Any]
+) -> str:
+    """
+    Modify configuration for a specific stage in a YAML file.
+
+    This function reads a YAML configuration file, locates the specified stage by its ID,
+    and applies the modifications specified in config_dict. The modifications use dot-separated
+    paths to navigate nested configuration structures. A new YAML file is created with a
+    timestamp suffix to preserve the original configuration.
+
+    Args:
+        yaml_path: Path to the YAML configuration file
+        stage_id: ID of the stage to modify (must exist in the configuration)
+        config_dict: Dictionary of modifications where keys are dot-separated paths
+                    and values are the new configuration values.
+                    Example: {'runtime.devices': '0,1', 'engine_args.max_model_len': 1024}
+
+    Returns:
+        str: Path to the newly created modified YAML file with timestamp suffix.
+
+    Raises:
+        FileNotFoundError: If the specified YAML file does not exist.
+        ValueError: If the YAML file cannot be parsed or contains invalid data.
+        KeyError: If the specified stage_id is not found or if a path in config_dict
+                 points to a non-existent configuration key.
+
+    Example:
+        >>> output_file = modify_stage_config(
+        ...     'config.yaml',
+        ...     stage_id=0,
+        ...     config_dict={
+        ...         'runtime.devices': '0,1',
+        ...         'engine_args.max_model_len': 1024,
+        ...         'default_sampling_params.temperature': 0.7
+        ...     }
+        ... )
+        >>> print(f"Modified configuration saved to: {output_file}")
+        Modified configuration saved to: config_1698765432.123456.yaml
+    """
+    path = Path(yaml_path)
+    if not path.exists():
+        raise FileNotFoundError(f"yaml does not exist: {path}")
+    try:
+        with open(yaml_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as e:
+        raise ValueError(f"Cannot parse YAML file: {e}")
+
+    for stage in config.get('stage_args', []):
+        if stage.get('stage_id') == stage_id:
+            current = stage
+            for key_path, value in config_dict.items():
+                keys = key_path.split(".")
+                for i in range(len(keys) - 1):
+                    key = keys[i]
+                    if key not in current:
+                        raise KeyError(f"the {'.'.join(keys[:i+1])} does not exist")
+
+                    elif not isinstance(current[key], dict) and i < len(keys) - 2:
+                        raise ValueError(f"{'.'.join(keys[:i+1])}' cannot continue deeper because it's not a dict")
+                    current = current[key]
+                current[keys[-1]] = value
+
+    output_path = f"{yaml_path.split('.')[0]}_{time.time()}.yaml"
+    with open(output_path, 'w', encoding='utf-8') as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True, indent=2)
+
+    return output_path
 
 
 class OmniServer:
