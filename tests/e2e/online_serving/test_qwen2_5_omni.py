@@ -10,13 +10,7 @@ from pathlib import Path
 import openai
 import pytest
 
-from tests.conftest import OmniServer, dummy_messages_from_mix_data
-from vllm.multimodal.utils import encode_audio_base64, encode_video_base64, encode_image_base64
-from vllm.assets.audio import AudioAsset
-from vllm.assets.viedo import VideoAsset
-from vllm.assets.image import ImageAsset
-from vllm.multimodal.image import convert_image_mode
-
+from tests.conftest import OmniServer, dummy_messages_from_mix_data, prepare_multimodal_base64_data
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 models = ["Qwen/Qwen2.5-Omni-7B"]
@@ -71,15 +65,13 @@ def test_mixed_modalities_to_audio(
 ) -> None:
     """Test processing video, generating audio output via OpenAI API."""
     # Create data URL for the base64 encoded video
-    video = VideoAsset(name="baby_reading", num_frames=4).np_ndarrays
-    video_data_url = f"data:video/mp4;base64,{encode_video_base64(video)}"
+    video_data_url = f"data:video/mp4;base64,{prepare_multimodal_base64_data('baby_reading', 'video')}"
 
     # Create data URL for the base64 encoded audio
-    audio, sample_rate = AudioAsset("mary_had_lamb").audio_and_sample_rate
-    audio_data_url = f"data:audio/ogg;base64,{encode_audio_base64(audio, int(sample_rate))}"
+    audio_data_url = f"data:audio/ogg;base64,{prepare_multimodal_base64_data('mary_had_lamb', 'audio')}"
 
-    image = convert_image_mode(ImageAsset("cherry_blossom").pil_image.resize((128, 128)), "RGB")
-    image_data_url = f"data:image/jpeg;base64,{encode_image_base64(image)}"
+    # Create data URL for the base64 encoded image
+    image_data_url = f"data:image/jpeg;base64,{prepare_multimodal_base64_data('cherry_blossom', 'image')}"
 
     messages = dummy_messages_from_mix_data(system_prompt=get_system_prompt(), video_data_url=video_data_url,audio_data_url=audio_data_url,
                                             image_data_url=image_data_url)

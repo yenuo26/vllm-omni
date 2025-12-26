@@ -6,11 +6,15 @@ import socket
 import subprocess
 import sys
 import time
+import yaml
 import base64
+from types import Dict, Any
 from vllm.logger import init_logger
 from vllm.utils import get_open_port
-from vllm.assets.video import VideoAsset
 
+from vllm.assets.audio import AudioAsset
+from vllm.assets.video import VideoAsset
+from vllm.assets.image import ImageAsset
 
 
 logger = init_logger(__name__)
@@ -46,7 +50,7 @@ def clean_gpu_memory_between_tests():
 
 
 def dummy_messages_from_mix_data(
-    system_prompt: str,
+    system_prompt: Dict[str, Any],
     video_data_url: str,
     audio_data_url: str,
     image_data_url: str,
@@ -67,6 +71,25 @@ def dummy_messages_from_mix_data(
             "content": content
         },
     ]
+
+
+def prepare_multimodal_base64_data(file_name: str, file_type: str) -> str:
+    """Base64 encoded video, audio, image for testing."""
+    if file_type.lower() == 'video':
+        asset = VideoAsset(name=file_name, num_frames=-1)
+        file_path = asset.video_path
+    elif file_type.lower() == 'audio':
+        asset = AudioAsset(name=file_name)
+        file_path = asset.get_local_path()
+    elif file_type.lower() == 'image':
+        asset = ImageAsset(name=file_name)
+        file_path = asset.get_path()
+    else:
+        raise ValueError(f"Unsupported resource type: {file_type}")
+
+    with open(file_path, "rb") as f:
+        content = f.read()
+        return base64.b64encode(content).decode("utf-8")
 
 
 class OmniServer:
