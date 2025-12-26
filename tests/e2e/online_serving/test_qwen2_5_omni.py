@@ -14,6 +14,7 @@ from tests.conftest import OmniServer, dummy_messages_from_mix_data
 from vllm.multimodal.utils import encode_audio_base64, encode_video_base64, encode_image_base64
 from vllm.assets.audio import AudioAsset
 from vllm.assets.viedo import VideoAsset
+from vllm.assets.image import ImageAsset
 from vllm.multimodal.image import convert_image_mode
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
