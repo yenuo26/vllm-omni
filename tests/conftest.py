@@ -6,8 +6,12 @@ import socket
 import subprocess
 import sys
 import time
+import base64
 from vllm.logger import init_logger
 from vllm.utils import get_open_port
+from vllm.assets.video import VideoAsset
+
+
 
 logger = init_logger(__name__)
 
@@ -40,6 +44,29 @@ def clean_gpu_memory_between_tests():
         torch.cuda.empty_cache()
         gc.collect()
 
+
+def dummy_messages_from_mix_data(
+    system_prompt: str,
+    video_data_url: str,
+    audio_data_url: str,
+    image_data_url: str,
+    content_text: str = "What is recited in the audio? What is in this image? Describe the video briefly.",
+):
+    """Create messages with video、image、audio data URL for OpenAI API."""
+    content = [{"type": "text", "text": content_text}]
+    if video_data_url is not None:
+        content.append({"type": "video_url", "video_url": {"url": video_data_url}})
+    if image_data_url is not None:
+        content.append({"type": "image_url", "image_url": {"url": image_data_url}})
+    if audio_data_url is not None:
+        content.append({"type": "audio_url", "audio_url": {"url": audio_data_url}})
+    return [
+        system_prompt,
+        {
+            "role": "user",
+            "content": content
+        },
+    ]
 
 
 class OmniServer:

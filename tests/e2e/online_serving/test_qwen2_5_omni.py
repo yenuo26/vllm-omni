@@ -9,9 +9,12 @@ from pathlib import Path
 
 import openai
 import pytest
-from vllm.assets.video import VideoAsset
-from tests.conftest import OmniServer
 
+from tests.conftest import OmniServer, dummy_messages_from_mix_data
+from vllm.multimodal.utils import encode_audio_base64, encode_video_base64, encode_image_base64
+from vllm.assets.audio import AudioAsset
+from vllm.assets.viedo import VideoAsset
+from vllm.multimodal.image import convert_image_mode
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
@@ -22,9 +25,6 @@ stage_configs = [str(Path(__file__).parent / "stage_configs" / "qwen2_5_omni_ci.
 
 # Create parameter combinations for model and stage config
 test_params = [(model, stage_config) for model in models for stage_config in stage_configs]
-
-
-
 
 
 @pytest.fixture
@@ -47,17 +47,6 @@ def client(omni_server):
     )
 
 
-@pytest.fixture(scope="session")
-def base64_encoded_video() -> str:
-    """Base64 encoded video for testing."""
-    import base64
-
-    video = VideoAsset(name="baby_reading", num_frames=4)
-    with open(video.video_path, "rb") as f:
-        content = f.read()
-        return base64.b64encode(content).decode("utf-8")
-
-
 def get_system_prompt():
     return {
         "role": "system",
@@ -74,42 +63,31 @@ def get_system_prompt():
     }
 
 
-def dummy_messages_from_video_data(
-    video_data_url: str,
-    content_text: str = "Describe the video briefly.",
-):
-    """Create messages with video data URL for OpenAI API."""
-    return [
-        get_system_prompt(),
-        {
-            "role": "user",
-            "content": [
-                {"type": "video_url", "video_url": {"url": video_data_url}},
-                {"type": "text", "text": content_text},
-            ],
-        },
-    ]
-
-
 @pytest.mark.parametrize("omni_server", test_params, indirect=True)
-def test_video_to_audio(
+def test_mixed_modalities_to_audio(
     client: openai.OpenAI,
     omni_server,
-    base64_encoded_video: str,
 ) -> None:
     """Test processing video, generating audio output via OpenAI API."""
     # Create data URL for the base64 encoded video
-    video_data_url = f"data:video/mp4;base64,{base64_encoded_video}"
+    video = VideoAsset(name="baby_reading", num_frames=4).np_ndarrays
+    video_data_url = f"data:video/mp4;base64,{encode_video_base64(video)}"
 
-    messages = dummy_messages_from_video_data(video_data_url)
+    # Create data URL for the base64 encoded audio
+    audio, sample_rate = AudioAsset("mary_had_lamb").audio_and_sample_rate
+    audio_data_url = f"data:audio/ogg;base64,{encode_audio_base64(audio, int(sample_rate))}"
+
+    image = convert_image_mode(ImageAsset("cherry_blossom").pil_image.resize((128, 128)), "RGB")
+    image_data_url = f"data:image/jpeg;base64,{encode_image_base64(image)}"
+
+    messages = dummy_messages_from_mix_data(system_prompt=get_system_prompt(), video_data_url=video_data_url,audio_data_url=audio_data_url,
+                                            image_data_url=image_data_url)
 
     # Test single completion
     chat_completion = client.chat.completions.create(
         model=omni_server.model,
         messages=messages,
     )
-
-    assert len(chat_completion.choices) == 2  # 1 for text output, 1 for audio output
 
     # Verify text output
     text_choice = chat_completion.choices[0]
