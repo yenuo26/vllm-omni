@@ -115,8 +115,10 @@ def test_text_audio_to_text(test_config: tuple[str, str]) -> None:
     num_concurrent_requests = 5
 
     stage_config_path = modify_stage_config(
-        stage_config_path, 1,
-        {"runtime.max_batch_size": num_concurrent_requests})
+        stage_config_path,
+        {1: {
+            "runtime.max_batch_size": num_concurrent_requests
+        }})
     with OmniServer(model, [
             "--stage-configs-path", stage_config_path, "--init-sleep-seconds",
             "90"
@@ -124,7 +126,7 @@ def test_text_audio_to_text(test_config: tuple[str, str]) -> None:
         """Test processing video, generating audio output via OpenAI API."""
 
         # Create data URL for the base64 encoded audio
-        audio_data_url = f"data:audio/ogg;base64,{prepare_multimodal_base64_data('mary_had_lamb', 'audio')}"
+        audio_data_url = f"data:audio/ogg;base64,{generate_synthetic_audio(3,5)}"
 
         messages = dummy_messages_from_mix_data(
             system_prompt=get_system_prompt(),
