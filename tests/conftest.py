@@ -113,7 +113,7 @@ def generate_synthetic_video(width: int, height: int,
                              num_frames: int) -> Any:
     """Generate synthetic video with random values.
     """
-    video_data = np.random.integers(
+    video_data = np.random.randint(
         0,
         256,
         (num_frames, height, width, 3),
