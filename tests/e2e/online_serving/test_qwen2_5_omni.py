@@ -71,7 +71,7 @@ def test_mixed_modalities_to_text_audio(test_config: tuple[str, str]) -> None:
         audio_data_url = f"data:audio/ogg;base64,{prepare_multimodal_base64_data('mary_had_lamb', 'audio')}"
 
         # Create data URL for the base64 encoded image
-        image_data_url = f"data:image/jpeg;base64,{prepare_multimodal_base64_data('cherry_blossom', 'image')}"
+        image_data_url = f"data:image/jpeg;base64,{prepare_multimodal_base64_data('231-200x300', 'image')}"
 
         messages = dummy_messages_from_mix_data(
             system_prompt=get_system_prompt(),
