@@ -109,8 +109,7 @@ def generate_synthetic_audio(
     return base64.b64encode(audio_bytes).decode("utf-8")
 
 
-def generate_synthetic_video(width: int, height: int,
-                             num_frames: int) -> Any:
+def generate_synthetic_video(width: int, height: int, num_frames: int) -> Any:
     """Generate synthetic video with random values.
     """
     video_data = np.random.randint(
@@ -140,6 +139,8 @@ def generate_synthetic_video(width: int, height: int,
 
 
 def generate_synthetic_image(width: int, height: int) -> Any:
+    """Generate synthetic image with random values.
+       """
     from PIL import Image
     image = np.random.randint(0, 256, (height, width, 3), dtype=np.uint8)
     pil_image = Image.fromarray(image)

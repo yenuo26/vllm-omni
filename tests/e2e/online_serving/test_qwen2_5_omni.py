@@ -126,7 +126,7 @@ def test_text_audio_to_text(test_config: tuple[str, str]) -> None:
         """Test processing video, generating audio output via OpenAI API."""
 
         # Create data URL for the base64 encoded audio
-        audio_data_url = f"data:audio/ogg;base64,{generate_synthetic_audio(3,5)}"
+        audio_data_url = f"data:audio/ogg;base64,{generate_synthetic_audio(3,2)}"
 
         messages = dummy_messages_from_mix_data(
             system_prompt=get_system_prompt(),
