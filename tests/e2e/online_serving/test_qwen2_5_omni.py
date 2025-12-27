@@ -12,7 +12,9 @@ import pytest
 import time
 import concurrent.futures
 
-from tests.conftest import OmniServer, dummy_messages_from_mix_data, prepare_multimodal_base64_data, modify_stage_config
+from tests.conftest import (OmniServer, dummy_messages_from_mix_data,
+                            modify_stage_config, generate_synthetic_video,
+                            generate_synthetic_audio, generate_synthetic_image)
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
@@ -60,23 +62,18 @@ def test_mixed_modalities_to_text_audio(test_config: tuple[str, str]) -> None:
     """Test processing video,audio,image,text, generating audio,text output via OpenAI API."""
 
     model, stage_config_path = test_config
-    for i in range(2):
-        stage_config_path = modify_stage_config(
-            stage_config_path, 0,
-            {"engine_args.max_model_len": 5800, "engine_args.max_num_batched_tokens": 5800})
-
     with OmniServer(model, [
             "--stage-configs-path", stage_config_path, "--init-sleep-seconds",
             "90"
     ]) as server:
         # Create data URL for the base64 encoded video
-        video_data_url = f"data:video/mp4;base64,{prepare_multimodal_base64_data('baby_reading', 'video')}"
+        video_data_url = f"data:video/mp4;base64,{generate_synthetic_video(128,128,4)}"
 
         # Create data URL for the base64 encoded audio
-        audio_data_url = f"data:audio/ogg;base64,{prepare_multimodal_base64_data('mary_had_lamb', 'audio')}"
+        audio_data_url = f"data:audio/ogg;base64,{generate_synthetic_audio(3,1)}"
 
         # Create data URL for the base64 encoded image
-        image_data_url = f"data:image/jpeg;base64,{prepare_multimodal_base64_data('231-200x300', 'image')}"
+        image_data_url = f"data:image/jpeg;base64,{generate_synthetic_image(128,128)}"
 
         messages = dummy_messages_from_mix_data(
             system_prompt=get_system_prompt(),
@@ -162,13 +159,12 @@ def test_text_audio_to_text(test_config: tuple[str, str]) -> None:
 
         for chat_completion in chat_completions:
             # Verify only output text
-            assert len(chat_completion.choices) == 1, "The generated content includes more than just text."
+            assert len(
+                chat_completion.choices
+            ) == 1, "The generated content includes more than just text."
 
             # Verify text output success
             text_choice = chat_completion.choices[0]
             assert text_choice.message.content is not None, "No text output is generated"
             assert chat_completion.usage.completion_tokens == 10, \
                 "The output length differs from the requested max_tokens."
-
-
-

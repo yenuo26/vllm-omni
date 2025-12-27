@@ -9,6 +9,11 @@ import time
 import yaml
 import base64
 import psutil
+import tempfile
+import cv2
+import io
+import numpy as np
+import soundfile as sf
 from typing import Dict, Any
 from pathlib import Path
 from vllm.logger import init_logger
@@ -17,7 +22,6 @@ from vllm.utils import get_open_port
 from vllm.assets.audio import AudioAsset
 from vllm.assets.video import VideoAsset
 from vllm.assets.image import ImageAsset
-
 
 logger = init_logger(__name__)
 
@@ -56,7 +60,8 @@ def dummy_messages_from_mix_data(
     video_data_url: str = None,
     audio_data_url: str = None,
     image_data_url: str = None,
-    content_text: str = "What is recited in the audio? What is in this image? Describe the video briefly.",
+    content_text:
+    str = "What is recited in the audio? What is in this image? Describe the video briefly.",
 ):
     """Create messages with video、image、audio data URL for OpenAI API."""
     content = [{"type": "text", "text": content_text}]
@@ -65,14 +70,12 @@ def dummy_messages_from_mix_data(
         (image_data_url, "image"),
         (audio_data_url, "audio"),
     ]
-    content.extend(
-        {
-            "type": f"{media_type}_url",
-            f"{media_type}_url": {"url": url}
+    content.extend({
+        "type": f"{media_type}_url",
+        f"{media_type}_url": {
+            "url": url
         }
-        for url, media_type in media_items
-        if url is not None
-    )
+    } for url, media_type in media_items if url is not None)
     return [
         system_prompt,
         {
@@ -82,65 +85,104 @@ def dummy_messages_from_mix_data(
     ]
 
 
-def prepare_multimodal_base64_data(file_name: str, file_type: str, num_frames: int =4) -> str:
-    """Base64 encoded video, audio, image for testing."""
-    if file_type.lower() == 'video':
-        asset = VideoAsset(name=file_name, num_frames=num_frames)
-        file_path = asset.video_path
-    elif file_type.lower() == 'audio':
-        asset = AudioAsset(name=file_name)
-        file_path = asset.get_local_path()
-    elif file_type.lower() == 'image':
-        asset = ImageAsset(name=file_name)
-        file_path = asset.get_path("jpg")
-    else:
-        raise ValueError(f"Unsupported resource type: {file_type}")
+def generate_synthetic_audio(
+    self,
+    duration: int,  # seconds
+    num_channels: int  # 1：Mono，2：Stereo 5：5.1 surround sound
+) -> Dict[str, Any]:
+    """Generate synthetic audio with random values.
+       Default use 48000Hz.
+    """
+    sample_rate = 48000
+    num_samples = int(sample_rate * duration)
+    audio_data = self._rng.uniform(-0.5, 0.5, (num_samples, num_channels))
+    audio_data = np.clip(audio_data, -1.0, 1.0)
+    audio_tensor = torch.FloatTensor(audio_data.T)
+    audio_np = audio_tensor.numpy()
 
-    with open(file_path, "rb") as f:
+    buffer = io.BytesIO()
+
+    sf.write(buffer, audio_np.T, sample_rate, format="mp3")
+
+    buffer.seek(0)
+    audio_bytes = buffer.read()
+    buffer.close()
+    return base64.b64encode(audio_bytes).decode("utf-8")
+
+
+def generate_synthetic_video(self, width: int, height: int,
+                             num_frames: int) -> Any:
+    """Generate synthetic video with random values.
+    """
+    video_data = self._rng.integers(
+        0,
+        256,
+        (num_frames, height, width, 3),
+        dtype=np.uint8,
+    )
+    video_tensor = torch.from_numpy(video_data)
+    with tempfile.NamedTemporaryFile(suffix=f".mp4", delete=False) as tmp:
+        temp_path = tmp.name
+    frames, height, width, channels = video_tensor.shape
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_path, fourcc, 30, (width, height))
+
+    for i in range(frames):
+        frame = video_tensor[i].numpy()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        out.write(frame)
+        out.release()
+
+    with open(temp_path, "rb") as f:
         content = f.read()
-        return base64.b64encode(content).decode("utf-8")
+    os.unlink(temp_path)
+
+    return base64.b64encode(content).decode("utf-8")
+
+
+def generate_synthetic_image(width: int, height: int) -> Any:
+    from PIL import Image
+    image = np.random.randint(0, 256, (height, width, 3), dtype=np.uint8)
+    pil_image = Image.fromarray(image)
+    pil_image = pil_image.convert('RGB')
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format='JPEG', quality=85, optimize=True)
+    buffer.seek(0)
+    image_bytes = buffer.read()
+
+    return base64.b64encode(image_bytes).decode('utf-8')
+
 
 def modify_stage_config(
     yaml_path: str,
-    stage_id: int,
-    config_dict: Dict[str, Any]
+    stage_updates: Dict[int, Dict[str, Any]],
 ) -> str:
     """
-    Modify configuration for a specific stage in a YAML file.
-
-    This function reads a YAML configuration file, locates the specified stage by its ID,
-    and applies the modifications specified in config_dict. The modifications use dot-separated
-    paths to navigate nested configuration structures. A new YAML file is created with a
-    timestamp suffix to preserve the original configuration.
+    Batch modify configurations for multiple stages in a YAML file.
 
     Args:
-        yaml_path: Path to the YAML configuration file
-        stage_id: ID of the stage to modify (must exist in the configuration)
-        config_dict: Dictionary of modifications where keys are dot-separated paths
-                    and values are the new configuration values.
-                    Example: {'runtime.devices': '0,1', 'engine_args.max_model_len': 1024}
+        yaml_path: Path to the YAML configuration file.
+        stage_updates: Dictionary where keys are stage IDs and values are dictionaries of
+                      modifications for that stage. Each modification dictionary uses
+                      dot-separated paths as keys and new configuration values as values.
+                      Example: {
+                          0: {'engine_args.max_model_len': 5800},
+                          1: {'runtime.max_batch_size': 2}
+                      }
 
     Returns:
         str: Path to the newly created modified YAML file with timestamp suffix.
 
-    Raises:
-        FileNotFoundError: If the specified YAML file does not exist.
-        ValueError: If the YAML file cannot be parsed or contains invalid data.
-        KeyError: If the specified stage_id is not found or if a path in config_dict
-                 points to a non-existent configuration key.
-
     Example:
         >>> output_file = modify_stage_config(
         ...     'config.yaml',
-        ...     stage_id=0,
-        ...     config_dict={
-        ...         'runtime.devices': '0,1',
-        ...         'engine_args.max_model_len': 1024,
-        ...         'default_sampling_params.temperature': 0.7
+        ...     {
+        ...         0: {'engine_args.max_model_len': 5800},
+        ...         1: {'runtime.max_batch_size': 2}
         ...     }
         ... )
         >>> print(f"Modified configuration saved to: {output_file}")
-        Modified configuration saved to: config_1698765432.123456.yaml
+        Modified configuration saved to: config_1698765432.yaml
     """
     path = Path(yaml_path)
     if not path.exists():
@@ -151,24 +193,49 @@ def modify_stage_config(
     except Exception as e:
         raise ValueError(f"Cannot parse YAML file: {e}")
 
-    for stage in config.get('stage_args', []):
-        if stage.get('stage_id') == stage_id:
-            for key_path, value in config_dict.items():
-                current = stage
-                keys = key_path.split(".")
-                for i in range(len(keys) - 1):
-                    key = keys[i]
-                    if key not in current:
-                        raise KeyError(f"the {'.'.join(keys[:i+1])} does not exist")
+    stage_args = config.get('stage_args', [])
+    if not stage_args:
+        raise ValueError("the stage_args does not exist")
 
-                    elif not isinstance(current[key], dict) and i < len(keys) - 2:
-                        raise ValueError(f"{'.'.join(keys[:i+1])}' cannot continue deeper because it's not a dict")
-                    current = current[key]
-                current[keys[-1]] = value
+    for stage_id, config_dict in stage_updates.items():
+        target_stage = None
+        for stage in stage_args:
+            if stage.get('stage_id') == stage_id:
+                target_stage = stage
+                break
+
+        if target_stage is None:
+            available_ids = [
+                s.get('stage_id') for s in stage_args if 'stage_id' in s
+            ]
+            raise KeyError(
+                f"Stage ID {stage_id} is not exist, available IDs: {available_ids}"
+            )
+
+        for key_path, value in config_dict.items():
+            current = target_stage
+            keys = key_path.split(".")
+            for i in range(len(keys) - 1):
+                key = keys[i]
+                if key not in current:
+                    raise KeyError(
+                        f"the {'.'.join(keys[:i+1])} does not exist")
+
+                elif not isinstance(current[key], dict) and i < len(keys) - 2:
+                    raise ValueError(
+                        f"{'.'.join(keys[:i+1])}' cannot continue deeper because it's not a dict"
+                    )
+                current = current[key]
+            current[keys[-1]] = value
 
     output_path = f"{yaml_path.split('.')[0]}_{int(time.time())}.yaml"
     with open(output_path, 'w', encoding='utf-8') as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True, indent=2)
+        yaml.dump(config,
+                  f,
+                  default_flow_style=False,
+                  sort_keys=False,
+                  allow_unicode=True,
+                  indent=2)
 
     return output_path
 
@@ -214,7 +281,8 @@ class OmniServer:
         self.proc = subprocess.Popen(
             cmd,
             env=env,
-            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),  # Set working directory to vllm-omni root
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(
+                __file__))),  # Set working directory to vllm-omni root
         )
 
         # Wait for server to be ready
