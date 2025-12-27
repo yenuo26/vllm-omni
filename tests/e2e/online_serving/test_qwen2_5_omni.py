@@ -60,6 +60,11 @@ def test_mixed_modalities_to_text_audio(test_config: tuple[str, str]) -> None:
     """Test processing video,audio,image,text, generating audio,text output via OpenAI API."""
 
     model, stage_config_path = test_config
+    for i in range(2):
+        stage_config_path = modify_stage_config(
+            stage_config_path, 0,
+            {"engine_args.max_model_len": 5800, "engine_args.max_num_batched_tokens": 5800})
+
     with OmniServer(model, [
             "--stage-configs-path", stage_config_path, "--init-sleep-seconds",
             "90"
