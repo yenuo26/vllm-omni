@@ -37,7 +37,6 @@ def get_system_prompt():
         ],
     }
 
-
 def client(omni_server):
     """OpenAI client for the running vLLM-Omni server."""
     return openai.OpenAI(
@@ -54,7 +53,6 @@ def test_mixed_modalities_to_text_audio(
 ) -> None:
     model, stage_config_path = test_config
     with OmniServer(model, ["--stage-configs-path", stage_config_path, "--init-sleep-seconds", "90"]) as server:
-        """Test processing video, generating audio output via OpenAI API."""
         # Create data URL for the base64 encoded video
         video_data_url = f"data:video/mp4;base64,{prepare_multimodal_base64_data('baby_reading', 'video')}"
 
@@ -75,7 +73,7 @@ def test_mixed_modalities_to_text_audio(
             model=server.model,
             messages=messages,
             max_tokens=10,
-            ingore_eos=True
+            stop=None
         )
 
         # Verify text output success
@@ -97,25 +95,19 @@ def test_mixed_modalities_to_text_audio(
 
 
 @pytest.mark.parametrize("test_config", test_params)
-def test_video_to_text_audio(
+def test_text_audio_to_text(
         test_config: tuple[str, str]
 ) -> None:
     model, stage_config_path = test_config
-    stage_config_path = modify_stage_config(stage_config_path, 0, {"runtime.max_batch_size": 5})
+    stage_config_path = modify_stage_config(stage_config_path, 1, {"runtime.max_batch_size": 5})
     with OmniServer(model, ["--stage-configs-path", stage_config_path, "--init-sleep-seconds", "90"]) as server:
         """Test processing video, generating audio output via OpenAI API."""
-        # Create data URL for the base64 encoded video
-        video_data_url = f"data:video/mp4;base64,{prepare_multimodal_base64_data('baby_reading', 'video')}"
 
         # Create data URL for the base64 encoded audio
         audio_data_url = f"data:audio/ogg;base64,{prepare_multimodal_base64_data('mary_had_lamb', 'audio')}"
 
-        # Create data URL for the base64 encoded image
-        image_data_url = f"data:image/jpeg;base64,{prepare_multimodal_base64_data('cherry_blossom', 'image')}"
-
-        messages = dummy_messages_from_mix_data(system_prompt=get_system_prompt(), video_data_url=video_data_url,
-                                                audio_data_url=audio_data_url,
-                                                image_data_url=image_data_url)
+        messages = dummy_messages_from_mix_data(system_prompt=get_system_prompt(),
+                                                audio_data_url=audio_data_url)
 
         # Test single completion
         api_client = client(server)
