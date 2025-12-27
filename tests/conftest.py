@@ -8,6 +8,7 @@ import sys
 import time
 import yaml
 import base64
+import psutil
 from typing import Dict, Any
 from pathlib import Path
 from vllm.logger import init_logger
@@ -52,19 +53,26 @@ def clean_gpu_memory_between_tests():
 
 def dummy_messages_from_mix_data(
     system_prompt: Dict[str, Any],
-    video_data_url: str,
-    audio_data_url: str,
-    image_data_url: str,
+    video_data_url: str = None,
+    audio_data_url: str = None,
+    image_data_url: str = None,
     content_text: str = "What is recited in the audio? What is in this image? Describe the video briefly.",
 ):
     """Create messages with video、image、audio data URL for OpenAI API."""
     content = [{"type": "text", "text": content_text}]
-    if video_data_url is not None:
-        content.append({"type": "video_url", "video_url": {"url": video_data_url}})
-    if image_data_url is not None:
-        content.append({"type": "image_url", "image_url": {"url": image_data_url}})
-    if audio_data_url is not None:
-        content.append({"type": "audio_url", "audio_url": {"url": audio_data_url}})
+    media_items = [
+        (video_data_url, "video"),
+        (image_data_url, "image"),
+        (audio_data_url, "audio"),
+    ]
+    content.extend(
+        {
+            "type": f"{media_type}_url",
+            f"{media_type}_url": {"url": url}
+        }
+        for url, media_type in media_items
+        if url is not None
+    )
     return [
         system_prompt,
         {
@@ -235,15 +243,68 @@ class OmniServer:
 
         raise RuntimeError(f"Server failed to start within {max_wait} seconds")
 
+    def _kill_process_tree(self, pid):
+        """kill process and its children"""
+        try:
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+
+            gone, still_alive = psutil.wait_procs(children, timeout=10)
+
+            for child in still_alive:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+            try:
+                parent.terminate()
+                parent.wait(timeout=10)
+            except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                try:
+                    parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+        except psutil.NoSuchProcess:
+            pass
+
     def __enter__(self):
         self._start_server()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.proc:
-            self.proc.terminate()
             try:
-                self.proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+                parent = psutil.Process(self.proc.pid)
+                children = parent.children(recursive=True)
+                for child in children:
+                    try:
+                        child.terminate()
+                    except psutil.NoSuchProcess:
+                        pass
+
+                gone, still_alive = psutil.wait_procs(children, timeout=10)
+
+                for child in still_alive:
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+
+                try:
+                    parent.terminate()
+                    parent.wait(timeout=10)
+                except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                    try:
+                        parent.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+
+            except psutil.NoSuchProcess:
+                pass
