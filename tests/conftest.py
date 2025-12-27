@@ -153,8 +153,8 @@ def modify_stage_config(
 
     for stage in config.get('stage_args', []):
         if stage.get('stage_id') == stage_id:
-            current = stage
             for key_path, value in config_dict.items():
+                current = stage
                 keys = key_path.split(".")
                 for i in range(len(keys) - 1):
                     key = keys[i]
