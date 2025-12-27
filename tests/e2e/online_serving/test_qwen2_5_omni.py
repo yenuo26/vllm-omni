@@ -9,13 +9,14 @@ from pathlib import Path
 
 import openai
 import pytest
+import time
 
 from tests.conftest import OmniServer, dummy_messages_from_mix_data, prepare_multimodal_base64_data, modify_stage_config
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 models = ["Qwen/Qwen2.5-Omni-7B"]
 
-# CI stage config for 2*H100-80G GPUs
+# CI stage config optimized for 24GB GPU (L4/RTX3090) or NPU
 stage_configs = [str(Path(__file__).parent.parent / "stage_configs" / "qwen2_5_omni_ci.yaml")]
 
 # Create parameter combinations for model and stage config
@@ -45,6 +46,8 @@ def client(omni_server):
     )
 
 
+@pytest.mark.ci
+@pytest.mark.L4_2
 @pytest.mark.parametrize("test_config", test_params)
 def test_mixed_modalities_to_text_audio(
     test_config: tuple[str, str]
@@ -67,29 +70,30 @@ def test_mixed_modalities_to_text_audio(
 
         # Test single completion
         api_client = client(server)
+        start_time = time.time()
         chat_completion = api_client.chat.completions.create(
             model=server.model,
             messages=messages,
+            max_tokens=10,
+            ingore_eos=True
         )
 
-        # Verify text output
+        # Verify text output success
         text_choice = chat_completion.choices[0]
-        assert text_choice.finish_reason == "length"
+        assert text_choice.message.content is not None, "No text output is generated"
+        assert chat_completion.usage.completion_tokens == 10, "The output length differs from the requested max_tokens."
 
-        # Verify we got a response
-        text_message = text_choice.message
-        assert text_message.content is not None and len(text_message.content) >= 10
-        assert text_message.role == "assistant"
+        # Verify audio output success
+        audio_message = chat_completion.choices[1].message
+        assert audio_message.audio.data is not None, "No audio output is generated"
+        assert audio_message.audio.expires_at > time.time(), "The generated audio has expired."
 
-        # Verify audio output
-        audio_choice = chat_completion.choices[1]
-        assert audio_choice.finish_reason == "stop"
-        audio_message = audio_choice.message
+        # Verify E2E
+        print(f"the request e2e is: {time.time()-start_time}")
+        #TODO: Verify the E2E latency after confirmation baseline.
 
-        # Check if audio was generated
-        if hasattr(audio_message, "audio") and audio_message.audio:
-            assert audio_message.audio.data is not None
-            assert len(audio_message.audio.data) > 0
+        # Verify audio data
+        # TODO: Implement similarity validation between audio content and text.
 
 
 @pytest.mark.parametrize("test_config", test_params)

@@ -74,6 +74,15 @@ def dummy_messages_from_mix_data(
     ]
 
 
+def prepare_video_base64_data(file_name: str, num_frames: int =4) -> str:
+    """Base64 encoded video, audio, image for testing."""
+    asset = VideoAsset(name=file_name, num_frames=num_frames)
+    file_path = asset.video_path
+    with open(file_path, "rb") as f:
+        content = f.read()
+        return base64.b64encode(content).decode("utf-8")
+
+
 def prepare_multimodal_base64_data(file_name: str, file_type: str, num_frames: int =4) -> str:
     """Base64 encoded video, audio, image for testing."""
     if file_type.lower() == 'video':
