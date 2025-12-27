@@ -175,7 +175,7 @@ def modify_stage_config(
                     current = current[key]
                 current[keys[-1]] = value
 
-    output_path = f"{yaml_path.split('.')[0]}_{time.time()}.yaml"
+    output_path = f"{yaml_path.split('.')[0]}_{int(time.time())}.yaml"
     with open(output_path, 'w', encoding='utf-8') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True, indent=2)
 
