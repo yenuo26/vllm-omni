@@ -86,7 +86,6 @@ def dummy_messages_from_mix_data(
 
 
 def generate_synthetic_audio(
-    self,
     duration: int,  # seconds
     num_channels: int  # 1：Mono，2：Stereo 5：5.1 surround sound
 ) -> Dict[str, Any]:
@@ -95,7 +94,7 @@ def generate_synthetic_audio(
     """
     sample_rate = 48000
     num_samples = int(sample_rate * duration)
-    audio_data = self._rng.uniform(-0.5, 0.5, (num_samples, num_channels))
+    audio_data = np.random.uniform(-0.5, 0.5, (num_samples, num_channels))
     audio_data = np.clip(audio_data, -1.0, 1.0)
     audio_tensor = torch.FloatTensor(audio_data.T)
     audio_np = audio_tensor.numpy()
@@ -110,11 +109,11 @@ def generate_synthetic_audio(
     return base64.b64encode(audio_bytes).decode("utf-8")
 
 
-def generate_synthetic_video(self, width: int, height: int,
+def generate_synthetic_video(width: int, height: int,
                              num_frames: int) -> Any:
     """Generate synthetic video with random values.
     """
-    video_data = self._rng.integers(
+    video_data = np.random.integers(
         0,
         256,
         (num_frames, height, width, 3),
