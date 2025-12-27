@@ -10,6 +10,7 @@ from pathlib import Path
 import openai
 import pytest
 import time
+import concurrent.futures
 
 from tests.conftest import OmniServer, dummy_messages_from_mix_data, prepare_multimodal_base64_data, modify_stage_config
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
@@ -51,6 +52,8 @@ def client(omni_server):
 def test_mixed_modalities_to_text_audio(
     test_config: tuple[str, str]
 ) -> None:
+    """Test processing video,audio,image,text, generating audio,text output via OpenAI API."""
+
     model, stage_config_path = test_config
     with OmniServer(model, ["--stage-configs-path", stage_config_path, "--init-sleep-seconds", "90"]) as server:
         # Create data URL for the base64 encoded video
@@ -94,12 +97,17 @@ def test_mixed_modalities_to_text_audio(
         # TODO: Implement similarity validation between audio content and text.
 
 
+@pytest.mark.ci
+@pytest.mark.L4_2
 @pytest.mark.parametrize("test_config", test_params)
 def test_text_audio_to_text(
         test_config: tuple[str, str]
 ) -> None:
+    """Test processing audio,text, generating text output via OpenAI API."""
     model, stage_config_path = test_config
-    stage_config_path = modify_stage_config(stage_config_path, 1, {"runtime.max_batch_size": 5})
+    num_concurrent_requests = 5
+
+    stage_config_path = modify_stage_config(stage_config_path, 1, {"runtime.max_batch_size": num_concurrent_requests})
     with OmniServer(model, ["--stage-configs-path", stage_config_path, "--init-sleep-seconds", "90"]) as server:
         """Test processing video, generating audio output via OpenAI API."""
 
@@ -107,30 +115,42 @@ def test_text_audio_to_text(
         audio_data_url = f"data:audio/ogg;base64,{prepare_multimodal_base64_data('mary_had_lamb', 'audio')}"
 
         messages = dummy_messages_from_mix_data(system_prompt=get_system_prompt(),
+                                                content_text="Describe the audio briefly.",
                                                 audio_data_url=audio_data_url)
 
-        # Test single completion
+        # Test 5 completion
         api_client = client(server)
-        chat_completion = api_client.chat.completions.create(
-            model=server.model,
-            messages=messages,
-        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_concurrent_requests) as executor:
+            # Submit multiple completion requests concurrently
+            futures = [
+                executor.submit(
+                    api_client.chat.completions.create,
+                    model=server.model,
+                    messages=messages,
+                    max_tokens=10,
+                    stop=None,
 
-        # Verify text output
-        text_choice = chat_completion.choices[0]
-        assert text_choice.finish_reason == "length"
+                )
+                for _ in range(num_concurrent_requests)
+            ]
 
-        # Verify we got a response
-        text_message = text_choice.message
-        assert text_message.content is not None and len(text_message.content) >= 10
-        assert text_message.role == "assistant"
+            # Wait for all requests to complete and collect results
+            chat_completions = [future.result() for future in concurrent.futures.as_completed(futures)]
 
-        # Verify audio output
-        audio_choice = chat_completion.choices[1]
-        assert audio_choice.finish_reason == "stop"
-        audio_message = audio_choice.message
+        # Verify all completions succeeded
+        assert len(chat_completions) == num_concurrent_requests, "Not all requests succeeded."
 
-        # Check if audio was generated
-        if hasattr(audio_message, "audio") and audio_message.audio:
-            assert audio_message.audio.data is not None
-            assert len(audio_message.audio.data) > 0
+        for chat_completion in chat_completions:
+            # Verify text output success
+            text_choice = chat_completion.choices[0]
+            assert text_choice.message.content is not None, "No text output is generated"
+            assert chat_completion.usage.completion_tokens == 10, \
+                "The output length differs from the requested max_tokens."
+
+            # Verify audio output success
+            audio_message = chat_completion.choices[1].message
+            assert audio_message.audio.data is not None, "No audio output is generated"
+            assert audio_message.audio.expires_at > time.time(), "The generated audio has expired."
+
+            # Verify audio data
+            # TODO: Implement similarity validation between audio content and text.
