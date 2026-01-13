@@ -52,6 +52,18 @@ dev = [
     "pre-commit==4.0.1",
 ]
 
+full = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "mypy==1.11.1",
+    "pre-commit==4.0.1",
+    "soundfile",
+    "opencv-python-headless",
+    "psutil",
+    "openai-whisper"
+]
+
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-api-autonav",
@@ -66,7 +78,6 @@ docs = [
     "ruff",
     "pydantic",
 ]
-
 
 [project.urls]
 Homepage = "https://github.com/vllm-project/vllm-omni"
