@@ -1,12 +1,10 @@
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import argparse
 
 from vllm.entrypoints.cli.types import CLISubcommand
 
 
 class OmniBenchmarkSubcommandBase(CLISubcommand):
-    """ The base class of subcommands for vllm bench. """
+    """The base class of subcommands for vllm bench."""
 
     help: str
 

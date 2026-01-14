@@ -1,34 +1,36 @@
+import json
 import os
 import sys
 import time
-import json
 import traceback
 from dataclasses import dataclass
 from typing import Literal
+
 import aiohttp
-import numpy as np
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
-from vllm.benchmarks.datasets import SampleRequest
-
-from vllm.benchmarks.lib.endpoint_request_func import (ASYNC_REQUEST_FUNCS,_update_payload_common,
-                                                       RequestFuncInput,_validate_api_url,_get_chat_content,
-                                                       StreamedResponseHandler,_update_headers_common)
-
 from vllm.benchmarks import datasets
+from vllm.benchmarks.datasets import SampleRequest
+from vllm.benchmarks.lib.endpoint_request_func import (
+    ASYNC_REQUEST_FUNCS,
+    RequestFuncInput,
+    StreamedResponseHandler,
+    _get_chat_content,
+    _update_headers_common,
+    _update_payload_common,
+    _validate_api_url,
+)
+
+from vllm_omni.benchmarks.data_modules.random_multi_modal_dataset import OmniRandomMultiModalDataset
+
 get_samples_old = datasets.get_samples
+
+
 def get_samples(args, tokenizer):
-    from vllm_omni.benchmarks.datasets.random_multi_modal_dataset import OmniRandomMultiModalDataset
     if args.dataset_name == "random-mm":
-        if args.backend not in [
-            "openai-chat"]:
-            raise ValueError(
-                "Multi-modal content (images) is only supported on "
-                "'openai-chat' backend."
-            )
-        dataset = OmniRandomMultiModalDataset(
-            random_seed=args.seed, dataset_path=args.dataset_path
-        )
+        if args.backend not in ["openai-chat"]:
+            raise ValueError("Multi-modal content (images) is only supported on 'openai-chat' backend.")
+        dataset = OmniRandomMultiModalDataset(random_seed=args.seed, dataset_path=args.dataset_path)
         input_requests = dataset.sample(
             tokenizer=tokenizer,
             num_requests=args.num_prompts,
@@ -46,13 +48,21 @@ def get_samples(args, tokenizer):
         return input_requests
     else:
         return get_samples_old(args, tokenizer)
+
+
 datasets.get_samples = get_samples
 
+# ruff: noqa: E402
+# Prevent import order from causing patch failures
 from vllm.benchmarks.lib import endpoint_request_func
+
 RequestFuncOutput_old = endpoint_request_func.RequestFuncOutput
+
+
 @dataclass
 class RequestFuncOutput(RequestFuncOutput_old):
     audio_ttft: float = 0.0
+
 
 endpoint_request_func.RequestFuncOutput = RequestFuncOutput
 
@@ -69,9 +79,7 @@ async def async_request_openai_chat_completions(
     content = _get_chat_content(request_func_input, mm_position=mm_position)
 
     payload = {
-        "model": request_func_input.model_name
-        if request_func_input.model_name
-        else request_func_input.model,
+        "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
         "messages": [
             {"role": "user", "content": content},
         ],
@@ -156,20 +164,31 @@ async def async_request_openai_chat_completions(
     if pbar:
         pbar.update(1)
     return output
+
+
 ASYNC_REQUEST_FUNCS["openai-chat"] = async_request_openai_chat_completions
 
+# ruff: noqa: E402
+# Prevent import order from causing patch failures
 from vllm.benchmarks import serve
+
 BenchmarkMetrics_old = serve.BenchmarkMetrics
+
+
 @dataclass
 class BenchmarkMetrics(BenchmarkMetrics_old):
     mean_audio_ttft_ms: float = 0.0
     median_audio_ttft_ms: float = 0.0
     std_audio_ttft_ms: float = 0.0
     percentiles_audio_ttft_ms: list[tuple[float, float]] = None
+
+
 serve.BenchmarkMetrics = BenchmarkMetrics
 
 
 calculate_metrics_old = serve.calculate_metrics
+
+
 def calculate_metrics(
     input_requests: list[SampleRequest],
     outputs: list[RequestFuncOutput],
@@ -179,7 +198,12 @@ def calculate_metrics(
     goodput_config_dict: dict[str, float],
 ):
     from vllm_omni.benchmarks.metrics.metrics import calculate_metrics
-    metrics, actual_output_lens = calculate_metrics_old(input_requests, outputs, dur_s, tokenizer, selected_percentiles, goodput_config_dict)
+
+    metrics, actual_output_lens = calculate_metrics_old(
+        input_requests, outputs, dur_s, tokenizer, selected_percentiles, goodput_config_dict
+    )
     metrics = calculate_metrics(outputs, selected_percentiles, metrics)
     return metrics, actual_output_lens
+
+
 serve.calculate_metrics = calculate_metrics

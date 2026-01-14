@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Mapping
-from typing import Any, Dict
+from typing import Any
 
 import cv2
 import numpy as np
@@ -13,6 +13,7 @@ import torch
 from vllm.benchmarks.datasets import RandomMultiModalDataset, process_image
 
 logger = logging.getLogger(__name__)
+
 
 def process_video(video: Any) -> Mapping[str, Any]:
     """
@@ -30,19 +31,16 @@ def process_video(video: Any) -> Mapping[str, Any]:
     Raises:
         ValueError: If the input is not a supported type.
     """
-    if isinstance(video, dict) and 'bytes' in video:
-        video_bytes = video['bytes']
+    if isinstance(video, dict) and "bytes" in video:
+        video_bytes = video["bytes"]
         video_base64 = base64.b64encode(video_bytes).decode("utf-8")
         return {
             "type": "video_url",
-            "video_url": {
-                "url": f"data:video/mp4;base64,{video_base64}"
-            },
+            "video_url": {"url": f"data:video/mp4;base64,{video_base64}"},
         }
 
     if isinstance(video, str):
-        video_url = (video if video.startswith(
-            ("http://", "https://", "file://")) else f"file://{video}")
+        video_url = video if video.startswith(("http://", "https://", "file://")) else f"file://{video}"
         return {"type": "video_url", "video_url": {"url": video_url}}
 
     raise ValueError(
@@ -66,48 +64,41 @@ def process_audio(audio: Any) -> Mapping[str, Any]:
     Raises:
         ValueError: If the input is not a supported type.
     """
-    if isinstance(audio, dict) and 'bytes' in audio:
-        audio_bytes = audio['bytes']
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+    if isinstance(audio, dict) and "bytes" in audio:
+        audio_bytes = audio["bytes"]
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
         return {
             "type": "audio_url",
-            "audio_url": {
-                "url": f"data:audio/mpeg;base64,{audio_base64}"
-            },
+            "audio_url": {"url": f"data:audio/mpeg;base64,{audio_base64}"},
         }
     if isinstance(audio, str):
-        audio_url = (audio if audio.startswith(
-            ("http://", "https://", "file://")) else f"file://{audio}")
+        audio_url = audio if audio.startswith(("http://", "https://", "file://")) else f"file://{audio}"
         return {"type": "audio_url", "audio_url": {"url": audio_url}}
 
-    raise ValueError(f"Invalid audio input {audio}. Must be a string of local path/remote url, or a dictionary with raw audio bytes in the form of `{{'bytes': raw_audio_bytes}}`."
-   )
-
+    raise ValueError(
+        f"Invalid audio input {audio}. Must be a string of local path/remote url, "
+        f"or a dictionary with raw audio bytes in the form of `{{'bytes': raw_audio_bytes}}`."
+    )
 
 
 # -----------------------------------------------------------------------------
 # MultiModalDataset Implementation
 # -----------------------------------------------------------------------------
 class OmniRandomMultiModalDataset(RandomMultiModalDataset):
-
-    def __init__(self,**kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
 
     def generate_synthetic_audio(
         self,
         duration: int,  # seconds
-        num_channels: int #1：Mono，2：Stereo 5：5.1 surround sound
-    ) -> Dict[str, Any]:
+        num_channels: int,  # 1：Mono，2：Stereo 5：5.1 surround sound
+    ) -> dict[str, Any]:
         """Generate synthetic audio with random values.
-           Default use 48000Hz.
+        Default use 48000Hz.
         """
         sample_rate = 48000
         num_samples = int(sample_rate * duration)
-        audio_data = self._rng.uniform(
-            -0.5, 0.5,
-            (num_samples, num_channels)
-        )
+        audio_data = self._rng.uniform(-0.5, 0.5, (num_samples, num_channels))
         audio_data = np.clip(audio_data, -1.0, 1.0)
         audio_tensor = torch.FloatTensor(audio_data.T)
         audio_np = audio_tensor.numpy()
@@ -120,13 +111,13 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
         audio_bytes = buffer.read()
         buffer.close()
         return {
-            'bytes': audio_bytes,
+            "bytes": audio_bytes,
         }
 
-
-    def generate_mm_item(self,
-                         mm_item_config: tuple[int, int, int],
-                         ) -> Mapping[str, Any]:
+    def generate_mm_item(
+        self,
+        mm_item_config: tuple[int, int, int],
+    ) -> Mapping[str, Any]:
         """
         Create synthetic images and videos and
         apply process_image/process_video respectively.
@@ -135,38 +126,27 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
         """
 
         if self.map_config_to_modality(mm_item_config) == "image":
-            return process_image(self.generate_synthetic_image(
-                                                            mm_item_config[1],
-                                                            mm_item_config[0]))
+            return process_image(self.generate_synthetic_image(mm_item_config[1], mm_item_config[0]))
         elif self.map_config_to_modality(mm_item_config) == "video":
-            return process_video(self.generate_synthetic_video(
-                                                            mm_item_config[1],
-                                                            mm_item_config[0],
-                                                            mm_item_config[2]))
+            return process_video(self.generate_synthetic_video(mm_item_config[1], mm_item_config[0], mm_item_config[2]))
         elif self.map_config_to_modality(mm_item_config) == "audio":
-            return process_audio(self.generate_synthetic_audio(
-                                                            mm_item_config[1],
-                                                            mm_item_config[2]))
+            return process_audio(self.generate_synthetic_audio(mm_item_config[1], mm_item_config[2]))
         else:
-            raise ValueError(f"Invalid multimodal item configuration: "
-                             f"{mm_item_config}")
+            raise ValueError(f"Invalid multimodal item configuration: {mm_item_config}")
 
-
-    def generate_synthetic_video(self, width: int,
-                                    height: int,
-                                    num_frames: int) -> Any:
-        """Generate synthetic video with random values.
-        """
+    def generate_synthetic_video(self, width: int, height: int, num_frames: int) -> Any:
+        """Generate synthetic video with random values."""
         video_data = self._rng.integers(
-            0, 256,
+            0,
+            256,
             (num_frames, height, width, 3),
             dtype=np.uint8,
         )
         video_tensor = torch.from_numpy(video_data)
-        with tempfile.NamedTemporaryFile(suffix=f".mp4", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             temp_path = tmp.name
         frames, height, width, channels = video_tensor.shape
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(temp_path, fourcc, 30, (width, height))
 
         for i in range(frames):
@@ -175,13 +155,13 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
             out.write(frame)
         out.release()
 
-        with open(temp_path, 'rb') as f:
+        with open(temp_path, "rb") as f:
             video_bytes = f.read()
 
         os.unlink(temp_path)
 
         return {
-            'bytes': video_bytes,
+            "bytes": video_bytes,
         }
 
     def map_config_to_modality(self, config: tuple[int, int, int]) -> str:
@@ -194,6 +174,3 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
             return "video"
         else:
             raise ValueError(f"Invalid multimodal item configuration: {config}")
-
-
-
