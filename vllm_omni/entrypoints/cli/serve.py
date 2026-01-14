@@ -8,6 +8,7 @@ diffusion models (e.g., Qwen-Image) through the same CLI interface.
 import argparse
 
 import uvloop
+from vllm_omni.benchmarks.patch import patch
 from vllm.entrypoints.cli.types import CLISubcommand
 from vllm.entrypoints.openai.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.utils import VLLM_SUBCMD_PARSER_EPILOG
@@ -33,7 +34,7 @@ Examples:
   vllm serve Qwen/Qwen-Image --omni --port 8091
 
 Search by using: `--help=<ConfigGroup>` to explore options by section (e.g.,
---help=OmniConfig)
+--help=ModelConfig, --help=Frontend)
   Use `--help=all` to show all available flags at once.
 """
 
@@ -70,67 +71,60 @@ class OmniServeCommand(CLISubcommand):
 
         serve_parser = make_arg_parser(serve_parser)
         serve_parser.epilog = VLLM_SUBCMD_PARSER_EPILOG.format(subcmd=self.name)
-
-        # Create OmniConfig argument group for omni-related parameters
-        # This ensures the parameters appear in --help output
-        omni_config_group = serve_parser.add_argument_group(
-            title="OmniConfig", description="Configuration for vLLM-Omni multi-stage and diffusion models."
-        )
-
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--omni",
             action="store_true",
             help="Enable vLLM-Omni mode for multi-modal and diffusion models",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--stage-configs-path",
             type=str,
             default=None,
             help="Path to the stage configs file. If not specified, the stage configs will be loaded from the model.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--stage-init-timeout",
             type=int,
             default=300,
             help="The timeout for initializing a single stage in seconds (default: 300)",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--init-timeout",
             type=int,
             default=60000,
             help="The timeout for initializing the stages.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--shm-threshold-bytes",
             type=int,
             default=65536,
             help="The threshold for the shared memory size.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--log-stats",
             action="store_true",
             help="Enable logging the stats.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--log-file",
             type=str,
             default=None,
             help="The path to the log file.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--batch-timeout",
             type=int,
             default=10,
             help="The timeout for the batch.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--worker-backend",
             type=str,
             default="multi_process",
             choices=["multi_process", "ray"],
             help="The backend to use for stage workers.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--ray-address",
             type=str,
             default=None,
@@ -138,13 +132,13 @@ class OmniServeCommand(CLISubcommand):
         )
 
         # Diffusion model specific arguments
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--num-gpus",
             type=int,
             default=None,
             help="Number of GPUs to use for diffusion model inference.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--usp",
             "--ulysses-degree",
             dest="ulysses_degree",
@@ -153,7 +147,7 @@ class OmniServeCommand(CLISubcommand):
             help="Ulysses Sequence Parallelism degree for diffusion models. "
             "Equivalent to setting DiffusionParallelConfig.ulysses_degree.",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--ring",
             dest="ring_degree",
             type=int,
@@ -163,13 +157,13 @@ class OmniServeCommand(CLISubcommand):
         )
 
         # Cache optimization parameters
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--cache-backend",
             type=str,
             default="none",
             help="Cache backend for diffusion models, options: 'tea_cache', 'cache_dit'",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--cache-config",
             type=str,
             default=None,
@@ -177,12 +171,12 @@ class OmniServeCommand(CLISubcommand):
         )
 
         # VAE memory optimization parameters
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--vae-use-slicing",
             action="store_true",
             help="Enable VAE slicing for memory optimization (useful for mitigating OOM issues).",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--vae-use-tiling",
             action="store_true",
             help="Enable VAE tiling for memory optimization (useful for mitigating OOM issues).",
@@ -196,13 +190,13 @@ class OmniServeCommand(CLISubcommand):
         )
 
         # Video model parameters (e.g., Wan2.2) - engine-level
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--boundary-ratio",
             type=float,
             default=None,
             help="Boundary split ratio for low/high DiT in video models (e.g., 0.875 for Wan2.2).",
         )
-        omni_config_group.add_argument(
+        serve_parser.add_argument(
             "--flow-shift",
             type=float,
             default=None,

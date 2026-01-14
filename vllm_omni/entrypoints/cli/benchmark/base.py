@@ -6,7 +6,7 @@ from vllm.entrypoints.cli.types import CLISubcommand
 
 
 class OmniBenchmarkSubcommandBase(CLISubcommand):
-    """The base class of subcommands for vllm bench."""
+    """ The base class of subcommands for vllm bench. """
 
     help: str
 
@@ -17,7 +17,7 @@ class OmniBenchmarkSubcommandBase(CLISubcommand):
 
     @staticmethod
     def cmd(args: argparse.Namespace) -> None:
-        """Run the benchmarks.
+        """Run the benchmark.
 
         Args:
             args: The arguments to the command.
