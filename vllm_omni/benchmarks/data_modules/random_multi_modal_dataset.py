@@ -10,42 +10,9 @@ import cv2
 import numpy as np
 import soundfile as sf
 import torch
-from vllm.benchmarks.datasets import RandomMultiModalDataset, process_image
+from vllm.benchmarks.datasets import RandomMultiModalDataset, process_image, process_video
 
 logger = logging.getLogger(__name__)
-
-
-def process_video(video: Any) -> Mapping[str, Any]:
-    """
-    Process a single video input and return a multimedia content dictionary.
-
-    Supports the following input types:
-
-    1. Dictionary with raw video bytes: - Expects a dict with a 'bytes' key
-       containing raw video data.
-
-    2. String input: - Treats the string as a URL or local file path.  -
-       Prepends "file://" if the string doesn't start with "http://" or
-       "file://".  - Returns a dictionary with the image URL.
-
-    Raises:
-        ValueError: If the input is not a supported type.
-    """
-    if isinstance(video, dict) and "bytes" in video:
-        video_bytes = video["bytes"]
-        video_base64 = base64.b64encode(video_bytes).decode("utf-8")
-        return {
-            "type": "video_url",
-            "video_url": {"url": f"data:video/mp4;base64,{video_base64}"},
-        }
-
-    if isinstance(video, str):
-        video_url = video if video.startswith(("http://", "https://", "file://")) else f"file://{video}"
-        return {"type": "video_url", "video_url": {"url": video_url}}
-
-    raise ValueError(
-        f"Invalid video input {video}. Must be a string of local path/remote url, or a dictionary with raw video bytes in the form of `{{'bytes': raw_video_bytes}}`."  # noqa: E501
-    )
 
 
 def process_audio(audio: Any) -> Mapping[str, Any]:
