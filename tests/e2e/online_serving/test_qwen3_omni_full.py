@@ -1374,8 +1374,171 @@ def test_use_audio_in_video_001(test_config: tuple[str, str]) -> None:
             video_data_url.append(f"data:video/mp4;base64,{generate_synthetic_video(16, 16, 300)}")
 
         messages = dummy_messages_from_mix_data(
+            video_data_url=video_data_url
+        )
+
+        # Test single completion
+        api_client = client(server)
+        e2e_list = list()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_concurrent_requests) as executor:
+            # Submit multiple completion requests concurrently
+            futures = [
+                executor.submit(
+                    api_client.chat.completions.create,
+                    model=server.model,
+                    messages=messages,
+                    max_tokens=10,
+                    stop=None,
+                    extra_body={"mm_processor_kwargs": {"use_audio_in_video": True}},
+                )
+                for _ in range(num_concurrent_requests)
+            ]
+            start_time = time.perf_counter()
+            # Wait for all requests to complete and collect results
+            chat_completions = list()
+            for future in concurrent.futures.as_completed(futures):
+                chat_completions.append(future.result())
+                # Verify E2E
+                current_e2e = time.perf_counter() - start_time
+                print(f"the request e2e is: {current_e2e}")
+                # TODO: Verify the E2E latency after confirmation baseline.
+                e2e_list.append(current_e2e)
+
+        print(f"the avg e2e is: {sum(e2e_list) / len(e2e_list)}")
+        # Verify all completions succeeded
+        assert len(chat_completions) == num_concurrent_requests, "Not all requests succeeded."
+        for chat_completion in chat_completions:
+            # Verify audio output success
+            audio_message = chat_completion.choices[1].message
+            audio_data = audio_message.audio.data
+            assert audio_data is not None, "No audio output is generated"
+            assert audio_message.audio.expires_at > time.time(), "The generated audio has expired."
+
+            # Verify text output success
+            text_choice = chat_completion.choices[0]
+            text_content = text_choice.message.content
+            assert text_choice.message.content is not None, "No text output is generated"
+            assert chat_completion.usage.completion_tokens == 10, (
+                "The output length differs from the requested max_tokens."
+            )
+
+            # Verify text output same as audio output
+            audio_content = convert_audio_to_text(audio_data)
+            print(f"text content is: {text_content}")
+            print(f"audio content is: {audio_content}")
+            assert cosine_similarity_text(audio_content, text_content) > 0.9, (
+                "The audio content is not same as the text"
+            )
+
+@pytest.mark.full
+@pytest.mark.H100_2
+@pytest.mark.parametrize("test_config", test_params)
+def test_use_audio_in_video_002(test_config: tuple[str, str]) -> None:
+    """Test processing text, generating audio output via OpenAI API."""
+
+    model, stage_config_path = test_config
+    num_concurrent_requests = 5
+    stage_config_path = modify_stage_config(
+        stage_config_path,
+        {
+            0: {"runtime.max_batch_size": num_concurrent_requests},
+            1: {"runtime.max_batch_size": num_concurrent_requests},
+        },
+    )
+    with OmniServer(model, ["--stage-configs-path", stage_config_path, "--stage-init-timeout", "90"]) as server:
+        video_data_url = []
+        for _ in range(4):
+            video_data_url.append(f"data:video/mp4;base64,{generate_synthetic_video(16, 16, 300)}")
+
+        messages = dummy_messages_from_mix_data(
             system_prompt=get_system_prompt(),
             video_data_url=video_data_url,
+            content_text="What is recited in the audio? What is in this image? Describe the video briefly.",
+        )
+
+        # Test single completion
+        api_client = client(server)
+        e2e_list = list()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_concurrent_requests) as executor:
+            # Submit multiple completion requests concurrently
+            futures = [
+                executor.submit(
+                    api_client.chat.completions.create,
+                    model=server.model,
+                    messages=messages,
+                    max_tokens=10,
+                    stop=None,
+                    extra_body={"mm_processor_kwargs": {"use_audio_in_video": True}},
+                )
+                for _ in range(num_concurrent_requests)
+            ]
+            start_time = time.perf_counter()
+            # Wait for all requests to complete and collect results
+            chat_completions = list()
+            for future in concurrent.futures.as_completed(futures):
+                chat_completions.append(future.result())
+                # Verify E2E
+                current_e2e = time.perf_counter() - start_time
+                print(f"the request e2e is: {current_e2e}")
+                # TODO: Verify the E2E latency after confirmation baseline.
+                e2e_list.append(current_e2e)
+
+        print(f"the avg e2e is: {sum(e2e_list) / len(e2e_list)}")
+        # Verify all completions succeeded
+        assert len(chat_completions) == num_concurrent_requests, "Not all requests succeeded."
+        for chat_completion in chat_completions:
+            # Verify audio output success
+            audio_message = chat_completion.choices[1].message
+            audio_data = audio_message.audio.data
+            assert audio_data is not None, "No audio output is generated"
+            assert audio_message.audio.expires_at > time.time(), "The generated audio has expired."
+
+            # Verify text output success
+            text_choice = chat_completion.choices[0]
+            text_content = text_choice.message.content
+            assert text_choice.message.content is not None, "No text output is generated"
+            assert chat_completion.usage.completion_tokens == 10, (
+                "The output length differs from the requested max_tokens."
+            )
+
+            # Verify text output same as audio output
+            audio_content = convert_audio_to_text(audio_data)
+            print(f"text content is: {text_content}")
+            print(f"audio content is: {audio_content}")
+            assert cosine_similarity_text(audio_content, text_content) > 0.9, (
+                "The audio content is not same as the text"
+            )
+
+@pytest.mark.full
+@pytest.mark.H100_2
+@pytest.mark.parametrize("test_config", test_params)
+def test_use_audio_in_video_003(test_config: tuple[str, str]) -> None:
+    """Test processing text, generating audio output via OpenAI API."""
+
+    model, stage_config_path = test_config
+    num_concurrent_requests = 5
+    stage_config_path = modify_stage_config(
+        stage_config_path,
+        {
+            0: {"runtime.max_batch_size": num_concurrent_requests},
+            1: {"runtime.max_batch_size": num_concurrent_requests},
+        },
+    )
+    with OmniServer(model, ["--stage-configs-path", stage_config_path, "--stage-init-timeout", "90"]) as server:
+        video_data_url = list()
+        image_data_url = list()
+        audio_data_url = list()
+
+        for _ in range(4):
+            video_data_url.append(f"data:video/mp4;base64,{generate_synthetic_video(16, 16, 300)}")
+            image_data_url.append(f"data:image/jpeg;base64,{generate_synthetic_image(16, 16)}")
+            audio_data_url.append(f"data:audio/wav;base64,{generate_synthetic_audio(10, 2)}")
+
+        messages = dummy_messages_from_mix_data(
+            system_prompt=get_system_prompt(),
+            video_data_url=video_data_url,
+            image_data_url=image_data_url,
+            audio_data_url=audio_data_url,
             content_text="What is recited in the audio? What is in this image? Describe the video briefly.",
         )
 
