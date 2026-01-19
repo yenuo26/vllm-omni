@@ -1,12 +1,9 @@
 import base64
 import io
 import logging
-import os
-import tempfile
 from collections.abc import Mapping
 from typing import Any
 
-import cv2
 import numpy as np
 import soundfile as sf
 import torch
@@ -103,29 +100,41 @@ class OmniRandomMultiModalDataset(RandomMultiModalDataset):
 
     def generate_synthetic_video(self, width: int, height: int, num_frames: int) -> Any:
         """Generate synthetic video with random values."""
+        import imageio
+
         video_data = self._rng.integers(
             0,
             256,
             (num_frames, height, width, 3),
             dtype=np.uint8,
         )
-        video_tensor = torch.from_numpy(video_data)
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            temp_path = tmp.name
-        frames, height, width, channels = video_tensor.shape
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(temp_path, fourcc, 30, (width, height))
+        buffer = io.BytesIO()
+        writer_kwargs = {
+            "format": "mp4",
+            "fps": 30,
+            "codec": "libx264",
+            "quality": 7,
+            "pixelformat": "yuv420p",
+            "macro_block_size": 16,
+            "ffmpeg_params": [
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-movflags",
+                "+faststart",
+                "-pix_fmt",
+                "yuv420p",
+                "-vf",
+                f"scale={width}:{height}",
+            ],
+        }
 
-        for i in range(frames):
-            frame = video_tensor[i].numpy()
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            out.write(frame)
-        out.release()
-
-        with open(temp_path, "rb") as f:
-            video_bytes = f.read()
-
-        os.unlink(temp_path)
+        with imageio.get_writer(buffer, **writer_kwargs) as writer:
+            for frame_idx in range(num_frames):
+                writer.append_data(video_data[frame_idx])
+        buffer.seek(0)
+        video_bytes = buffer.read()
 
         return {
             "bytes": video_bytes,
