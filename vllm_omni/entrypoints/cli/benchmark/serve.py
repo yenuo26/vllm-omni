@@ -15,6 +15,13 @@ class OmniBenchmarkServingSubcommand(OmniBenchmarkSubcommandBase):
     @classmethod
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         add_cli_args(parser)
+        for action in parser._actions:
+            if action.dest == "percentile-metrics":
+                action.help = (
+                    "Comma-separated list of selected metrics to report percentils."
+                    "This argument specifies the metrics to report percentiles."
+                    'Allowed metric names are "ttft", "tpot", "itl", "e2el", "audio_ttft". '
+                )
 
     @staticmethod
     def cmd(args: argparse.Namespace) -> None:
