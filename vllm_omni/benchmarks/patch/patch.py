@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import contextlib
+import io
 import json
 import os
 import random
@@ -12,6 +14,7 @@ from datetime import datetime
 from typing import Literal
 
 import aiohttp
+from pydub import AudioSegment
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 from vllm.benchmarks import datasets
@@ -25,10 +28,8 @@ from vllm.benchmarks.lib.endpoint_request_func import (
     _update_payload_common,
     _validate_api_url,
 )
-from vllm.benchmarks.serve import TaskType, calculate_metrics_for_embeddings, get_request, wait_for_endpoint
 
 from vllm_omni.benchmarks.data_modules.random_multi_modal_dataset import OmniRandomMultiModalDataset
-from vllm_omni.benchmarks.metrics import MultiModalBenchmarkMetrics, calculate_metrics
 
 get_samples_old = datasets.get_samples
 
@@ -63,15 +64,13 @@ datasets.get_samples = get_samples
 # Prevent import order from causing patch failures
 from vllm.benchmarks.lib import endpoint_request_func
 
-RequestFuncOutput_old = endpoint_request_func.RequestFuncOutput
-
 
 @dataclass
-class RequestFuncOutput(RequestFuncOutput_old):
-    audio_ttft: float = 0.0
-
-
-endpoint_request_func.RequestFuncOutput = RequestFuncOutput
+class MixRequestFuncOutput(endpoint_request_func.RequestFuncOutput):
+    audio_ttfp: float = 0.0
+    audio_duration: float = 0.0
+    audio_frames: int = 0
+    audio_rtf: float = 0.0
 
 
 async def async_request_openai_chat_completions(
@@ -79,7 +78,7 @@ async def async_request_openai_chat_completions(
     session: aiohttp.ClientSession,
     pbar: tqdm | None = None,
     mm_position: Literal["first", "last"] = "last",
-) -> RequestFuncOutput:
+) -> MixRequestFuncOutput:
     api_url = request_func_input.api_url
     _validate_api_url(api_url, "OpenAI Chat Completions API", "chat/completions")
 
@@ -105,7 +104,7 @@ async def async_request_openai_chat_completions(
     }
     _update_headers_common(headers, request_func_input)
 
-    output = RequestFuncOutput()
+    output = MixRequestFuncOutput()
     output.prompt_len = request_func_input.prompt_len
 
     generated_text = ""
@@ -148,8 +147,13 @@ async def async_request_openai_chat_completions(
                                     modality = data.get("modality")
                                     if modality == "text":
                                         output.itl.append(timestamp - most_recent_timestamp)
-                                    elif modality == "audio":
-                                        output.audio_ttft = timestamp - most_recent_timestamp
+                                    if modality == "audio":
+                                        output.audio_ttfp = timestamp - most_recent_timestamp
+                                        audio_bytes = base64.b64decode(choices[0].message.audio.data)
+                                        audio_io = io.BytesIO(audio_bytes)
+                                        audio = AudioSegment.from_file(audio_io)
+                                        output.audio_duration = len(audio) / 1000.0
+                                        output.audio_frames = len(audio.raw_data) // audio.frame_width
 
                                 generated_text += content or ""
                             elif usage := data.get("usage"):
@@ -177,7 +181,15 @@ ASYNC_REQUEST_FUNCS["openai-chat"] = async_request_openai_chat_completions
 
 # ruff: noqa: E402
 # Prevent import order from causing patch failures
+from serve import TaskType, calculate_metrics_for_embeddings, get_request, wait_for_endpoint
+
+# ruff: noqa: E402
+# Prevent import order from causing patch failures
 from vllm.benchmarks import serve
+
+# ruff: noqa: E402
+# Prevent import order from causing patch failures
+from vllm_omni.benchmarks.metrics.metrics import MultiModalsBenchmarkMetrics, calculate_metrics
 
 benchmark_old = serve.benchmark
 
@@ -401,7 +413,7 @@ async def benchmark(
         tasks.append(
             asyncio.create_task(limited_request_func(request_func_input=request_func_input, session=session, pbar=pbar))
         )
-    outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+    outputs: list[MixRequestFuncOutput] = await asyncio.gather(*tasks)
 
     if pbar is not None:
         pbar.close()
@@ -430,7 +442,7 @@ async def benchmark(
         )
         actual_output_lens = 0
 
-    if isinstance(metrics, MultiModalBenchmarkMetrics):
+    if isinstance(metrics, MultiModalsBenchmarkMetrics):
         result = {
             "duration": benchmark_duration,
             "completed": metrics.completed,

@@ -10,10 +10,17 @@ from vllm.benchmarks.serve import MILLISECONDS_TO_SECONDS_CONVERSION, TERM_PLOTL
 
 @dataclass
 class MultiModalsBenchmarkMetrics(BenchmarkMetrics):
-    mean_audio_ttft_ms: float = 0.0
-    median_audio_ttft_ms: float = 0.0
-    std_audio_ttft_ms: float = 0.0
-    percentiles_audio_ttft_ms: list[tuple[float, float]] = None
+    mean_audio_ttfp_ms: float = 0.0
+    median_audio_ttfp_ms: float = 0.0
+    std_audio_ttfp_ms: float = 0.0
+    percentiles_audio_ttfp_ms: list[tuple[float, float]] = None
+    total_audio_duration_ms: float = 0.0
+    total_audio_frames: int = 0
+    audio_throughput: float = 0.0
+    mean_audio_rtf_ms: float = 0.0
+    median_audio_rtf_ms: float = 0.0
+    std_audio_rtf_ms: float = 0.0
+    percentiles_audio_rtf_ms: list[tuple[float, float]] = None
 
 
 def print_metrics(
@@ -39,7 +46,8 @@ def print_metrics(
     if isinstance(metrics, MultiModalsBenchmarkMetrics):
         print("{:<40} {:<10.2f}".format("Peak concurrent requests:", metrics.max_concurrent_requests))
     print_text_metrics(task_type, selected_percentile_metrics, metrics)
-    print_audio_metrics(metrics)
+    if task_type == TaskType.GENERATION:
+        print_audio_metrics(selected_percentile_metrics, metrics)
     print("=" * 50)
 
 
@@ -56,19 +64,20 @@ def print_text_metrics(task_type, selected_percentile_metrics, metrics: MultiMod
 
     if task_type == TaskType.GENERATION:
         for metric in selected_percentile_metrics:
-            process_one_metric(metric, metrics)
+            if not metric.startswith("audio"):
+                process_one_metric(metric, metrics)
     else:
         process_one_metric("e2el", metrics)
 
 
-def print_audio_metrics(metrics: MultiModalsBenchmarkMetrics):
+def print_audio_metrics(selected_percentile_metrics, metrics: MultiModalsBenchmarkMetrics):
     print("{s:{c}^{n}}".format(s=" Audio Result ", n=50, c="="))
-    print("{s:{c}^{n}}".format(s="Time to audio First Token", n=50, c="-"))
-    print("{:<40} {:<10.2f}".format("Mean Audio TTFT  (ms):", metrics.mean_audio_ttft_ms))
-    print("{:<40} {:<10.2f}".format("Median Audio TTFT (ms):", metrics.median_audio_ttft_ms))
-    for p, value in metrics.percentiles_audio_ttft_ms:
-        p_word = str(int(p)) if int(p) == p else str(p)
-        print("{:<40} {:<10.2f}".format(f"P{p_word} Audio TTFT (ms):", value))
+    print("{:<40} {:<10}".format("Total audio duration generated(ms):", metrics.total_audio_duration_ms))
+    print("{:<40} {:<10}".format("Total audio frames generated:", metrics.total_audio_frames))
+    print("{:<40} {:<10}".format("Audio throughput(audio duration/s):", metrics.audio_throughput))
+    for metric in selected_percentile_metrics:
+        if metric.startswith("audio"):
+            process_one_metric(metric, metrics)
 
 
 def process_one_metric(
@@ -83,7 +92,8 @@ def process_one_metric(
         "tpot": "Time per Output Token (excl. 1st token)",
         "itl": "Inter-token Latency",
         "e2el": "End-to-end Latency",
-        "audio_ttft": "Time to First Audio Token",
+        "audio_ttfp": "Time to First Packet",
+        "audio_rtf": "Real Time Factor",
     }
     print("{s:{c}^{n}}".format(s=metric_header_map[metric_attribute_name], n=50, c="-"))
     print(
@@ -138,7 +148,10 @@ def calculate_metrics(
     all_tpots: list[float] = []
     ttfts: list[float] = []
     e2els: list[float] = []
-    audio_ttfts = []
+    audio_ttfps: list[float] = []
+    audio_rtfs: list[float] = []
+    audio_duration: list[float] = []
+    audio_frames: list[int] = []
     for i in range(len(outputs)):
         if outputs[i].success:
             output_len = outputs[i].output_tokens
@@ -161,7 +174,10 @@ def calculate_metrics(
             all_tpots.append(tpot)
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
-            audio_ttfts.append(outputs[i].audio_ttft)
+            audio_ttfps.append(outputs[i].audio_ttfp)
+            audio_rtfs.append(outputs[i].audio_rtf)
+            audio_duration.append(outputs[i].audio_duration)
+            audio_frames.append(outputs[i].audio_frames)
             e2els.append(outputs[i].latency)
             completed += 1
         else:
@@ -174,7 +190,7 @@ def calculate_metrics(
         if "ttft" in goodput_config_dict:
             valid_metrics.append(ttfts)
             slo_values.append(goodput_config_dict["ttft"] / MILLISECONDS_TO_SECONDS_CONVERSION)
-            valid_metrics.append(audio_ttfts)
+            valid_metrics.append(audio_ttfps)
             slo_values.append(goodput_config_dict["audio_ttft"] / MILLISECONDS_TO_SECONDS_CONVERSION)
         if "tpot" in goodput_config_dict:
             valid_metrics.append(all_tpots)
@@ -256,7 +272,7 @@ def calculate_metrics(
         else:
             print("tip: install termplotlib and gnuplot to plot the metrics")
 
-    metrics = BenchmarkMetrics(
+    metrics = MultiModalsBenchmarkMetrics(
         completed=completed,
         failed=len(failed_outputs),
         total_input=total_input,
@@ -267,12 +283,19 @@ def calculate_metrics(
         total_token_throughput=(total_input + sum(actual_output_lens)) / dur_s,
         mean_ttft_ms=np.mean(ttfts or 0) * 1000,  # ttfts is empty if streaming is not supported by the endpoint
         std_ttft_ms=np.std(ttfts or 0) * 1000,
-        median_ttft_ms=np.median(audio_ttfts or 0) * 1000,
-        percentiles_ttft_ms=[(p, np.percentile(audio_ttfts or 0, p) * 1000) for p in selected_percentiles],
-        mean_audio_ttft_ms=np.mean(audio_ttfts or 0) * 1000,
-        std_audio_ttft_ms=np.std(audio_ttfts or 0) * 1000,
-        median_audio_ttft_ms=np.median(ttfts or 0) * 1000,
-        percentiles_audio_ttft_ms=[(p, np.percentile(ttfts or 0, p) * 1000) for p in selected_percentiles],
+        median_ttft_ms=np.median(ttfts or 0) * 1000,
+        percentiles_ttft_ms=[(p, np.percentile(ttfts or 0, p) * 1000) for p in selected_percentiles],
+        mean_audio_ttfp_ms=np.mean(audio_ttfps or 0) * 1000,
+        std_audio_ttfp_ms=np.std(audio_ttfps or 0) * 1000,
+        median_audio_ttfp_ms=np.median(audio_ttfps or 0) * 1000,
+        percentiles_audio_ttfp_ms=[(p, np.percentile(audio_ttfps or 0, p) * 1000) for p in selected_percentiles],
+        total_audio_duration_ms=sum(audio_duration),
+        total_audio_frames=sum(audio_frames),
+        audio_throughput=sum(audio_duration) / dur_s,
+        mean_audio_rtf_ms=np.mean(audio_rtfs or 0) * 1000,
+        std_audio_rtf_ms=np.std(audio_rtfs or 0) * 1000,
+        median_audio_rtf_ms=np.median(audio_rtfs or 0) * 1000,
+        percentiles_audio_rtf_ms=[(p, np.percentile(audio_rtfs or 0, p) * 1000) for p in selected_percentiles],
         mean_tpot_ms=np.mean(tpots or 0) * 1000,
         std_tpot_ms=np.std(tpots or 0) * 1000,
         median_tpot_ms=np.median(tpots or 0) * 1000,
@@ -289,6 +312,12 @@ def calculate_metrics(
         max_concurrent_requests=max_concurrent_requests,
     )
     print_metrics(
-        task_type, selected_percentile_metrics, max_concurrency, request_rate, benchmark_duration, goodput_config_dict
+        task_type,
+        selected_percentile_metrics,
+        max_concurrency,
+        request_rate,
+        benchmark_duration,
+        goodput_config_dict,
+        metrics,
     )
     return metrics, actual_output_lens
