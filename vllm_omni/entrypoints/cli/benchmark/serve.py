@@ -16,13 +16,13 @@ class OmniBenchmarkServingSubcommand(OmniBenchmarkSubcommandBase):
     def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
         add_cli_args(parser)
         for action in parser._actions:
-            if action.dest == "percentile-metrics":
+            if action.dest == "percentile_metrics":
                 action.help = (
                     "Comma-separated list of selected metrics to report percentils."
                     "This argument specifies the metrics to report percentiles."
                     'Allowed metric names are "ttft", "tpot", "itl", "e2el", "audio_ttfp", "audio_rtf". '
                 )
-            if action.dest == "random-mm-limit-mm-per-prompt":
+            if action.dest == "random_mm_limit_mm_per_prompt":
                 action.help = (
                     "Per-modality hard caps for items attached per request, e.g. "
                     '\'{"image": 3, "video": 0, "audio": 1}\'. The sampled per-request item '
@@ -30,7 +30,7 @@ class OmniBenchmarkServingSubcommand(OmniBenchmarkSubcommandBase):
                     "reaches its cap, its buckets are excluded and probabilities are "
                     "renormalized."
                 )
-            if action.dest == "random-mm-bucket-config":
+            if action.dest == "random_mm_bucket_config":
                 action.help = (
                     "The bucket config is a dictionary mapping a multimodal item"
                     "sampling configuration to a probability."
