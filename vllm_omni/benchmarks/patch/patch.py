@@ -22,6 +22,7 @@ from vllm.benchmarks.datasets import SampleRequest
 from vllm.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
+    RequestFuncOutput,
     StreamedResponseHandler,
     _get_chat_content,
     _update_headers_common,
@@ -36,8 +37,8 @@ get_samples_old = datasets.get_samples
 
 def get_samples(args, tokenizer):
     if args.dataset_name == "random-mm":
-        if args.backend not in ["openai-chat"]:
-            raise ValueError("Multi-modal content (images) is only supported on 'openai-chat' backend.")
+        if args.backend not in ["openai-chat-omni"]:
+            raise ValueError("Multi-modal content (images) is only supported on 'openai-chat-omni' backend.")
         dataset = OmniRandomMultiModalDataset(random_seed=args.seed, dataset_path=args.dataset_path)
         input_requests = dataset.sample(
             tokenizer=tokenizer,
@@ -60,20 +61,16 @@ def get_samples(args, tokenizer):
 
 datasets.get_samples = get_samples
 
-# ruff: noqa: E402
-# Prevent import order from causing patch failures
-from vllm.benchmarks.lib import endpoint_request_func
-
 
 @dataclass
-class MixRequestFuncOutput(endpoint_request_func.RequestFuncOutput):
+class MixRequestFuncOutput(RequestFuncOutput):
     audio_ttfp: float = 0.0
     audio_duration: float = 0.0
     audio_frames: int = 0
     audio_rtf: float = 0.0
 
 
-async def async_request_openai_chat_completions(
+async def async_request_openai_chat_omni_completions(
     request_func_input: RequestFuncInput,
     session: aiohttp.ClientSession,
     pbar: tqdm | None = None,
@@ -177,7 +174,7 @@ async def async_request_openai_chat_completions(
     return output
 
 
-ASYNC_REQUEST_FUNCS["openai-chat"] = async_request_openai_chat_completions
+ASYNC_REQUEST_FUNCS["openai-chat-omni"] = async_request_openai_chat_omni_completions
 
 # ruff: noqa: E402
 # Prevent import order from causing patch failures
