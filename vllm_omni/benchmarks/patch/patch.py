@@ -21,6 +21,7 @@ from vllm.benchmarks import datasets
 from vllm.benchmarks.datasets import SampleRequest
 from vllm.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS,
+    OPENAI_COMPATIBLE_BACKENDS,
     RequestFuncInput,
     RequestFuncOutput,
     StreamedResponseHandler,
@@ -36,9 +37,9 @@ get_samples_old = datasets.get_samples
 
 
 def get_samples(args, tokenizer):
+    if args.backend not in ["openai-chat-omni"]:
+        raise ValueError("benchmark is only supported on 'openai-chat-omni' backend.")
     if args.dataset_name == "random-mm":
-        if args.backend not in ["openai-chat-omni"]:
-            raise ValueError("Multi-modal content is only supported on 'openai-chat-omni' backend.")
         dataset = OmniRandomMultiModalDataset(random_seed=args.seed, dataset_path=args.dataset_path)
         input_requests = dataset.sample(
             tokenizer=tokenizer,
@@ -175,6 +176,8 @@ async def async_request_openai_chat_omni_completions(
 
 
 ASYNC_REQUEST_FUNCS["openai-chat-omni"] = async_request_openai_chat_omni_completions
+if "openai-chat-omni" not in OPENAI_COMPATIBLE_BACKENDS:
+    OPENAI_COMPATIBLE_BACKENDS.append("openai-chat-omni")
 
 # ruff: noqa: E402
 # Prevent import order from causing patch failures
