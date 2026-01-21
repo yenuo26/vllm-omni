@@ -20,7 +20,7 @@ class OmniBenchmarkServingSubcommand(OmniBenchmarkSubcommandBase):
                 action.help = (
                     "Comma-separated list of selected metrics to report percentils."
                     "This argument specifies the metrics to report percentiles."
-                    'Allowed metric names are "ttft", "tpot", "itl", "e2el", "audio_ttft". '
+                    'Allowed metric names are "ttft", "tpot", "itl", "e2el", "audio_ttfp", "audio_rtf". '
                 )
 
     @staticmethod

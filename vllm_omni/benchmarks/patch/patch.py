@@ -149,7 +149,7 @@ async def async_request_openai_chat_completions(
                                         output.itl.append(timestamp - most_recent_timestamp)
                                     if modality == "audio":
                                         output.audio_ttfp = timestamp - most_recent_timestamp
-                                        audio_bytes = base64.b64decode(choices[0].message.audio.data)
+                                        audio_bytes = base64.b64decode(content)
                                         audio_io = io.BytesIO(audio_bytes)
                                         audio = AudioSegment.from_file(audio_io)
                                         output.audio_duration = len(audio) / 1000.0
@@ -181,11 +181,10 @@ ASYNC_REQUEST_FUNCS["openai-chat"] = async_request_openai_chat_completions
 
 # ruff: noqa: E402
 # Prevent import order from causing patch failures
-from serve import TaskType, calculate_metrics_for_embeddings, get_request, wait_for_endpoint
-
 # ruff: noqa: E402
 # Prevent import order from causing patch failures
 from vllm.benchmarks import serve
+from vllm.benchmarks.serve import TaskType, calculate_metrics_for_embeddings, get_request, wait_for_endpoint
 
 # ruff: noqa: E402
 # Prevent import order from causing patch failures
