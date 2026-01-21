@@ -103,46 +103,6 @@ def dummy_messages_from_mix_data(
     return messages
 
 
-def messages_from_mix_data(
-    system_prompt: dict[str, Any] = None,
-    video_data_url: Any = None,
-    audio_data_url: Any = None,
-    image_data_url: Any = None,
-    content_text: str = None,
-):
-    """Create messages with video、image、audio data URL for OpenAI API."""
-
-    if content_text is not None:
-        content = [{"type": "text", "text": content_text}]
-    else:
-        content = []
-
-    media_items = []
-    if isinstance(video_data_url, list):
-        for video_url in video_data_url:
-            media_items.append((video_url, "video"))
-    else:
-        media_items.append((video_data_url, "video"))
-
-    if isinstance(image_data_url, list):
-        for url in image_data_url:
-            media_items.append((url, "image"))
-    else:
-        media_items.append((image_data_url, "image"))
-
-    if isinstance(audio_data_url, list):
-        for url in audio_data_url:
-            media_items.append((url, "audio"))
-    else:
-        media_items.append((audio_data_url, "audio"))
-
-    content.extend({"type": media_type, media_type: url} for url, media_type in media_items if url is not None)
-    messages = [{"role": "user", "content": content}]
-    if system_prompt is not None:
-        messages = [system_prompt] + messages
-    return messages
-
-
 def generate_synthetic_audio(
     duration: int,  # seconds
     num_channels: int,  # 1：Mono，2：Stereo 5：5.1 surround sound
@@ -186,8 +146,7 @@ def generate_synthetic_video(width: int, height: int, num_frames: int) -> Any:
         frame = video_tensor[i].numpy()
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         out.write(frame)
-        out.release()
-
+    out.release()
     with open(temp_path, "rb") as f:
         content = f.read()
     os.unlink(temp_path)

@@ -11,8 +11,6 @@ from pathlib import Path
 
 import openai
 import pytest
-from qwen_omni_utils import process_mm_info
-from transformers import Qwen3OmniMoeForConditionalGeneration, Qwen3OmniMoeProcessor
 
 from tests.conftest import (
     OmniServer,
@@ -22,7 +20,6 @@ from tests.conftest import (
     generate_synthetic_audio,
     generate_synthetic_image,
     generate_synthetic_video,
-    messages_from_mix_data,
     modify_stage_config,
     run_benchmark,
 )
