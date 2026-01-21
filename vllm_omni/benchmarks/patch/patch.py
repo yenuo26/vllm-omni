@@ -37,8 +37,10 @@ get_samples_old = datasets.get_samples
 
 def get_samples(args, tokenizer):
     if args.dataset_name == "random-mm":
-        if args.backend not in ["openai-chat-omni"]:
-            raise ValueError("Multi-modal content (images) is only supported on 'openai-chat-omni' backend.")
+        if args.backend not in ["openai-chat-omni", "openai-chat"]:
+            raise ValueError(
+                "Multi-modal content (images) is only supported on 'openai-chat-omni' or 'openai-chat' backend."
+            )
         dataset = OmniRandomMultiModalDataset(random_seed=args.seed, dataset_path=args.dataset_path)
         input_requests = dataset.sample(
             tokenizer=tokenizer,
