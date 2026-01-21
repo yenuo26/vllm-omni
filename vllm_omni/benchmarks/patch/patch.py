@@ -6,12 +6,12 @@ import random
 import sys
 import time
 import traceback
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
 import aiohttp
-import Iterable
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 from vllm.benchmarks import datasets

@@ -16,7 +16,7 @@ class OmniBenchmarkSubcommand(CLISubcommand):
     """The `bench` subcommand for the vLLM CLI."""
 
     name = "bench"
-    help = "vLLM bench subcommand."
+    help = "vLLM-omni bench subcommand."
 
     @staticmethod
     def cmd(args: argparse.Namespace) -> None:
