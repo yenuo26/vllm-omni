@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 import torch
@@ -100,6 +100,27 @@ elif DEFAULT_INPUT_WAIT_TIMEOUT_S == 0:
 
 class OmniSchedulerMixin:
     """Shared scheduler helpers for omni-specific request handling."""
+
+    # Provided by vLLM ``Scheduler`` when this mixin is composed in
+    # (``OmniARScheduler`` / ``OmniGenerationScheduler``). Declared here so
+    # mypy can type-check the mixin in isolation.
+    vllm_config: Any
+    chunk_transfer_adapter: OmniChunkTransferAdapter | None
+    input_coordinator: OmniSchedulingCoordinator | None
+    skipped_waiting: Any
+    waiting: Any
+    running: list[Request]
+    requests: dict[str, Request]
+    log_stats: bool
+    connector: Any
+    kv_cache_manager: Any
+    kv_event_publisher: Any
+    encoder_cache_manager: Any
+    finished_req_ids_dict: dict[Any, set[str]]
+    recompute_kv_load_failures: bool
+    num_waiting_for_streaming_input: int
+    _enqueue_waiting_request: Callable[[Request], None]
+    _free_request_blocks: Callable[[Request], Any]
 
     # ------------------------------------------------------------------ #
     #  Shared scheduler/output helpers (lift the AR / generation duplicates)
@@ -611,16 +632,23 @@ class OmniSchedulerMixin:
             self.waiting.remove_requests(removable)
             self.skipped_waiting.remove_requests(removable)
 
+    def _duplex_session_mode(self) -> bool:
+        return getattr(self.vllm_config.model_config, "session_mode", "turn") == "duplex"
+
     def _resume_downstream_chunk_receiver(self, request: Request) -> None:
         """Resume duplex connector polling without an external update."""
         adapter = self.chunk_transfer_adapter
-        adapter.segment_finished_requests.discard(request.request_id)
         if (
-            not adapter.receives_chunks
-            or getattr(self.vllm_config.model_config, "session_mode", "turn") != "duplex"
+            adapter is None
+            or not adapter.receives_chunks
+            or not self._duplex_session_mode()
             or request.status != RequestStatus.WAITING_FOR_STREAMING_REQ
         ):
+            # Parked turn / sender-only stages keep segment_finished_requests
+            # so is_done_receiving_chunks() stays true until the next explicit
+            # StreamingUpdate (which discards the marker itself).
             return
+        adapter.segment_finished_requests.discard(request.request_id)
         self.num_waiting_for_streaming_input -= 1
         request.status = RequestStatus.WAITING
         self.skipped_waiting.remove_requests((request,))
@@ -702,7 +730,7 @@ class OmniSchedulerMixin:
             request_ids,
             pre_adapter_streaming_wait_ids=pre_adapter_streaming_wait_ids,
         )
-        finished = super().finish_requests(request_ids, finished_status)
+        finished = super().finish_requests(request_ids, finished_status)  # type: ignore[misc]
         self._purge_finished_from_running(target_request_ids)
         self._resync_streaming_input_counter()
 
@@ -715,7 +743,7 @@ class OmniSchedulerMixin:
         if now - getattr(self, "_last_stats_time", 0.0) < _STATS_INTERVAL_S:
             return None
         self._last_stats_time = now
-        return super().make_stats(*args, **kwargs)
+        return super().make_stats(*args, **kwargs)  # type: ignore[misc]
 
     def _realign_request_status_to_queues(
         self,
@@ -857,7 +885,7 @@ class OmniSchedulerMixin:
         """
         if not self.running:
             return
-        target_request_ids = target_request_ids or set()
+        finished_ids: set[str] = set() if not target_request_ids else target_request_ids
 
         def keep_running(req: Request) -> bool:
             if req.request_id not in self.requests:
@@ -867,7 +895,7 @@ class OmniSchedulerMixin:
             resumable_segment_stop = bool(
                 getattr(req, "resumable", False) and req.status == RequestStatus.FINISHED_STOPPED
             )
-            return resumable_segment_stop and req.request_id not in target_request_ids
+            return resumable_segment_stop and req.request_id not in finished_ids
 
         self.running[:] = [req for req in self.running if keep_running(req)]
 

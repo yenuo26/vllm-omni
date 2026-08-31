@@ -615,7 +615,12 @@ def test_chunk_segment_cleanup_keeps_explicit_update_stage_parked(
     receives_chunks: bool,
     session_mode: str,
 ) -> None:
-    """Only duplex connector-driven receivers resume without an update."""
+    """Only duplex connector-driven receivers resume without an update.
+
+    Parked stages must keep segment_finished_requests until the explicit
+    StreamingUpdate; clearing it early makes is_done_receiving_chunks()
+    false while the request is still waiting (#6670).
+    """
     session = _make_request()
     session.status = RequestStatus.WAITING_FOR_STREAMING_REQ
 
@@ -633,6 +638,6 @@ def test_chunk_segment_cleanup_keeps_explicit_update_stage_parked(
 
     assert session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
     assert sched.num_waiting_for_streaming_input == 1
-    assert session.request_id not in sched.chunk_transfer_adapter.segment_finished_requests
+    assert session.request_id in sched.chunk_transfer_adapter.segment_finished_requests
     sched.skipped_waiting.remove_requests.assert_not_called()
     sched._enqueue_waiting_request.assert_not_called()

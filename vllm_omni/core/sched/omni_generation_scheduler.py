@@ -64,10 +64,14 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
             and not request.streaming_queue
             and self.chunk_transfer_adapter is not None
             and self.chunk_transfer_adapter.receives_chunks
+            and self._duplex_session_mode()
         ):
             # Downstream async-chunk stages receive the next segment from the
             # connector, not from an API StreamingUpdate. Enqueue them as
             # schedulable before the base class can park them in skipped_waiting.
+            # Turn-mode receivers (Qwen3-Omni Realtime) must stay parked until
+            # the next explicit update; auto-rearm desyncs the request and the
+            # serving loop never emits response.audio.done (#6670).
             request.status = RequestStatus.WAITING
             self._enqueue_waiting_request(request)
             return False
@@ -527,8 +531,11 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                 finished = self._handle_stopped_request(request)
                 is_segment_finished = not finished
                 if not finished:
-                    # for streaming input request only
-                    if self.chunk_transfer_adapter:
+                    # Duplex connector-fed receivers already re-armed as WAITING
+                    # above; clear the per-segment marker so the next unit can
+                    # poll. Turn-mode must keep the marker so
+                    # is_done_receiving_chunks() stays true (#6670).
+                    if self.chunk_transfer_adapter is not None and self._duplex_session_mode():
                         self.chunk_transfer_adapter.segment_finished_requests.discard(req_id)
                 if finished:
                     kv_transfer_params, ec_transfer_params = self._free_request(request)

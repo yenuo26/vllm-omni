@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
 """Unit tests for generation streaming session replacement.
 
 These tests pin the behavior of `_update_request_as_session` against
@@ -56,7 +59,8 @@ class _SchedulerStub(OmniGenerationScheduler):
 
 
 class _AsyncChunkStopSchedulerStub(OmniGenerationScheduler):
-    def __init__(self) -> None:
+    def __init__(self, *, session_mode: str = "duplex") -> None:
+        self.vllm_config = SimpleNamespace(model_config=SimpleNamespace(session_mode=session_mode))
         self.num_waiting_for_streaming_input = 0
         self.chunk_transfer_adapter = SimpleNamespace(receives_chunks=True)
         self.enqueued: list[Request] = []
@@ -117,6 +121,7 @@ def test_resumable_generation_stop_marks_segment_boundary() -> None:
     sched = MagicMock()
     sched.requests = {session.request_id: session}
     sched.perf_metrics = None
+    sched._duplex_session_mode.return_value = True
     sched.chunk_transfer_adapter = SimpleNamespace(
         is_done_receiving_chunks=lambda _request_id: True,
         segment_finished_requests={session.request_id},
@@ -184,6 +189,24 @@ def test_async_chunk_resumable_stop_rearms_connector_polling() -> None:
     assert sched.enqueued_statuses == [RequestStatus.WAITING]
     assert session.status == RequestStatus.WAITING
     assert sched.num_waiting_for_streaming_input == 0
+
+
+def test_turn_mode_resumable_stop_does_not_rearm_connector_polling(mocker) -> None:
+    """Turn-mode generation must not auto-rearm after a segment stop (#6670)."""
+    from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
+
+    sched = _AsyncChunkStopSchedulerStub(session_mode="turn")
+    session = _make_request(request_id="req-turn-mode-segment")
+    session.status = RequestStatus.FINISHED_STOPPED
+    session.resumable = True
+    super_handle = mocker.patch.object(VLLMScheduler, "_handle_stopped_request", return_value=True)
+
+    finished = sched._handle_stopped_request(session)
+
+    assert finished is True
+    assert sched.enqueued == []
+    super_handle.assert_called_once_with(session)
+    assert session.status == RequestStatus.FINISHED_STOPPED
 
 
 class TestReplaceSessionWithStreamingUpdate:
