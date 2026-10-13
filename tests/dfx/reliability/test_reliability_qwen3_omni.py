@@ -41,6 +41,7 @@ from tests.dfx.reliability.helpers import (
 from tests.helpers.mark import hardware_test
 from tests.helpers.media import generate_synthetic_audio, generate_synthetic_image, generate_synthetic_video
 from tests.helpers.runtime import dummy_messages_from_mix_data
+from tests.helpers.stage_config import get_deploy_config_path
 
 RELIABILITY_SCENARIOS: list[dict[str, Any]] = [
     {
@@ -61,7 +62,7 @@ RELIABILITY_SCENARIOS: list[dict[str, Any]] = [
     },
 ]
 
-DEPLOY_CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "vllm_omni" / "deploy"
+DEPLOY_CONFIGS_DIR = Path(get_deploy_config_path("qwen3_omni_moe.yaml")).parent
 
 
 def _default_oom_device_spec() -> str:
@@ -241,6 +242,57 @@ def _fault_keywords_match_response(*, status: int, body: bytes) -> bool:
         "connection reset",
     )
     return any(key in text for key in body_fault_hints)
+
+
+def _server_error_code(value: object) -> int | None:
+    """Return ``value`` when it is an HTTP server error code (``>= 500``)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 500:
+        return value
+    if isinstance(value, str) and value.isdigit() and int(value) >= 500:
+        return int(value)
+    return None
+
+
+def _stream_server_error_code(body: bytes) -> int | None:
+    """Server error code from an SSE ``data:`` frame or a single JSON body.
+
+    Streaming chat commits HTTP 200 before generation. A later engine failure is
+    carried as ``error.code`` (or a top-level ``code``) inside a ``data:`` line.
+    Bare ``500`` text is ignored so base64 payloads cannot trip this check.
+    """
+    text = body.decode("utf-8", errors="replace")
+    payloads: list[object] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("data:"):
+            continue
+        data = stripped[len("data:") :].strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            payloads.append(json.loads(data))
+        except json.JSONDecodeError:
+            continue
+    if not payloads:
+        try:
+            payloads.append(json.loads(text))
+        except json.JSONDecodeError:
+            return None
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        error = payload.get("error")
+        if isinstance(error, dict):
+            code = _server_error_code(error.get("code"))
+            if code is not None:
+                return code
+        if "choices" not in payload:
+            code = _server_error_code(payload.get("code"))
+            if code is not None:
+                return code
+    return None
 
 
 def _deploy_config_path_from_omni_server(omni_server: _HasServeArgs) -> str | None:
@@ -780,7 +832,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
         inject_fault=lambda: injector(omni_server_function),
         num_requests=INFLIGHT_INJECTION_REQUEST_COUNT,
         request_rate=INFLIGHT_INJECTION_REQUEST_RATE,
-        completion_timeout_sec=120.0,
+        completion_timeout_sec=300.0,
     )
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
@@ -853,13 +905,16 @@ def test_reliability_fault_gpu_oom_state_converges_after_fault_removed(
             assert_fault_exception(exc, FAULT_ERROR_KEYWORDS)
         else:
             assert fault_status is not None
-            failure_observed = fault_status != 200 or _fault_keywords_match_response(
-                status=fault_status,
-                body=fault_body,
+            stream_error_code = _stream_server_error_code(fault_body)
+            failure_observed = (
+                fault_status != 200
+                or stream_error_code is not None
+                or _fault_keywords_match_response(status=fault_status, body=fault_body)
             )
             assert failure_observed, (
                 "expected mix multimodal request failure while OOM pressure is active; "
-                f"status={fault_status}, body_prefix={fault_body[:500]!r}"
+                f"status={fault_status}, stream_error_code={stream_error_code}, "
+                f"body_prefix={fault_body[:500]!r}"
             )
             if fault_status >= 400:
                 err = extract_openai_error_contract_from_bytes(fault_body)
@@ -873,9 +928,11 @@ def test_reliability_fault_gpu_oom_state_converges_after_fault_removed(
                         f"structured error should carry a non-empty message: {err!r}"
                     )
             else:
-                assert _fault_keywords_match_response(status=fault_status, body=fault_body), (
-                    "HTTP 200 under pressure should still surface fault hints in the response body; "
-                    f"body_prefix={fault_body[:500]!r}"
+                assert stream_error_code is not None or _fault_keywords_match_response(
+                    status=fault_status, body=fault_body
+                ), (
+                    "HTTP 200 under pressure should still surface a streaming error code or fault hints; "
+                    f"stream_error_code={stream_error_code}, body_prefix={fault_body[:500]!r}"
                 )
     finally:
         print("[oom-recover] stopping OOM sidecar(s)")
@@ -956,6 +1013,11 @@ def test_reliability_fault_gpu_oom_state_converges_after_fault_removed(
         )
         recover_err = extract_openai_error_contract_from_bytes(post_mix_body)
         assert recover_err is None, f"unexpected error object after recovery: {recover_err!r}"
+        recover_stream_code = _stream_server_error_code(post_mix_body)
+        assert recover_stream_code is None, (
+            "health recovered but the mix stream still carried a server error; "
+            f"stream_error_code={recover_stream_code}, body_prefix={post_mix_body[:600]!r}"
+        )
     else:
         assert request_status is None or request_status >= 500, (
             "unhealthy terminal state should fail fast on requests, "

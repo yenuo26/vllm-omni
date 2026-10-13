@@ -292,17 +292,6 @@ def _create_unique_server_params(
     return unique_params
 
 
-def configs_with_platform_stage_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Resolve stage config for XPU vs CUDA/ROCm."""
-    out: list[dict[str, Any]] = []
-    for config in configs:
-        config_copy = json.loads(json.dumps(config))
-        if current_omni_platform.is_xpu():
-            config_copy["server_params"]["stage_config_name"] = "xpu/qwen3_omni_ci.yaml"
-        out.append(config_copy)
-    return out
-
-
 def extract_server_args_by_test_name(configs: list[dict[str, Any]]) -> dict[str, list[str] | None]:
     mapping: dict[str, list[str] | None] = {}
     for cfg in configs:
@@ -316,9 +305,8 @@ def extract_server_args_by_test_name(configs: list[dict[str, Any]]) -> dict[str,
 def create_reliability_omni_server_params(
     configs: list[dict[str, Any]], stage_configs_dir: Path
 ) -> list[OmniServerParams]:
-    adjusted_configs = configs_with_platform_stage_configs(configs)
-    unique_params = _create_unique_server_params(adjusted_configs, stage_configs_dir)
-    server_args_by_name = extract_server_args_by_test_name(adjusted_configs)
+    unique_params = _create_unique_server_params(configs, stage_configs_dir)
+    server_args_by_name = extract_server_args_by_test_name(configs)
     return [
         OmniServerParams(
             model=model,
