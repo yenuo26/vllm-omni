@@ -10,7 +10,6 @@ from __future__ import annotations
 import concurrent.futures
 import errno
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -91,7 +90,7 @@ OOM_RECOVER_INJECTION_CONFIG = {
     # on a data-parallel device and the request succeeds; 0.92+ pairs better with the heavy
     # probe payload below. Raise toward 0.94 only if fault phase still never fails; avoid strict=True
     # here so the API process is not squeezed to zero slack.
-    "target_mem_ratio": 0.8,
+    "target_mem_ratio": 0.95,
     "hold_seconds": 0,
     "startup_timeout_sec": 20,
     "strict": False,
@@ -551,7 +550,6 @@ def test_reliability_fault_gpu_oom_concurrent_pressure_failure(omni_server_funct
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -581,7 +579,6 @@ def test_reliability_fault_process_kill_request_failure(
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -696,7 +693,6 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -728,7 +724,6 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 
 @pytest.mark.slow
 @hardware_test(res={"cuda": "H100"}, num_cards=2)
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", SERVE_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup(
@@ -752,7 +747,6 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
 
 @pytest.mark.slow
 @hardware_test(res={"cuda": "H100"}, num_cards=2)
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", SERVE_WITH_LOAD_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_cleanup(
@@ -785,7 +779,6 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", TREE_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
@@ -812,7 +805,6 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", TREE_WITH_LOAD_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(

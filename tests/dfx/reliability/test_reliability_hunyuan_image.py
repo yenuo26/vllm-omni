@@ -12,7 +12,6 @@ AR/Mooncake connector) for simpler local bring-up. Scenarios follow
 from __future__ import annotations
 
 import concurrent.futures
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -216,7 +215,6 @@ def test_reliability_fault_gpu_oom_image_large_request_failure(
 
 @pytest.mark.slow
 @pytest.mark.diffusion
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -238,7 +236,6 @@ def test_reliability_fault_process_kill_request_failure(
 @pytest.mark.slow
 @pytest.mark.diffusion
 @pytest.mark.skip(reason="issue#4522")
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -329,7 +326,6 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
 @pytest.mark.slow
 @pytest.mark.diffusion
 @pytest.mark.skip(reason="issue#4526")
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -361,7 +357,6 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 @pytest.mark.slow
 @pytest.mark.diffusion
 @hardware_test(res={"cuda": "H100"}, num_cards=4)
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", SERVE_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_cleanup(
@@ -395,7 +390,6 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 @pytest.mark.slow
 @pytest.mark.diffusion
 @hardware_test(res={"cuda": "H100"}, num_cards=4)
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", SERVE_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup(
@@ -418,7 +412,6 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
 
 @pytest.mark.slow
 @pytest.mark.diffusion
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", TREE_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
@@ -446,7 +439,6 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
 @pytest.mark.slow
 @pytest.mark.diffusion
 @pytest.mark.skip(reason="issue#4526")
-@pytest.mark.skipif(os.name == "nt", reason="process-kill injection helper is POSIX-only")
 @pytest.mark.parametrize("signal_name", TREE_WITH_LOAD_SIGNAL_PARAMS)
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
