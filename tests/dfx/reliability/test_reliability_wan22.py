@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
 from tests.dfx.conftest import (
     assert_fault_exception,
@@ -33,6 +32,7 @@ from tests.dfx.reliability.helpers import (
     stop_gpu_oom_hogs,
     worker_residual_timeout_after_kill_signal,
 )
+from tests.helpers.assertions import assert_http_error
 from tests.helpers.mark import hardware_test
 from tests.helpers.media import generate_synthetic_image
 
@@ -136,8 +136,7 @@ def _video_request_config() -> dict[str, Any]:
     }
 
 
-def _assert_post_fault_video_fast_fail(host: str, port: int, *, scenario: str) -> None:
-    url = f"http://{host}:{port}/v1/videos"
+def _assert_post_fault_video_fast_fail(online_client: Any, *, scenario: str) -> None:
     payload = {
         "prompt": "post-fault fast-fail check",
         "width": "512",
@@ -148,21 +147,39 @@ def _assert_post_fault_video_fast_fail(host: str, port: int, *, scenario: str) -
     }
     start = time.monotonic()
     try:
-        response = requests.post(
-            url,
-            data=payload,
-            headers={"Accept": "application/json"},
-            timeout=20,
+        online_client.send_videos_create_http_request(
+            {"data": payload, "timeout": 20},
+            err_code=500,
         )
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[{scenario} fast_fail] /v1/videos did not fail fast: {elapsed:.2f}s"
-        assert response.status_code >= 500, (
-            f"[{scenario} fast_fail] expected server-side error after fault, "
-            f"got status={response.status_code}, body={response.text[:200]!r}"
-        )
+    except AssertionError:
+        raise
     except Exception:  # noqa: BLE001
         elapsed = time.monotonic() - start
         assert elapsed < 15, f"[{scenario} fast_fail] exception was too slow after fault: {elapsed:.2f}s"
+        return
+    elapsed = time.monotonic() - start
+    assert elapsed < 15, f"[{scenario} fast_fail] /v1/videos did not fail fast: {elapsed:.2f}s"
+
+
+def _await_video_job(online_client: Any, video_id: str, *, timeout_sec: float) -> Any:
+    """Repeat ``send_video_retrieve_http_request`` until the job is completed or failed.
+
+    The retrieve helper already requires HTTP 200. Callers that expect a generation
+    failure pass the returned response to ``assert_http_error(..., err_code=500)``,
+    which reads ``error.code`` from the JSON body.
+    """
+    deadline = time.monotonic() + timeout_sec
+    last_job: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        retrieved = online_client.send_video_retrieve_http_request({"video_id": video_id, "timeout": 10})[0]
+        job = retrieved.json_body
+        if not isinstance(job, dict):
+            raise AssertionError(f"video job {video_id} payload is not an object: {job!r}")
+        last_job = job
+        if job.get("status") in ("completed", "failed"):
+            return retrieved
+        time.sleep(1.0)
+    raise TimeoutError(f"video job {video_id} did not reach a terminal status: {last_job!r}")
 
 
 def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -> None:
@@ -195,22 +212,7 @@ def test_reliability_fault_gpu_oom_video_large_request_failure(omni_server_funct
         strict=OOM_INJECTION_CONFIG["strict"],
     )
     try:
-        image_data_url = f"data:image/jpeg;base64,{generate_synthetic_image(1280, 720)['base64']}"
-        request_config = {
-            "form_data": {
-                "prompt": "Generate a realistic road-driving video with camera motion.",
-                "width": 512,
-                "height": 512,
-                "fps": 8,
-                "num_frames": 8,
-                "guidance_scale": 1.0,
-                "flow_shift": 5.0,
-                "num_inference_steps": 4,
-                "seed": 42,
-            },
-            "image_reference": image_data_url,
-            "stream": False,
-        }
+        request_config = _video_request_config()
         try:
             online_client_function.send_video_diffusion_request(request_config, request_num=1)
         except Exception as exc:
@@ -258,50 +260,10 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     """
     host = omni_server_after_fault_function.host
     port = omni_server_after_fault_function.port
-    url = f"http://{host}:{port}/v1/videos"
-    image_data_url = f"data:image/jpeg;base64,{generate_synthetic_image(1280, 720)['base64']}"
-    request_config = {
-        "form_data": {
-            "prompt": "Generate a realistic road-driving video with camera motion.",
-            "width": 512,
-            "height": 512,
-            "fps": 8,
-            "num_frames": 8,
-            "guidance_scale": 1.0,
-            "flow_shift": 5.0,
-            "num_inference_steps": 4,
-            "seed": 42,
-        },
-        "image_reference": image_data_url,
-        "stream": False,
-    }
+    request_config = _video_request_config()
 
     # Phase-1: one new /v1/videos request should fail fast.
-    payload = {
-        "prompt": "fast-fail check",
-        "width": "512",
-        "height": "512",
-        "fps": "8",
-        "num_frames": "8",
-        "num_inference_steps": "4",
-    }
-    start = time.monotonic()
-    try:
-        response = requests.post(
-            url,
-            data=payload,
-            headers={"Accept": "application/json"},
-            timeout=20,
-        )
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[process_kill fast_fail] /v1/videos did not fail fast after fault: {elapsed:.2f}s"
-        assert response.status_code >= 500, (
-            "[process_kill fast_fail] expected server-side error after fatal fault, "
-            f"got status={response.status_code}, body={response.text[:200]!r}"
-        )
-    except Exception:
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[process_kill fast_fail] /v1/videos exception was too slow after fault: {elapsed:.2f}s"
+    _assert_post_fault_video_fast_fail(online_client_function, scenario="process_kill")
 
     # Phase-2: concurrent requests should converge and at least one should fail.
     start = time.monotonic()
@@ -383,7 +345,7 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(host, port, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
 
 
@@ -392,8 +354,13 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
 def test_reliability_video_oom_recovers_after_fault_removed(
     omni_server_function,
+    online_client_function,
 ) -> None:
-    """Black-box: after removing OOM pressure, service converges to a terminal state and requests do not hang."""
+    """Black-box: under OOM pressure an async video job fails; after the hog stops, a new job completes.
+
+    ``POST /v1/videos`` returns HTTP 200 when the job is queued. A failed job is
+    still HTTP 200; ``assert_http_error(..., err_code=500)`` reads ``error.code``.
+    """
     stage_config_path = getattr(omni_server_function, "stage_config_path", None)
     device_spec = resolve_oom_device_spec(OOM_INJECTION_CONFIG, stage_config_path)
     handle = inject_gpu_oom(
@@ -405,36 +372,52 @@ def test_reliability_video_oom_recovers_after_fault_removed(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    create_url = f"http://{host}:{port}/v1/videos"
+    probe_form = {
+        "prompt": "oom recover probe",
+        "width": "512",
+        "height": "512",
+        "fps": "8",
+        "num_frames": "8",
+        "num_inference_steps": "4",
+    }
 
     failure_observed = False
+    failure_detail = ""
     try:
         for _ in range(3):
             try:
-                response = requests.post(
-                    create_url,
-                    data={
-                        "prompt": "oom recover probe",
-                        "width": "512",
-                        "height": "512",
-                        "fps": "8",
-                        "num_frames": "8",
-                        "num_inference_steps": "4",
-                    },
-                    headers={"Accept": "application/json"},
-                    timeout=25,
-                )
-                if response.status_code >= 500:
-                    failure_observed = True
-                    break
-            except Exception:
+                created_resp = online_client_function.send_videos_create_http_request(
+                    {"data": probe_form, "timeout": 25}
+                )[0]
+            except Exception as exc:
                 failure_observed = True
+                failure_detail = repr(exc)
+                break
+            created = created_resp.json_body
+            video_id = created.get("id") if isinstance(created, dict) else None
+            if not isinstance(video_id, str) or not video_id:
+                failure_observed = True
+                failure_detail = f"create payload missing id: {created!r}"
+                break
+            try:
+                retrieved = _await_video_job(online_client_function, video_id, timeout_sec=120)
+            except Exception as exc:
+                failure_observed = True
+                failure_detail = f"video_id={video_id} poll error={exc!r}"
+                break
+            job = retrieved.json_body
+            if isinstance(job, dict) and job.get("status") == "failed":
+                assert_http_error(retrieved, err_code=500)
+                failure_observed = True
+                failure_detail = f"video_id={video_id} error={job.get('error')!r}"
                 break
             time.sleep(1.0)
     finally:
         stop_gpu_oom_hogs(handle)
 
-    assert failure_observed, "expected at least one video request failure while OOM pressure is active"
+    assert failure_observed, (
+        f"expected at least one async video job to fail while OOM pressure is active; last_detail={failure_detail!r}"
+    )
 
     recovery_deadline = time.monotonic() + 90.0
     terminal_health: int | None = None
@@ -468,42 +451,68 @@ def test_reliability_video_oom_recovers_after_fault_removed(
         )
 
     assert terminal_health is not None
+    recovery_form = {
+        "prompt": "post-recovery admission check",
+        "width": "512",
+        "height": "512",
+        "fps": "8",
+        "num_frames": "8",
+        "num_inference_steps": "4",
+    }
     start = time.monotonic()
-    recovery_resp: requests.Response | None = None
+    recovery_status: int | None = None
+    recovery_job: dict[str, Any] | None = None
+    recovery_resp: Any = None
+    recovery_error = ""
     try:
-        recovery_resp = requests.post(
-            create_url,
-            data={
-                "prompt": "post-recovery admission check",
-                "width": "512",
-                "height": "512",
-                "fps": "8",
-                "num_frames": "8",
-                "num_inference_steps": "4",
-            },
-            headers={"Accept": "application/json"},
-            timeout=30,
-        )
-        recovery_status = recovery_resp.status_code
-        recovery_text_prefix = recovery_resp.text[:300]
+        created_resp = online_client_function.send_videos_create_http_request({"data": recovery_form, "timeout": 30})[0]
+    except AssertionError as exc:
+        # The create helper requires HTTP 200. A non-200 create is the expected
+        # failure only while /health is still 503.
+        if terminal_health == 200:
+            raise
+        recovery_error = repr(exc)
+        created_resp = None
     except Exception as exc:  # noqa: BLE001
-        recovery_status = None
-        recovery_text_prefix = repr(exc)
-    elapsed = time.monotonic() - start
-    assert elapsed < 30, f"post-fault /v1/videos should not hang after OOM removal: {elapsed:.2f}s"
+        recovery_error = repr(exc)
+        created_resp = None
+    if created_resp is not None:
+        create_elapsed = time.monotonic() - start
+        assert create_elapsed < 30, f"post-fault /v1/videos create should not hang: {create_elapsed:.2f}s"
+        recovery_status = created_resp.status_code
+        created = created_resp.json_body
+        video_id = created.get("id") if isinstance(created, dict) else None
+        if not isinstance(video_id, str) or not video_id:
+            recovery_error = f"create payload missing id: {created!r}"
+        else:
+            poll_timeout = 180.0 if terminal_health == 200 else 60.0
+            try:
+                recovery_resp = _await_video_job(online_client_function, video_id, timeout_sec=poll_timeout)
+            except Exception as exc:  # noqa: BLE001
+                recovery_error = repr(exc)
+            else:
+                recovery_job = recovery_resp.json_body if isinstance(recovery_resp.json_body, dict) else None
+    recovery_text_prefix = recovery_error or ("" if recovery_status is None else f"status={recovery_status}")
 
     if terminal_health == 200:
         assert recovery_status == 200, (
             "health recovered but /v1/videos admission did not succeed; "
             f"status={recovery_status}, body={recovery_text_prefix!r}"
         )
-        assert recovery_resp is not None
-        recovery_payload = recovery_resp.json()
-        assert "id" in recovery_payload, f"post-recovery create payload missing id: {recovery_payload!r}"
+        assert recovery_job is not None, f"post-recovery video job was not polled: {recovery_text_prefix!r}"
+        assert recovery_job.get("status") == "completed", (
+            "health recovered but the async video job did not complete; "
+            f"status={recovery_job.get('status')} error={recovery_job.get('error')!r}"
+        )
     else:
-        assert recovery_status is None or recovery_status >= 500, (
-            "unhealthy terminal state should fail fast on /v1/videos, "
-            f"got health={terminal_health}, request_status={recovery_status}, body={recovery_text_prefix!r}"
+        job_failed = False
+        if recovery_resp is not None and recovery_job is not None and recovery_job.get("status") == "failed":
+            assert_http_error(recovery_resp, err_code=500)
+            job_failed = True
+        assert recovery_error or job_failed, (
+            "unhealthy terminal state should fail the async video job, "
+            f"got health={terminal_health}, request_status={recovery_status}, "
+            f"job={recovery_job!r}, body={recovery_text_prefix!r}"
         )
 
 
@@ -532,7 +541,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(host, port, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -547,6 +556,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup(
     omni_server_function,
+    online_client_function,
     signal_name: str,
 ) -> None:
     """Black-box: kill serve root without load; verify fast-fail/health/cleanup."""
@@ -555,7 +565,7 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
     injector(omni_server_function)
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(host, port, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -569,6 +579,7 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
     omni_server_function,
+    online_client_function,
     signal_name: str,
 ) -> None:
     """Black-box: kill server tree without load; verify fast-fail/health/cleanup."""
@@ -581,7 +592,7 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
     injector(omni_server_function)
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(host, port, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -618,7 +629,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(host, port, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,

@@ -31,7 +31,6 @@ from tests.dfx.reliability.helpers import (
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
     make_server_tree_kill_fault_injector,
-    post_chat_completions_raw,
     post_json_raw,
     run_fault_injection_with_rate_load,
     stop_gpu_oom_hogs,
@@ -332,6 +331,29 @@ def _chat_request_config(omni_server: _HasServeArgs) -> dict[str, Any]:
     }
 
 
+def _process_kill_multimodal_payload(model: str) -> dict[str, Any]:
+    """Small image and audio input, with text and audio output.
+
+    Text-only chat stays on the thinker (stage 0). Asking for audio output
+    routes the request through the talker (stage 1), so killing that engine
+    must fail the request.
+    """
+    image_data_url = f"data:image/jpeg;base64,{generate_synthetic_image(224, 224)['base64']}"
+    audio_data_url = f"data:audio/wav;base64,{generate_synthetic_audio(5, 1)['base64']}"
+    messages = dummy_messages_from_mix_data(
+        system_prompt=_get_system_prompt(),
+        image_data_url=image_data_url,
+        audio_data_url=audio_data_url,
+        content_text="Describe the image and the audio in one short sentence.",
+    )
+    return {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "modalities": ["text", "audio"],
+    }
+
+
 def _assert_post_fault_chat_fast_fail(host: str, port: int, *, model: str, scenario: str) -> None:
     payload = {
         "model": model,
@@ -344,8 +366,8 @@ def _assert_post_fault_chat_fast_fail(host: str, port: int, *, model: str, scena
         status, body = post_json_raw(host, port, "/v1/chat/completions", payload, timeout_sec=20)
         elapsed = time.monotonic() - start
         assert elapsed < 15, f"[{scenario} fast_fail] /v1/chat/completions did not fail fast: {elapsed:.2f}s"
-        assert status >= 500, (
-            f"[{scenario} fast_fail] expected server-side error after fault, got status={status}, body={body[:200]!r}"
+        assert status == 500, (
+            f"[{scenario} fast_fail] expected HTTP 500 after fault, got status={status}, body={body[:200]!r}"
         )
     except Exception:  # noqa: BLE001
         elapsed = time.monotonic() - start
@@ -587,9 +609,12 @@ def test_reliability_fault_process_kill_request_failure(
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     omni_server_after_fault_function,
+    online_client_function,
 ) -> None:
-    """Black-box: after worker process kill, chat fails fast, concurrent chat does not hang; /health→503 last.
+    """Black-box: after worker process kill, multimodal chat fails fast and does not hang; /health→503 last.
 
+    The probe asks for audio output, so it must enter the talker. Text-only chat
+    stays on the thinker and can still return HTTP 200 after the talker is killed.
     ``SIGTERM`` on a stage engine often exceeds a 15s client-visible path; ``SIGKILL`` is
     typically quicker. See module constants ``_PROCESS_KILL_WORKER_CHAT_FF_*``.
     """
@@ -597,30 +622,19 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     port = omni_server_after_fault_function.port
     model = omni_server_after_fault_function.model
 
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
-        "stream": False,
-        "modalities": ["text"],
-    }
-    ff_status: int | None = None
-    ff_body = b""
+    payload = _process_kill_multimodal_payload(model)
     start = time.monotonic()
     try:
-        ff_status, ff_body = post_json_raw(
-            host,
-            port,
-            "/v1/chat/completions",
-            payload,
-            timeout_sec=_PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC,
-        )
+        ff_resp = online_client_function.send_chat_completions_http_request(
+            {"json": payload, "timeout": _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC}
+        )[0]
         elapsed = time.monotonic() - start
         assert elapsed <= _PROCESS_KILL_WORKER_CHAT_FF_MAX_ELAPSED_SEC + 1.0, (
             f"[process_kill fast_fail] request did not fail fast after fault: {elapsed:.2f}s"
         )
-        assert ff_status is not None and ff_status >= 500, (
-            f"[process_kill fast_fail] expected server-side failure after fault, "
-            f"got status={ff_status}, body={ff_body[:200]!r}"
+        assert ff_resp.status_code == 500, (
+            f"[process_kill fast_fail] expected HTTP 500 after fault, "
+            f"got status={ff_resp.status_code}, body={ff_resp.error_message!r}"
         )
     except Exception:
         elapsed = time.monotonic() - start
@@ -628,23 +642,12 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
             f"[process_kill fast_fail] request exception was too slow after fault: {elapsed:.2f}s"
         )
 
-    payload_json = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": "What is the capital of China? Answer in one word."}],
-            "stream": False,
-            "modalities": ["text"],
-        }
-    )
     start = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
             executor.submit(
-                post_chat_completions_raw,
-                host,
-                port,
-                payload_json,
-                timeout_sec=20,
+                online_client_function.send_chat_completions_http_request,
+                {"json": payload, "timeout": 20},
             )
             for _ in range(4)
         ]
@@ -661,8 +664,8 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     fault_observed = False
     for future in done:
         try:
-            status, body = future.result()
-            if status >= 500:
+            status = future.result()[0].status_code
+            if status == 500:
                 fault_observed = True
         except Exception as exc:
             assert_fault_exception(exc, PROCESS_KILL_ERROR_KEYWORDS)
