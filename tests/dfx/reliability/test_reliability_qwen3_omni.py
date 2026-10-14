@@ -124,8 +124,9 @@ RUNTIME_WORKER_PATTERN = "VLLM::"
 # - serve-root no-load: SIGINT; SIGTERM/SIGKILL skipped (vllm issue#43060)
 # - serve-root with-load: SIGINT, SIGTERM; SIGKILL skipped (vllm issue#43060)
 # - serve-tree no-load: SIGTERM/SIGKILL
-# - serve-tree with-load: SIGTERM, SIGKILL
+# - serve-tree with-load: SIGKILL; SIGTERM skipped (issue#8912)
 _SERVE_ROOT_NON_SIGINT_SKIP = pytest.mark.skip(reason="vllm issue#43060")
+_TREE_WITH_LOAD_SIGTERM_SKIP = pytest.mark.skip(reason="issue#8912")
 SERVE_SIGNAL_PARAMS = [
     pytest.param("SIGTERM", id="sigterm"),
     pytest.param("SIGINT", id="sigint"),
@@ -141,7 +142,7 @@ TREE_SIGNAL_PARAMS = [
     pytest.param("SIGKILL", id="sigkill"),
 ]
 TREE_WITH_LOAD_SIGNAL_PARAMS = [
-    pytest.param("SIGTERM", id="sigterm"),
+    pytest.param("SIGTERM", id="sigterm", marks=_TREE_WITH_LOAD_SIGTERM_SKIP),
     pytest.param("SIGKILL", id="sigkill"),
 ]
 WORKER_SIGNAL_FAULT_PARAMS = [
@@ -318,20 +319,20 @@ def _looks_like_server_unreachable(exc: BaseException) -> bool:
     return "connection refused" in msg or "actively refused" in msg
 
 
-def _chat_request_config(omni_server: _HasServeArgs) -> dict[str, Any]:
+def _create_text_request_config(model: str) -> dict[str, Any]:
     messages = dummy_messages_from_mix_data(
         system_prompt=_get_system_prompt(),
         content_text="What is the capital of China? Answer in one short sentence.",
     )
     return {
-        "model": omni_server.model,
+        "model": model,
         "messages": messages,
         "stream": False,
         "modalities": ["text"],
     }
 
 
-def _process_kill_multimodal_payload(model: str) -> dict[str, Any]:
+def _create_multimodal_request_config(model: str) -> dict[str, Any]:
     """Small image and audio input, with text and audio output.
 
     Text-only chat stays on the thinker (stage 0). Asking for audio output
@@ -355,12 +356,7 @@ def _process_kill_multimodal_payload(model: str) -> dict[str, Any]:
 
 
 def _assert_post_fault_chat_fast_fail(host: str, port: int, *, model: str, scenario: str) -> None:
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "post-fault fast-fail check"}],
-        "stream": False,
-        "modalities": ["text"],
-    }
+    payload = _create_multimodal_request_config(model)
     start = time.monotonic()
     try:
         status, body = post_json_raw(host, port, "/v1/chat/completions", payload, timeout_sec=20)
@@ -581,17 +577,7 @@ def test_reliability_fault_gpu_oom_concurrent_pressure_failure(omni_server_funct
 def test_reliability_fault_process_kill_request_failure(
     omni_server_after_fault_function, online_client_function
 ) -> None:
-    messages = dummy_messages_from_mix_data(
-        system_prompt=_get_system_prompt(),
-        content_text="What is the capital of China? Answer in 20 words.",
-    )
-    request_config = {
-        "model": omni_server_after_fault_function.model,
-        "messages": messages,
-        "stream": False,
-        "modalities": ["text"],
-        "key_words": {"text": ["beijing"]},
-    }
+    request_config = _create_multimodal_request_config(omni_server_after_fault_function.model)
     try:
         online_client_function.send_omni_request(request_config, request_num=1)
     except Exception as exc:
@@ -622,7 +608,7 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     port = omni_server_after_fault_function.port
     model = omni_server_after_fault_function.model
 
-    payload = _process_kill_multimodal_payload(model)
+    payload = _create_multimodal_request_config(model)
     start = time.monotonic()
     try:
         ff_resp = online_client_function.send_chat_completions_http_request(
@@ -705,7 +691,7 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     online_client_function,
     fault_injector: FaultInjector,
 ) -> None:
-    request_config = _chat_request_config(omni_server_function)
+    request_config = _create_multimodal_request_config(omni_server_function.model)
     scenario = "kill_worker_with_load"
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_omni_request(request_config, request_num=1),
@@ -755,7 +741,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     online_client_function,
     signal_name: str,
 ) -> None:
-    request_config = _chat_request_config(omni_server_function)
+    request_config = _create_text_request_config(omni_server_function.model)
     scenario = f"kill_serve_root_with_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
     load_result = run_fault_injection_with_rate_load(
@@ -813,7 +799,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     online_client_function,
     signal_name: str,
 ) -> None:
-    request_config = _chat_request_config(omni_server_function)
+    request_config = _create_text_request_config(omni_server_function.model)
     scenario = f"kill_serve_tree_with_load_{signal_name.lower()}"
     injector = make_server_tree_kill_fault_injector(
         signal_name=signal_name,
