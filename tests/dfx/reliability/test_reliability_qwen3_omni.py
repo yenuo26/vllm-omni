@@ -684,8 +684,6 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
         except Exception as exc:  # noqa: BLE001
             last_observation = f"exception={exc!r}"
         time.sleep(0.5)
-    if final_health_status != 503:
-        pytest.skip("issue#3050")
     assert final_health_status == 503, (
         "[process_kill health] expected /health 503 after fatal fault, "
         f"got status={final_health_status}, last_observation={last_observation}"
