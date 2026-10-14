@@ -7,8 +7,10 @@ Wan2.2 reliability integration tests.
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -161,17 +163,37 @@ def _assert_post_fault_video_fast_fail(online_client: Any, *, scenario: str) -> 
     assert elapsed < 15, f"[{scenario} fast_fail] /v1/videos did not fail fast: {elapsed:.2f}s"
 
 
+def _i2v_create_request(prompt: str, *, timeout: float) -> dict[str, Any]:
+    """Multipart create body for Wan2.2 I2V. The model rejects a prompt-only job."""
+    image_bytes = base64.b64decode(generate_synthetic_image(1280, 720)["base64"])
+    return {
+        "data": {
+            "prompt": prompt,
+            "width": "512",
+            "height": "512",
+            "fps": "8",
+            "num_frames": "8",
+            "num_inference_steps": "4",
+        },
+        "files": {"input_reference": ("reference.jpeg", BytesIO(image_bytes), "image/jpeg")},
+        "timeout": timeout,
+    }
+
+
 def _await_video_job(online_client: Any, video_id: str, *, timeout_sec: float) -> Any:
     """Repeat ``send_video_retrieve_http_request`` until the job is completed or failed.
 
-    The retrieve helper already requires HTTP 200. Callers that expect a generation
-    failure pass the returned response to ``assert_http_error(..., err_code=500)``,
-    which reads ``error.code`` from the JSON body.
+    In-progress and completed jobs are HTTP 200. A failed job is returned with HTTP
+    status ``error.code`` (500 for a generation error). Callers that expect that
+    failure then pass the response to ``assert_http_error(..., err_code=500)``.
     """
     deadline = time.monotonic() + timeout_sec
     last_job: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        retrieved = online_client.send_video_retrieve_http_request({"video_id": video_id, "timeout": 10})[0]
+        retrieved = online_client.send_video_retrieve_http_request(
+            {"video_id": video_id, "timeout": 10},
+            err_code=(200, 500),
+        )[0]
         job = retrieved.json_body
         if not isinstance(job, dict):
             raise AssertionError(f"video job {video_id} payload is not an object: {job!r}")
@@ -358,8 +380,9 @@ def test_reliability_video_oom_recovers_after_fault_removed(
 ) -> None:
     """Black-box: under OOM pressure an async video job fails; after the hog stops, a new job completes.
 
-    ``POST /v1/videos`` returns HTTP 200 when the job is queued. A failed job is
-    still HTTP 200; ``assert_http_error(..., err_code=500)`` reads ``error.code``.
+    Wan2.2 I2V requires ``input_reference``. ``POST /v1/videos`` returns HTTP 200
+    when the job is queued. A failed job's GET uses ``error.code`` as the HTTP
+    status, and ``assert_http_error(..., err_code=500)`` checks that status.
     """
     stage_config_path = getattr(omni_server_function, "stage_config_path", None)
     device_spec = resolve_oom_device_spec(OOM_INJECTION_CONFIG, stage_config_path)
@@ -372,14 +395,6 @@ def test_reliability_video_oom_recovers_after_fault_removed(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    probe_form = {
-        "prompt": "oom recover probe",
-        "width": "512",
-        "height": "512",
-        "fps": "8",
-        "num_frames": "8",
-        "num_inference_steps": "4",
-    }
 
     failure_observed = False
     failure_detail = ""
@@ -387,7 +402,7 @@ def test_reliability_video_oom_recovers_after_fault_removed(
         for _ in range(3):
             try:
                 created_resp = online_client_function.send_videos_create_http_request(
-                    {"data": probe_form, "timeout": 25}
+                    _i2v_create_request("oom recover probe", timeout=25)
                 )[0]
             except Exception as exc:
                 failure_observed = True
@@ -451,21 +466,15 @@ def test_reliability_video_oom_recovers_after_fault_removed(
         )
 
     assert terminal_health is not None
-    recovery_form = {
-        "prompt": "post-recovery admission check",
-        "width": "512",
-        "height": "512",
-        "fps": "8",
-        "num_frames": "8",
-        "num_inference_steps": "4",
-    }
     start = time.monotonic()
     recovery_status: int | None = None
     recovery_job: dict[str, Any] | None = None
     recovery_resp: Any = None
     recovery_error = ""
     try:
-        created_resp = online_client_function.send_videos_create_http_request({"data": recovery_form, "timeout": 30})[0]
+        created_resp = online_client_function.send_videos_create_http_request(
+            _i2v_create_request("post-recovery admission check", timeout=30)
+        )[0]
     except AssertionError as exc:
         # The create helper requires HTTP 200. A non-200 create is the expected
         # failure only while /health is still 503.
