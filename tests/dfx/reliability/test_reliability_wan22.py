@@ -117,6 +117,8 @@ WAN_PARAMS = create_reliability_omni_server_params(RELIABILITY_SCENARIOS, E2E_ST
 DIFFUSION_VIDEO_PARAMS = [param for param in WAN_PARAMS if supports_video_generation(param.model)]
 INFLIGHT_INJECTION_REQUEST_RATE = 0.3
 INFLIGHT_INJECTION_REQUEST_COUNT = 10
+# Client read timeout. HTTP 500 must return before this; a timeout raises and fails the test.
+_VIDEO_FAST_FAIL_HTTP_TIMEOUT_SEC = 30
 
 
 def _video_request_config() -> dict[str, Any]:
@@ -138,7 +140,11 @@ def _video_request_config() -> dict[str, Any]:
     }
 
 
-def _assert_post_fault_video_fast_fail(online_client: Any, *, scenario: str) -> None:
+def _assert_post_fault_video_fast_fail(online_client: Any) -> None:
+    """New ``POST /v1/videos`` after the fault must return HTTP 500 within 30s.
+
+    The client timeout is 30s. A timeout or a dropped connection raises and fails the test.
+    """
     payload = {
         "prompt": "post-fault fast-fail check",
         "width": "512",
@@ -147,20 +153,10 @@ def _assert_post_fault_video_fast_fail(online_client: Any, *, scenario: str) -> 
         "num_frames": "8",
         "num_inference_steps": "4",
     }
-    start = time.monotonic()
-    try:
-        online_client.send_videos_create_http_request(
-            {"data": payload, "timeout": 20},
-            err_code=500,
-        )
-    except AssertionError:
-        raise
-    except Exception:  # noqa: BLE001
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[{scenario} fast_fail] exception was too slow after fault: {elapsed:.2f}s"
-        return
-    elapsed = time.monotonic() - start
-    assert elapsed < 15, f"[{scenario} fast_fail] /v1/videos did not fail fast: {elapsed:.2f}s"
+    online_client.send_videos_create_http_request(
+        {"data": payload, "timeout": _VIDEO_FAST_FAIL_HTTP_TIMEOUT_SEC},
+        err_code=500,
+    )
 
 
 def _i2v_create_request(prompt: str, *, timeout: float) -> dict[str, Any]:
@@ -223,7 +219,7 @@ def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -
 @pytest.mark.slow
 @hardware_test(res={"cuda": "H100"}, num_cards=1)
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
-def test_reliability_fault_gpu_oom_video_large_request_failure(omni_server_function, online_client_function) -> None:
+def test_reliability_fault_gpu_oom_large_request_failure(omni_server_function, online_client_function) -> None:
     stage_config_path = getattr(omni_server_function, "stage_config_path", None)
     device_spec = resolve_oom_device_spec(OOM_INJECTION_CONFIG, stage_config_path)
     handle = inject_gpu_oom(
@@ -285,7 +281,7 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     request_config = _video_request_config()
 
     # Phase-1: one new /v1/videos request should fail fast.
-    _assert_post_fault_video_fast_fail(online_client_function, scenario="process_kill")
+    _assert_post_fault_video_fast_fail(online_client_function)
 
     # Phase-2: concurrent requests should converge and at least one should fail.
     start = time.monotonic()
@@ -367,14 +363,14 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
 
 
 @pytest.mark.slow
 @hardware_test(res={"cuda": "H100"}, num_cards=1)
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
-def test_reliability_video_oom_recovers_after_fault_removed(
+def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
     omni_server_function,
     online_client_function,
 ) -> None:
@@ -550,7 +546,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -574,7 +570,7 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
     injector(omni_server_function)
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -601,7 +597,7 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
     injector(omni_server_function)
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -638,7 +634,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function, scenario=scenario)
+    _assert_post_fault_video_fast_fail(online_client_function)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,

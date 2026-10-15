@@ -168,10 +168,8 @@ WORKER_SIGNAL_FAULT_PARAMS = [
 INFLIGHT_INJECTION_REQUEST_RATE = 0.3
 INFLIGHT_INJECTION_REQUEST_COUNT = 10
 
-# Post-fault chat probe: ``MAX_ELAPSED`` aligns with HTTP read timeout; assert allows +1s jitter
-# when the client raises at timeout (e.g. ~30.03s).
+# Client read timeout. HTTP 500 must return before this; a timeout raises and fails the test.
 _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC = 30
-_PROCESS_KILL_WORKER_CHAT_FF_MAX_ELAPSED_SEC = 30
 
 
 class _HasServeArgs(Protocol):
@@ -201,7 +199,7 @@ def _get_mix_prompt() -> str:
 def _mix_chat_completions_probe_payload(omni_server: _HasServeArgs) -> dict[str, Any]:
     """Heavy multimodal ``/v1/chat/completions`` body for OOM recover tests.
 
-    Uses the same synthetic sizes as ``test_reliability_fault_gpu_oom_chat_large_payload_failure``
+    Uses the same synthetic sizes as ``test_reliability_fault_gpu_oom_large_request_failure``
     (large vision tensors + long text), not the light expansion mix (224² / 5s audio): under
     ``strict=False`` sidecars, a small mix often still completes on a GPU that retains multi-GB
     free after the hog stops at ``target_mem_ratio``.
@@ -485,7 +483,7 @@ def test_reliability_fault_gpu_oom_error_contract_consistent_chat_speech(
 @pytest.mark.slow
 @hardware_test(res={"cuda": "H100"}, num_cards=2)
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
-def test_reliability_fault_gpu_oom_chat_large_payload_failure(omni_server_function, online_client_function) -> None:
+def test_reliability_fault_gpu_oom_large_request_failure(omni_server_function, online_client_function) -> None:
     device_spec = resolve_oom_device_spec(
         OOM_INJECTION_CONFIG,
         _deploy_config_path_from_omni_server(omni_server_function),
@@ -601,32 +599,17 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
 
     The probe asks for audio output, so it must enter the talker. Text-only chat
     stays on the thinker and can still return HTTP 200 after the talker is killed.
-    ``SIGTERM`` on a stage engine often exceeds a 15s client-visible path; ``SIGKILL`` is
-    typically quicker. See module constants ``_PROCESS_KILL_WORKER_CHAT_FF_*``.
+    The client read timeout is 30s. A timeout raises out of the client and fails the test.
     """
     host = omni_server_after_fault_function.host
     port = omni_server_after_fault_function.port
     model = omni_server_after_fault_function.model
 
     payload = _create_multimodal_request_config(model)
-    start = time.monotonic()
-    try:
-        ff_resp = online_client_function.send_chat_completions_http_request(
-            {"json": payload, "timeout": _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC}
-        )[0]
-        elapsed = time.monotonic() - start
-        assert elapsed <= _PROCESS_KILL_WORKER_CHAT_FF_MAX_ELAPSED_SEC + 1.0, (
-            f"[process_kill fast_fail] request did not fail fast after fault: {elapsed:.2f}s"
-        )
-        assert ff_resp.status_code == 500, (
-            f"[process_kill fast_fail] expected HTTP 500 after fault, "
-            f"got status={ff_resp.status_code}, body={ff_resp.error_message!r}"
-        )
-    except Exception:
-        elapsed = time.monotonic() - start
-        assert elapsed <= _PROCESS_KILL_WORKER_CHAT_FF_MAX_ELAPSED_SEC + 1.0, (
-            f"[process_kill fast_fail] request exception was too slow after fault: {elapsed:.2f}s"
-        )
+    online_client_function.send_chat_completions_http_request(
+        {"json": payload, "timeout": _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC},
+        err_code=500,
+    )
 
     start = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -830,7 +813,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
 @pytest.mark.slow
 @hardware_test(res={"cuda": "H100"}, num_cards=2)
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
-def test_reliability_fault_gpu_oom_state_converges_after_fault_removed(
+def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
     omni_server_function,
 ) -> None:
     """Black-box: under bounded GPU pressure, a heavy mix chat fails; after hog stops, the same request succeeds.

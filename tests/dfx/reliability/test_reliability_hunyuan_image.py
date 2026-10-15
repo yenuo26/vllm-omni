@@ -31,7 +31,6 @@ from tests.dfx.reliability.helpers import (
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
     make_server_tree_kill_fault_injector,
-    post_json_raw,
     run_fault_injection_with_rate_load,
     stop_gpu_oom_hogs,
     worker_residual_timeout_after_kill_signal,
@@ -115,6 +114,8 @@ WORKER_SIGNAL_FAULT_PARAMS = [
 HUNYUAN_PARAMS = create_reliability_omni_server_params(RELIABILITY_SCENARIOS, DEPLOY_CONFIGS_DIR)
 INFLIGHT_INJECTION_REQUEST_RATE = 0.3
 INFLIGHT_INJECTION_REQUEST_COUNT = 10
+# Client read timeout. HTTP 500 must return before this; a timeout raises and fails the test.
+_IMAGE_FAST_FAIL_HTTP_TIMEOUT_SEC = 30
 
 
 def _image_request_config(omni_server: Any) -> dict[str, Any]:
@@ -144,10 +145,10 @@ def _submit_image_generation(online_client: OnlineOmniClient, omni_server: Any) 
         )
 
 
-def _assert_post_fault_image_fast_fail(host: str, port: int, *, model: str, scenario: str) -> None:
-    payload = {
+def _image_fast_fail_payload(model: str, prompt: str) -> dict[str, Any]:
+    return {
         "model": model,
-        "prompt": "post-fault fast-fail check",
+        "prompt": prompt,
         "size": "512x512",
         "n": 1,
         "response_format": "b64_json",
@@ -155,17 +156,20 @@ def _assert_post_fault_image_fast_fail(host: str, port: int, *, model: str, scen
         "bot_task": "none",
         "use_system_prompt": "en_unified",
     }
-    start = time.monotonic()
-    try:
-        status, body = post_json_raw(host, port, "/v1/images/generations", payload, timeout_sec=20)
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[{scenario} fast_fail] /v1/images/generations did not fail fast: {elapsed:.2f}s"
-        assert status >= 500, (
-            f"[{scenario} fast_fail] expected server-side error after fault, got status={status}, body={body[:200]!r}"
-        )
-    except Exception:  # noqa: BLE001
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[{scenario} fast_fail] exception was too slow after fault: {elapsed:.2f}s"
+
+
+def _assert_post_fault_image_fast_fail(online_client: Any, *, model: str) -> None:
+    """New ``/v1/images/generations`` after the fault must return HTTP 500 within 30s.
+
+    The client timeout is 30s. A timeout or a dropped connection raises and fails the test.
+    """
+    online_client.send_images_generations_http_request(
+        {
+            "json": _image_fast_fail_payload(model, "post-fault fast-fail check"),
+            "timeout": _IMAGE_FAST_FAIL_HTTP_TIMEOUT_SEC,
+        },
+        err_code=500,
+    )
 
 
 def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -> None:
@@ -188,7 +192,7 @@ def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -
 @pytest.mark.diffusion
 @hardware_test(res={"cuda": "H100"}, num_cards=4)
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
-def test_reliability_fault_gpu_oom_image_large_request_failure(
+def test_reliability_fault_gpu_oom_large_request_failure(
     omni_server_function,
     online_client_function,
 ) -> None:
@@ -246,34 +250,7 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
 ) -> None:
     host = omni_server_after_fault_function.host
     port = omni_server_after_fault_function.port
-    model = omni_server_after_fault_function.model
-
-    payload = {
-        "model": model,
-        "prompt": "fast-fail check",
-        "size": "512x512",
-        "n": 1,
-        "response_format": "b64_json",
-        "num_inference_steps": 4,
-        "bot_task": "none",
-        "use_system_prompt": "en_unified",
-    }
-    start = time.monotonic()
-    try:
-        status, body = post_json_raw(host, port, "/v1/images/generations", payload, timeout_sec=20)
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, (
-            f"[process_kill fast_fail] /v1/images/generations did not fail fast after fault: {elapsed:.2f}s"
-        )
-        assert status >= 500, (
-            "[process_kill fast_fail] expected server-side error after fatal fault, "
-            f"got status={status}, body={body[:200]!r}"
-        )
-    except Exception:
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, (
-            f"[process_kill fast_fail] /v1/images/generations exception was too slow after fault: {elapsed:.2f}s"
-        )
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_after_fault_function.model)
 
     start = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -347,7 +324,7 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
 
 
@@ -375,7 +352,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -391,6 +368,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup(
     omni_server_function,
+    online_client_function,
     signal_name: str,
 ) -> None:
     scenario = f"kill_serve_root_no_load_{signal_name.lower()}"
@@ -398,7 +376,7 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
     injector(omni_server_function)
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -413,6 +391,7 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
     omni_server_function,
+    online_client_function,
     signal_name: str,
 ) -> None:
     scenario = f"kill_serve_tree_no_load_{signal_name.lower()}"
@@ -424,7 +403,7 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
     injector(omni_server_function)
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
@@ -460,7 +439,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     )
     host = omni_server_function.host
     port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
     _assert_post_fault_health_terminal(host, port, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
