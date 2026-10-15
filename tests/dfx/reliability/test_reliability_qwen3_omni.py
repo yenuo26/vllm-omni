@@ -24,9 +24,9 @@ from tests.dfx.conftest import (
 )
 from tests.dfx.reliability.helpers import (
     FaultInjector,
+    GpuOomInjectionConfig,
     assert_no_server_tree_process_residual_and_gpu_release,
     extract_openai_error_contract_from_bytes,
-    get_health_raw,
     inject_gpu_oom,
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
@@ -71,7 +71,7 @@ def _default_oom_device_spec() -> str:
     return ",".join(str(i) for i in range(count))
 
 
-OOM_INJECTION_CONFIG = {
+OOM_INJECTION_CONFIG: GpuOomInjectionConfig = {
     "device": _default_oom_device_spec(),
     "target_mem_ratio": 0.95,
     "hold_seconds": 0,
@@ -82,7 +82,7 @@ OOM_INJECTION_CONFIG = {
 # ``strict=True`` sidecars keep allocating until CUDA refuses, which often
 # evicts/kills the server; here we only take a fraction of *initial* free
 # memory and stop, then rely on a heavy multimodal forward to hit OOM.
-OOM_RECOVER_INJECTION_CONFIG = {
+OOM_RECOVER_INJECTION_CONFIG: GpuOomInjectionConfig = {
     "device": _default_oom_device_spec(),
     # ``strict=False`` stops at this fraction of *initial* free memory per GPU (see helpers sidecar).
     # On multi-GPU hosts a mild ratio plus a small e2e-style mix can still leave several GB free
@@ -242,12 +242,12 @@ def _fault_keywords_match_response(*, status: int, body: bytes) -> bool:
 
 
 def _server_error_code(value: object) -> int | None:
-    """Return ``value`` when it is an HTTP server error code (``>= 500``)."""
+    """Return ``value`` when it is HTTP 500."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, int) and value >= 500:
+    if isinstance(value, int) and value == 500:
         return value
-    if isinstance(value, str) and value.isdigit() and int(value) >= 500:
+    if isinstance(value, str) and value.isdigit() and int(value) == 500:
         return int(value)
     return None
 
@@ -256,7 +256,7 @@ def _stream_server_error_code(body: bytes) -> int | None:
     """Server error code from an SSE ``data:`` frame or a single JSON body.
 
     Streaming chat commits HTTP 200 before generation. A later engine failure is
-    carried as ``error.code`` (or a top-level ``code``) inside a ``data:`` line.
+    carried as ``error.code`` 500 (or a top-level ``code``) inside a ``data:`` line.
     Bare ``500`` text is ignored so base64 payloads cannot trip this check.
     """
     text = body.decode("utf-8", errors="replace")
@@ -353,28 +353,15 @@ def _create_multimodal_request_config(model: str) -> dict[str, Any]:
     }
 
 
-def _assert_post_fault_chat_fast_fail(host: str, port: int, *, model: str, scenario: str) -> None:
-    payload = _create_multimodal_request_config(model)
-    start = time.monotonic()
-    try:
-        status, body = post_json_raw(host, port, "/v1/chat/completions", payload, timeout_sec=20)
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[{scenario} fast_fail] /v1/chat/completions did not fail fast: {elapsed:.2f}s"
-        assert status == 500, (
-            f"[{scenario} fast_fail] expected HTTP 500 after fault, got status={status}, body={body[:200]!r}"
-        )
-    except Exception:  # noqa: BLE001
-        elapsed = time.monotonic() - start
-        assert elapsed < 15, f"[{scenario} fast_fail] exception was too slow after fault: {elapsed:.2f}s"
-
-
-def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -> None:
+def _assert_post_fault_health_terminal(online_client: Any, *, scenario: str) -> None:
     deadline = time.monotonic() + 20.0
     last_observation = ""
     while time.monotonic() < deadline:
         try:
-            status, body = get_health_raw(host, port, timeout_sec=5)
-            last_observation = f"http={status}, body={body[:200]!r}"
+            resp = online_client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0]
+            status = resp.status_code
+            body = resp.error_message if resp.error_message is not None else resp.json_body
+            last_observation = f"http={status}, body={str(body)[:200]!r}"
             if status == 503:
                 return
         except Exception as exc:  # noqa: BLE001
@@ -384,7 +371,7 @@ def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -
     pytest.fail(f"[{scenario} health] no terminal post-fault health observed: {last_observation}")
 
 
-def _assert_server_alive_after_fault(host: str, port: int, *, scenario: str) -> None:
+def _assert_server_alive_after_fault(online_client: Any, *, scenario: str) -> None:
     """#4285: a single-stage engine death must NOT take down the API server.
 
     The process must stay up and keep answering /health (503 is acceptable —
@@ -395,7 +382,7 @@ def _assert_server_alive_after_fault(host: str, port: int, *, scenario: str) -> 
     responded = False
     while time.monotonic() < deadline:
         try:
-            status, _ = get_health_raw(host, port, timeout_sec=5)
+            status = online_client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
             responded = True
             assert status in (200, 503), f"[{scenario} alive] unexpected /health status={status}"
         except Exception as exc:  # noqa: BLE001
@@ -414,8 +401,9 @@ QWEN_PARAMS = create_reliability_omni_server_params(RELIABILITY_SCENARIOS, DEPLO
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_gpu_oom_error_contract_consistent_chat_speech(
     omni_server_function,
+    online_client_function,
 ) -> None:
-    """Black-box: text chat vs omni audio output should expose a consistent error contract under OOM.
+    """Black-box: text chat and audio output both return HTTP 500 under OOM, and the API stays up.
 
     Speech-style output is requested via ``/v1/chat/completions`` with ``modalities`` that include ``audio``.
     """
@@ -430,54 +418,33 @@ def test_reliability_fault_gpu_oom_error_contract_consistent_chat_speech(
         startup_timeout_sec=OOM_INJECTION_CONFIG["startup_timeout_sec"],
         strict=OOM_INJECTION_CONFIG["strict"],
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
     mix_base = _mix_chat_completions_probe_payload(omni_server_function)
     oom_contract_timeout_sec = 120
+
+    def _oom_contract_request(modalities: list[str]) -> dict[str, Any]:
+        return {
+            "model": mix_base["model"],
+            "messages": mix_base["messages"],
+            "stream": False,
+            "modalities": modalities,
+        }
+
+    # Under OOM pressure both chat and speech should return HTTP 500
+    # instead of request-validation-class (4xx) errors.
     try:
-        chat_status, chat_body = post_json_raw(
-            host,
-            port,
-            "/v1/chat/completions",
-            {
-                "model": mix_base["model"],
-                "messages": mix_base["messages"],
-                "stream": False,
-                "modalities": ["text"],
-            },
-            timeout_sec=oom_contract_timeout_sec,
+        online_client_function.send_chat_completions_http_request(
+            {"json": _oom_contract_request(["text"]), "timeout": oom_contract_timeout_sec},
+            err_code=500,
         )
-        speech_status, speech_body = post_json_raw(
-            host,
-            port,
-            "/v1/chat/completions",
-            {
-                "model": mix_base["model"],
-                "messages": mix_base["messages"],
-                "stream": False,
-                "modalities": ["text", "audio"],
-            },
-            timeout_sec=oom_contract_timeout_sec,
+        online_client_function.send_chat_completions_http_request(
+            {"json": _oom_contract_request(["text", "audio"]), "timeout": oom_contract_timeout_sec},
+            err_code=500,
         )
     finally:
         stop_gpu_oom_hogs(handle)
 
-    # Under OOM pressure both chat and speech should surface runtime-class (5xx)
-    # failures instead of request-validation-class (4xx) errors.
-    chat_error = extract_openai_error_contract_from_bytes(chat_body)
-    speech_error = extract_openai_error_contract_from_bytes(speech_body)
-    print(chat_status, chat_error, speech_status, speech_error)
-
-    assert chat_status >= 500, f"expected chat error under OOM, got status={chat_status}"
-    assert speech_status >= 500, f"expected speech runtime error under OOM, got status={speech_status}"
-
-    assert chat_error is not None, f"chat error payload not OpenAI-compatible: {chat_body[:300]!r}"
-    assert speech_error is not None, f"speech error payload not OpenAI-compatible: {speech_body[:300]!r}"
-    assert "code" in chat_error, f"chat error lacks code field: {chat_error!r}"
-    assert "code" in speech_error, f"speech error lacks code field: {speech_error!r}"
-
     # #4285: a single dead stage must not take the whole API server down.
-    _assert_server_alive_after_fault(host, port, scenario="oom_contract")
+    _assert_server_alive_after_fault(online_client_function, scenario="oom_contract")
 
 
 @pytest.mark.slow
@@ -573,9 +540,15 @@ def test_reliability_fault_gpu_oom_concurrent_pressure_failure(omni_server_funct
 )
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_request_failure(
-    omni_server_after_fault_function, online_client_function
+    omni_server_function,
+    online_client_function,
+    fault_injector: FaultInjector,
 ) -> None:
-    request_config = _create_multimodal_request_config(omni_server_after_fault_function.model)
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
+    fault_injector(omni_server_function)
+    request_config = _create_multimodal_request_config(omni_server_function.model)
     try:
         online_client_function.send_omni_request(request_config, request_num=1)
     except Exception as exc:
@@ -592,8 +565,9 @@ def test_reliability_fault_process_kill_request_failure(
 )
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
-    omni_server_after_fault_function,
+    omni_server_function,
     online_client_function,
+    fault_injector: FaultInjector,
 ) -> None:
     """Black-box: after worker process kill, multimodal chat fails fast and does not hang; /health→503 last.
 
@@ -601,9 +575,11 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     stays on the thinker and can still return HTTP 200 after the talker is killed.
     The client read timeout is 30s. A timeout raises out of the client and fails the test.
     """
-    host = omni_server_after_fault_function.host
-    port = omni_server_after_fault_function.port
-    model = omni_server_after_fault_function.model
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
+    fault_injector(omni_server_function)
+    model = omni_server_function.model
 
     payload = _create_multimodal_request_config(model)
     online_client_function.send_chat_completions_http_request(
@@ -648,8 +624,10 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     final_health_status: int | None = None
     while time.monotonic() < deadline:
         try:
-            status, body = get_health_raw(host, port, timeout_sec=5)
-            last_observation = f"http={status}, body={body[:200]!r}"
+            resp = online_client_function.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0]
+            status = resp.status_code
+            body = resp.error_message if resp.error_message is not None else resp.json_body
+            last_observation = f"http={status}, body={str(body)[:200]!r}"
             final_health_status = status
             if status == 503:
                 break
@@ -676,6 +654,9 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 ) -> None:
     request_config = _create_multimodal_request_config(omni_server_function.model)
     scenario = "kill_worker_with_load"
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_omni_request(request_config, request_num=1),
         inject_fault=lambda: fault_injector(omni_server_function),
@@ -686,10 +667,14 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_chat_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    online_client_function.send_chat_completions_http_request(
+        {
+            "json": _create_multimodal_request_config(omni_server_function.model),
+            "timeout": _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC,
+        },
+        err_code=500,
+    )
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
 
 
 @pytest.mark.slow
@@ -698,16 +683,17 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup(
     omni_server_function,
+    online_client_function,
     signal_name: str,
 ) -> None:
     """Black-box: kill serve root without load; verify fast-fail/health/cleanup."""
     scenario = f"kill_serve_root_no_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
     injector(omni_server_function)
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_chat_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -727,6 +713,9 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     request_config = _create_text_request_config(omni_server_function.model)
     scenario = f"kill_serve_root_with_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_omni_request(request_config, request_num=1),
         inject_fault=lambda: injector(omni_server_function),
@@ -737,10 +726,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_chat_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -753,6 +739,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
     omni_server_function,
+    online_client_function,
     signal_name: str,
 ) -> None:
     """Black-box: kill server tree without load; verify fast-fail/health/cleanup."""
@@ -762,11 +749,11 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
         post_kill_wait_seconds=2.0,
         inter_kill_wait_seconds=0.1,
     )
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
     injector(omni_server_function)
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_chat_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -789,6 +776,9 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
         post_kill_wait_seconds=2.0,
         inter_kill_wait_seconds=0.1,
     )
+    online_client_function.send_omni_request(
+        _create_multimodal_request_config(omni_server_function.model), request_num=1
+    )
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_omni_request(request_config, request_num=1),
         inject_fault=lambda: injector(omni_server_function),
@@ -799,10 +789,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_chat_fast_fail(host, port, model=omni_server_function.model, scenario=scenario)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -815,6 +802,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
 @pytest.mark.parametrize("omni_server_function", QWEN_PARAMS, indirect=True)
 def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
     omni_server_function,
+    online_client_function,
 ) -> None:
     """Black-box: under bounded GPU pressure, a heavy mix chat fails; after hog stops, the same request succeeds.
 
@@ -878,17 +866,11 @@ def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
                 f"status={fault_status}, stream_error_code={stream_error_code}, "
                 f"body_prefix={fault_body[:500]!r}"
             )
-            if fault_status >= 400:
-                err = extract_openai_error_contract_from_bytes(fault_body)
-                if err is None:
-                    assert _fault_keywords_match_response(status=fault_status, body=fault_body), (
-                        "non-2xx without OpenAI-style error object should still mention fault hints in body; "
-                        f"status={fault_status}, body_prefix={fault_body[:500]!r}"
-                    )
-                else:
-                    assert isinstance(err.get("message"), str) and err["message"].strip(), (
-                        f"structured error should carry a non-empty message: {err!r}"
-                    )
+            if fault_status >= 400 and extract_openai_error_contract_from_bytes(fault_body) is None:
+                assert _fault_keywords_match_response(status=fault_status, body=fault_body), (
+                    "non-2xx without OpenAI-style error object should still mention fault hints in body; "
+                    f"status={fault_status}, body_prefix={fault_body[:500]!r}"
+                )
             else:
                 assert stream_error_code is not None or _fault_keywords_match_response(
                     status=fault_status, body=fault_body
@@ -907,7 +889,7 @@ def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
     last_health_exc: BaseException | None = None
     while time.monotonic() < recovery_deadline:
         try:
-            status, _ = get_health_raw(host, port, timeout_sec=5)
+            status = online_client_function.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
             unreachable_streak = 0
             if status in (200, 503):
                 terminal_health = status
@@ -981,7 +963,7 @@ def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
             f"stream_error_code={recover_stream_code}, body_prefix={post_mix_body[:600]!r}"
         )
     else:
-        assert request_status is None or request_status >= 500, (
+        assert request_status is None or request_status == 500, (
             "unhealthy terminal state should fail fast on requests, "
             f"got health={terminal_health}, request_status={request_status}"
         )

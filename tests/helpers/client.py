@@ -564,6 +564,7 @@ class OnlineOmniClient:
 
         ``request_config``: optional ``timeout`` plus optional ``err_code`` / ``err_message`` for
         :func:`~tests.helpers.assertions.assert_http_error` (also as keyword-only args).
+        With no ``err_code`` and no ``err_message``, the response must be HTTP 200.
         """
         cfg = _merge_http_expectation_kwargs(
             request_config,
@@ -572,11 +573,19 @@ class OnlineOmniClient:
         )
         r = requests.get(self._build_url("/health"), timeout=float(cfg.get("timeout", 120.0)))
         resp = self._http_response_from_requests(r)
-        assert_http_error(
-            resp,
-            err_code=cfg.get("err_code"),
-            err_message=cfg.get("err_message"),
-        )
+        expected_code = cfg.get("err_code")
+        expected_message = cfg.get("err_message")
+        if expected_code is None and expected_message is None:
+            assert resp.status_code == 200, (
+                "GET /health expected HTTP 200 when no error expectation is set, "
+                f"got {resp.status_code}: {resp.error_message!r}"
+            )
+        else:
+            assert_http_error(
+                resp,
+                err_code=expected_code,
+                err_message=expected_message,
+            )
         return [resp]
 
     def send_models_http_request(

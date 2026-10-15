@@ -25,8 +25,8 @@ from tests.dfx.conftest import (
 )
 from tests.dfx.reliability.helpers import (
     FaultInjector,
+    GpuOomInjectionConfig,
     assert_no_server_tree_process_residual_and_gpu_release,
-    get_health_raw,
     inject_gpu_oom,
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
@@ -36,7 +36,6 @@ from tests.dfx.reliability.helpers import (
     worker_residual_timeout_after_kill_signal,
 )
 from tests.helpers.mark import hardware_test
-from tests.helpers.runtime import OnlineOmniClient
 
 RELIABILITY_SCENARIOS: list[dict[str, Any]] = [
     {
@@ -49,7 +48,7 @@ RELIABILITY_SCENARIOS: list[dict[str, Any]] = [
 ]
 
 DEPLOY_CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "vllm_omni" / "deploy"
-OOM_INJECTION_CONFIG = {
+OOM_INJECTION_CONFIG: GpuOomInjectionConfig = {
     "target_mem_ratio": 0.95,
     "hold_seconds": 0,
     "startup_timeout_sec": 20,
@@ -118,7 +117,7 @@ INFLIGHT_INJECTION_REQUEST_COUNT = 10
 _IMAGE_FAST_FAIL_HTTP_TIMEOUT_SEC = 30
 
 
-def _image_request_config(omni_server: Any) -> dict[str, Any]:
+def _create_image_request_config(omni_server: Any) -> dict[str, Any]:
     return {
         "json": {
             "model": omni_server.model,
@@ -136,16 +135,7 @@ def _image_request_config(omni_server: Any) -> dict[str, Any]:
     }
 
 
-def _submit_image_generation(online_client: OnlineOmniClient, omni_server: Any) -> None:
-    responses = online_client.send_images_generations_http_request(_image_request_config(omni_server))
-    resp = responses[0]
-    if resp.status_code >= 400:
-        raise RuntimeError(
-            f"/v1/images/generations failed: status={resp.status_code}, body={getattr(resp, 'error_message', '')!r}"
-        )
-
-
-def _image_fast_fail_payload(model: str, prompt: str) -> dict[str, Any]:
+def _create_image_fast_fail_request_config(model: str, prompt: str) -> dict[str, Any]:
     return {
         "model": model,
         "prompt": prompt,
@@ -159,26 +149,28 @@ def _image_fast_fail_payload(model: str, prompt: str) -> dict[str, Any]:
 
 
 def _assert_post_fault_image_fast_fail(online_client: Any, *, model: str) -> None:
-    """New ``/v1/images/generations`` after the fault must return HTTP 500 within 30s.
+    """New ``/v1/images/generations`` after a worker kill must return HTTP 500 within 30s.
 
-    The client timeout is 30s. A timeout or a dropped connection raises and fails the test.
+    The API process is still listening. A timeout or a dropped connection raises and fails the test.
     """
     online_client.send_images_generations_http_request(
         {
-            "json": _image_fast_fail_payload(model, "post-fault fast-fail check"),
+            "json": _create_image_fast_fail_request_config(model, "post-fault fast-fail check"),
             "timeout": _IMAGE_FAST_FAIL_HTTP_TIMEOUT_SEC,
         },
         err_code=500,
     )
 
 
-def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -> None:
+def _assert_post_fault_health_terminal(online_client: Any, *, scenario: str) -> None:
     deadline = time.monotonic() + 20.0
     last_observation = ""
     while time.monotonic() < deadline:
         try:
-            status, body = get_health_raw(host, port, timeout_sec=5)
-            last_observation = f"http={status}, body={body[:200]!r}"
+            resp = online_client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0]
+            status = resp.status_code
+            body = resp.error_message if resp.error_message is not None else resp.json_body
+            last_observation = f"http={status}, body={str(body)[:200]!r}"
             if status == 503:
                 return
         except Exception as exc:  # noqa: BLE001
@@ -207,7 +199,9 @@ def test_reliability_fault_gpu_oom_large_request_failure(
     )
     try:
         try:
-            _submit_image_generation(online_client_function, omni_server_function)
+            online_client_function.send_images_generations_http_request(
+                _create_image_request_config(omni_server_function)
+            )
         except Exception as exc:
             assert_fault_exception(exc, FAULT_ERROR_KEYWORDS)
         else:
@@ -225,11 +219,14 @@ def test_reliability_fault_gpu_oom_large_request_failure(
 )
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_request_failure(
-    omni_server_after_fault_function,
+    omni_server_function,
     online_client_function,
+    fault_injector: FaultInjector,
 ) -> None:
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
+    fault_injector(omni_server_function)
     try:
-        _submit_image_generation(online_client_function, omni_server_after_fault_function)
+        online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
     except Exception as exc:
         assert_fault_exception(exc, PROCESS_KILL_ERROR_KEYWORDS)
     else:
@@ -245,17 +242,21 @@ def test_reliability_fault_process_kill_request_failure(
 )
 @pytest.mark.parametrize("omni_server_function", HUNYUAN_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
-    omni_server_after_fault_function,
+    omni_server_function,
     online_client_function,
+    fault_injector: FaultInjector,
 ) -> None:
-    host = omni_server_after_fault_function.host
-    port = omni_server_after_fault_function.port
-    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_after_fault_function.model)
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
+    fault_injector(omni_server_function)
+    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
 
     start = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [
-            executor.submit(_submit_image_generation, online_client_function, omni_server_after_fault_function)
+            executor.submit(
+                online_client_function.send_images_generations_http_request,
+                _create_image_request_config(omni_server_function),
+            )
             for _ in range(3)
         ]
         done, pending = concurrent.futures.wait(
@@ -284,8 +285,10 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     final_health_status: int | None = None
     while time.monotonic() < deadline:
         try:
-            status, body = get_health_raw(host, port, timeout_sec=5)
-            last_observation = f"http={status}, body={body[:200]!r}"
+            resp = online_client_function.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0]
+            status = resp.status_code
+            body = resp.error_message if resp.error_message is not None else resp.json_body
+            last_observation = f"http={status}, body={str(body)[:200]!r}"
             final_health_status = status
             if status == 503:
                 break
@@ -312,8 +315,11 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     fault_injector: FaultInjector,
 ) -> None:
     scenario = "kill_worker_with_load"
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
     load_result = run_fault_injection_with_rate_load(
-        submit_request=lambda: _submit_image_generation(online_client_function, omni_server_function),
+        submit_request=lambda: online_client_function.send_images_generations_http_request(
+            _create_image_request_config(omni_server_function)
+        ),
         inject_fault=lambda: fault_injector(omni_server_function),
         num_requests=INFLIGHT_INJECTION_REQUEST_COUNT,
         request_rate=INFLIGHT_INJECTION_REQUEST_RATE,
@@ -322,10 +328,8 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
     _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
 
 
 @pytest.mark.slow
@@ -340,8 +344,11 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 ) -> None:
     scenario = f"kill_serve_root_with_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
     load_result = run_fault_injection_with_rate_load(
-        submit_request=lambda: _submit_image_generation(online_client_function, omni_server_function),
+        submit_request=lambda: online_client_function.send_images_generations_http_request(
+            _create_image_request_config(omni_server_function)
+        ),
         inject_fault=lambda: injector(omni_server_function),
         num_requests=INFLIGHT_INJECTION_REQUEST_COUNT,
         request_rate=INFLIGHT_INJECTION_REQUEST_RATE,
@@ -350,10 +357,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -373,11 +377,9 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
 ) -> None:
     scenario = f"kill_serve_root_no_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
     injector(omni_server_function)
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -400,11 +402,9 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
         post_kill_wait_seconds=2.0,
         inter_kill_wait_seconds=0.1,
     )
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
     injector(omni_server_function)
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -427,8 +427,11 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
         post_kill_wait_seconds=2.0,
         inter_kill_wait_seconds=0.1,
     )
+    online_client_function.send_images_generations_http_request(_create_image_request_config(omni_server_function))
     load_result = run_fault_injection_with_rate_load(
-        submit_request=lambda: _submit_image_generation(online_client_function, omni_server_function),
+        submit_request=lambda: online_client_function.send_images_generations_http_request(
+            _create_image_request_config(omni_server_function)
+        ),
         inject_fault=lambda: injector(omni_server_function),
         num_requests=INFLIGHT_INJECTION_REQUEST_COUNT,
         request_rate=INFLIGHT_INJECTION_REQUEST_RATE,
@@ -437,10 +440,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_image_fast_fail(online_client_function, model=omni_server_function.model)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,

@@ -24,8 +24,8 @@ from tests.dfx.conftest import (
 )
 from tests.dfx.reliability.helpers import (
     FaultInjector,
+    GpuOomInjectionConfig,
     assert_no_server_tree_process_residual_and_gpu_release,
-    get_health_raw,
     inject_gpu_oom,
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
@@ -48,7 +48,7 @@ RELIABILITY_SCENARIOS: list[dict[str, Any]] = [
 ]
 
 E2E_STAGE_CONFIGS_DIR = Path(__file__).resolve().parent.parent / "e2e" / "stage_configs"
-OOM_INJECTION_CONFIG = {
+OOM_INJECTION_CONFIG: GpuOomInjectionConfig = {
     "target_mem_ratio": 0.95,
     "hold_seconds": 0,
     "startup_timeout_sec": 20,
@@ -200,13 +200,15 @@ def _await_video_job(online_client: Any, video_id: str, *, timeout_sec: float) -
     raise TimeoutError(f"video job {video_id} did not reach a terminal status: {last_job!r}")
 
 
-def _assert_post_fault_health_terminal(host: str, port: int, *, scenario: str) -> None:
+def _assert_post_fault_health_terminal(online_client: Any, *, scenario: str) -> None:
     deadline = time.monotonic() + 20.0
     last_observation = ""
     while time.monotonic() < deadline:
         try:
-            status, body = get_health_raw(host, port, timeout_sec=5)
-            last_observation = f"http={status}, body={body[:200]!r}"
+            resp = online_client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0]
+            status = resp.status_code
+            body = resp.error_message if resp.error_message is not None else resp.json_body
+            last_observation = f"http={status}, body={str(body)[:200]!r}"
             if status == 503:
                 return
         except Exception as exc:  # noqa: BLE001
@@ -249,9 +251,12 @@ def test_reliability_fault_gpu_oom_large_request_failure(omni_server_function, o
 )
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_request_failure(
-    omni_server_after_fault_function,
+    omni_server_function,
     online_client_function,
+    fault_injector: FaultInjector,
 ) -> None:
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
+    fault_injector(omni_server_function)
     request_config = _video_request_config()
     try:
         online_client_function.send_video_diffusion_request(request_config, request_num=1)
@@ -269,15 +274,16 @@ def test_reliability_fault_process_kill_request_failure(
 )
 @pytest.mark.parametrize("omni_server_function", DIFFUSION_VIDEO_PARAMS, indirect=True)
 def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
-    omni_server_after_fault_function,
+    omni_server_function,
     online_client_function,
+    fault_injector: FaultInjector,
 ) -> None:
     """Black-box: after process kill, /v1/videos fails fast and concurrent calls don't hang.
 
     /health→503 is checked last. A missing listener is issue#8907.
     """
-    host = omni_server_after_fault_function.host
-    port = omni_server_after_fault_function.port
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
+    fault_injector(omni_server_function)
     request_config = _video_request_config()
 
     # Phase-1: one new /v1/videos request should fail fast.
@@ -321,8 +327,10 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
     final_health_status: int | None = None
     while time.monotonic() < deadline:
         try:
-            status, body = get_health_raw(host, port, timeout_sec=5)
-            last_observation = f"http={status}, body={body[:200]!r}"
+            resp = online_client_function.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0]
+            status = resp.status_code
+            body = resp.error_message if resp.error_message is not None else resp.json_body
+            last_observation = f"http={status}, body={str(body)[:200]!r}"
             final_health_status = status
             if status == 503:
                 break
@@ -351,6 +359,7 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 ) -> None:
     request_config = _video_request_config()
     scenario = "kill_worker_with_load"
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_video_diffusion_request(request_config, request_num=1),
         inject_fault=lambda: fault_injector(omni_server_function),
@@ -361,10 +370,8 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
     _assert_post_fault_video_fast_fail(online_client_function)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
 
 
 @pytest.mark.slow
@@ -389,9 +396,6 @@ def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
         startup_timeout_sec=OOM_INJECTION_CONFIG["startup_timeout_sec"],
         strict=OOM_INJECTION_CONFIG["strict"],
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-
     failure_observed = False
     failure_detail = ""
     try:
@@ -436,7 +440,7 @@ def test_reliability_fault_gpu_oom_recovers_after_fault_removed(
     last_health_exc: BaseException | None = None
     while time.monotonic() < recovery_deadline:
         try:
-            status, _ = get_health_raw(host, port, timeout_sec=5)
+            status = online_client_function.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
             unreachable_streak = 0
             if status in (200, 503):
                 terminal_health = status
@@ -534,6 +538,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     request_config = _video_request_config()
     scenario = f"kill_serve_root_with_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_video_diffusion_request(request_config, request_num=1),
         inject_fault=lambda: injector(omni_server_function),
@@ -544,10 +549,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -567,11 +569,9 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
     """Black-box: kill serve root without load; verify fast-fail/health/cleanup."""
     scenario = f"kill_serve_root_no_load_{signal_name.lower()}"
     injector = make_server_root_kill_fault_injector(signal_name=signal_name, post_kill_wait_seconds=2.0)
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
     injector(omni_server_function)
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -594,11 +594,9 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
         post_kill_wait_seconds=2.0,
         inter_kill_wait_seconds=0.1,
     )
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
     injector(omni_server_function)
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
@@ -622,6 +620,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
         post_kill_wait_seconds=2.0,
         inter_kill_wait_seconds=0.1,
     )
+    online_client_function.send_video_diffusion_request(_video_request_config(), request_num=1)
     load_result = run_fault_injection_with_rate_load(
         submit_request=lambda: online_client_function.send_video_diffusion_request(request_config, request_num=1),
         inject_fault=lambda: injector(omni_server_function),
@@ -632,10 +631,7 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     assert load_result["failure_observed"], (
         f"[{scenario}] expected at least one load request failure after fault; load_result={load_result}"
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    _assert_post_fault_video_fast_fail(online_client_function)
-    _assert_post_fault_health_terminal(host, port, scenario=scenario)
+    _assert_post_fault_health_terminal(online_client_function, scenario=scenario)
     assert_no_server_tree_process_residual_and_gpu_release(
         omni_server_function,
         scenario=scenario,
