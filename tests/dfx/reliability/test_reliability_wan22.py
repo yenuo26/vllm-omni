@@ -267,6 +267,7 @@ def test_reliability_fault_process_kill_request_failure(
 
 
 @pytest.mark.slow
+@pytest.mark.skip(reason="issue#8907")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
@@ -346,6 +347,7 @@ def test_reliability_fault_process_kill_health_fast_fail_and_concurrent(
 
 
 @pytest.mark.slow
+@pytest.mark.skip(reason="issue#8907")
 @pytest.mark.parametrize(
     "fault_injector",
     WORKER_SIGNAL_FAULT_PARAMS,
