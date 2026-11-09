@@ -127,10 +127,18 @@ PIXEL_THRESHOLDS_BY_DEVICE: dict[str, dict[str, float]] = {
 
 
 def _similarity_thresholds() -> SimilarityThresholds:
+    # #9732 matches table keys as substrings of get_device_name(). Ascend
+    # reports Ascend910*, which does not contain the CI SKU "A3", so NPU
+    # fell through to the CUDA default (SSIM 0.98 / PSNR 34.6). #10054.
+    if current_omni_platform.is_npu():
+        return SIMILARITY_THRESHOLDS_BY_DEVICE["A3"]
     return resolve_similarity_thresholds(SIMILARITY_THRESHOLDS_BY_DEVICE)
 
 
 def _pixel_thresholds() -> dict[str, float]:
+    # Same device-name miss as _similarity_thresholds (#9732, #10054).
+    if current_omni_platform.is_npu():
+        return PIXEL_THRESHOLDS_BY_DEVICE["A3"]
     profile = resolve_device_profile(profiles=PIXEL_THRESHOLDS_BY_DEVICE)
     return PIXEL_THRESHOLDS_BY_DEVICE.get(profile, PIXEL_THRESHOLDS_BY_DEVICE["default"])
 
