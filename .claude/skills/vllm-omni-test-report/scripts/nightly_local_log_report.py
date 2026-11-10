@@ -4560,7 +4560,8 @@ def emit_report_html(
         if target is CUDA_TARGET:
             # CUDA weekly-build chapters (Scheduled weekly / Scheduled
             # Non-Critical weekly). A kind with no matching build inside the
-            # daily scan window is hidden entirely — no placeholder chapter.
+            # report's 24h window is hidden entirely — no placeholder
+            # chapter, no re-render of last week's build.
             for kind, wk_label, _pattern in WEEKLY_BUILD_KINDS:
                 wk_build, wk_jobs, wk_note = (weekly_results or {}).get(kind) or (None, None, None)
                 if wk_build is None and wk_jobs is None and not wk_note:
@@ -4759,17 +4760,25 @@ def _resolve_latest_build_matching_message(
     pattern: str,
     *,
     scan_limit: int = 50,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Return the newest build on ``target.branch`` whose message matches ``pattern``.
 
     Scans the newest ``scan_limit`` builds and refetches the full build
-    object for the first match. ``None`` means no build in the window
-    matches — callers treat that as "hide the chapter", not an error.
+    object for the first match. Optional ``created_from``/``created_to``
+    (UTC datetimes) narrow the API query to that creation window.
+    ``None`` means no build in the window matches — callers treat that
+    as "hide the chapter", not an error.
     """
     url = (
         f"https://api.buildkite.com/v2/organizations/{target.org}/pipelines/{target.pipeline}"
         f"/builds?branch={target.branch}&per_page={scan_limit}"
     )
+    if created_from is not None:
+        url += f"&created_from={urllib.parse.quote(created_from.strftime('%Y-%m-%dT%H:%M:%SZ'), safe='')}"
+    if created_to is not None:
+        url += f"&created_to={urllib.parse.quote(created_to.strftime('%Y-%m-%dT%H:%M:%SZ'), safe='')}"
     builds = http_json(url, tok)
     rx = re.compile(pattern, re.I)
     for b in builds:
@@ -4781,14 +4790,21 @@ def _resolve_latest_build_matching_message(
 
 def _resolve_weekly_builds_for_report(
     include: bool,
+    report_date_iso: str,
 ) -> dict[str, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]]:
-    """Resolve the latest CUDA weekly builds for the weekly chapters.
+    """Resolve the CUDA weekly builds that ran within the report's 24h window.
+
+    Window: ``[report_date-1 00:00 UTC, report_date 00:00 UTC)`` on
+    ``created_at``. Weekly builds run once a week, so a build lands in
+    exactly one window and its chapter appears exactly once — in the
+    report generated the next 00:00 UTC. Days with no weekly build in
+    the window hide the chapter entirely instead of re-rendering the
+    previous week's build.
 
     Returns a mapping keyed by the ``WEEKLY_BUILD_KINDS`` slug →
-    ``(build, jobs, note)``. A kind whose message matches no build in the
-    daily scan window maps to ``(None, None, None)`` and its chapter is
-    hidden entirely (display only when the daily builds contain a matching
-    build). API errors map to a note so the chapter explains itself.
+    ``(build, jobs, note)``. A kind whose message matches no build in
+    the window maps to ``(None, None, None)`` and its chapter is hidden.
+    API errors map to a note so the chapter explains itself.
     """
     empty = {kind: (None, None, None) for kind, _label, _pattern in WEEKLY_BUILD_KINDS}
     if not include:
@@ -4798,16 +4814,32 @@ def _resolve_weekly_builds_for_report(
         # No token → cannot scan; hide the weekly chapters (the nightly
         # chapters already render their own skip note).
         return dict(empty)
+    # Report-date window (UTC midnight-to-midnight before the report date).
+    window_end = datetime.fromisoformat(f"{report_date_iso}T00:00:00+00:00")
+    window_start = window_end - timedelta(hours=24)
+    # API created_to is inclusive — query one second past and trim to the
+    # exact half-open window in Python so boundary builds partition cleanly.
+    query_to = window_end + timedelta(seconds=1)
     results: dict[str, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]] = {}
     for kind, label, pattern in WEEKLY_BUILD_KINDS:
         try:
-            build = _resolve_latest_build_matching_message(tok, CUDA_TARGET, pattern)
+            build = _resolve_latest_build_matching_message(
+                tok, CUDA_TARGET, pattern, created_from=window_start, created_to=query_to
+            )
         except Exception as e:  # noqa: BLE001 — one kind failing must not kill the rest
             results[kind] = (None, None, f"Buildkite (CUDA) {label} build section failed: {e}")
             continue
         if build is None:
             results[kind] = (None, None, None)
             continue
+        created_at = build.get("created_at")
+        if created_at:
+            ca = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if not (window_start <= ca < window_end):
+                # Outside the report-date window (e.g. API boundary
+                # semantics) — treat as "no weekly build today".
+                results[kind] = (None, None, None)
+                continue
         try:
             jobs = collect_nightly_job_log_analyses(
                 build, tok, org=CUDA_TARGET.org, pipeline=CUDA_TARGET.pipeline
@@ -4904,7 +4936,9 @@ def main() -> None:
         build_no=args.buildkite_build,
         targets=ALL_BK_TARGETS,
     )
-    weekly_results = _resolve_weekly_builds_for_report(include=not args.no_buildkite)
+    weekly_results = _resolve_weekly_builds_for_report(
+        include=not args.no_buildkite, report_date_iso=report_date
+    )
 
     if args.html_report:
         out = args.html_report
