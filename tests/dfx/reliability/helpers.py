@@ -1054,7 +1054,18 @@ def assert_post_fault_api_unreachable(online_client: Any, *, scenario: str) -> N
 
 
 SIGTERM_CLEANUP_GRACE_SEC = 60.0
+ESCALATION_GRACE_SEC = 90.0
+LAUNCH_FAILURE_TIMEOUT_SEC = 180
 PARTIAL_ISOLATION_HTTP_TIMEOUT_SEC = 30.0
+_LAUNCH_FAILURE_HINTS = (
+    "oom",
+    "out of memory",
+    "cuda",
+    "memory",
+    "exited",
+    "failed to start",
+    "accelerator",
+)
 
 
 def assert_api_still_listening(online_client: Any, *, scenario: str) -> None:
@@ -1072,6 +1083,201 @@ def sigterm_serve_root_and_assert_cleanup(
     """Send one SIGTERM to the serve root and require the process tree and GPU to clear."""
     make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
     assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=grace_sec)
+
+
+def escalate_live_pids(pids: Sequence[int], *, grace_sec: float) -> bool:
+    """Return True when ``pids`` are still alive after ``grace_sec`` and were sent SIGKILL.
+
+    SIGTERM is the caller's job. This is the shutdown-escalation checkpoint: a
+    stuck exit must not wait forever.
+    """
+    deadline = time.monotonic() + grace_sec
+    while time.monotonic() < deadline:
+        if not list_alive_pids(pids):
+            return False
+        time.sleep(0.05)
+    sigkill = getattr(signal, "SIGKILL", None)
+    if sigkill is None:
+        raise RuntimeError("SIGKILL is not available; cannot escalate a stuck shutdown")
+    for pid in list_alive_pids(pids):
+        try:
+            os.kill(pid, sigkill)
+        except ProcessLookupError:
+            continue
+        print(f"[reliability][escalation] pid={pid} still alive after {grace_sec:.0f}s; sent SIGKILL", flush=True)
+    return True
+
+
+def shutdown_serve_root_with_escalation(
+    server: Any,
+    *,
+    scenario: str,
+    grace_sec: float = ESCALATION_GRACE_SEC,
+) -> bool:
+    """SIGTERM the serve root. If the tree is still alive after ``grace_sec``, SIGKILL it."""
+    make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
+    snapshot = getattr(server, "reliability_fault_snapshot", None)
+    tree_pids = [int(pid) for pid in (snapshot or {}).get("tree_pids", [])]
+    escalated = escalate_live_pids(tree_pids, grace_sec=grace_sec) if tree_pids else False
+    assert_no_server_tree_process_residual_and_gpu_release(
+        server,
+        scenario=scenario,
+        timeout_sec=30.0 if escalated else 5.0,
+    )
+    return escalated
+
+
+def assert_launch_failure_observable(exc: BaseException) -> None:
+    """A failed launch must surface as an error, an exit, or a bounded timeout."""
+    text = str(exc).lower()
+    assert any(hint in text for hint in _LAUNCH_FAILURE_HINTS), f"startup failure was not observable: {exc!r}"
+
+
+def start_server_from_params(params: Any, *, startup_timeout: int | None = None) -> Any:
+    """Build an ``OmniServer`` the same way the reliability fixture does, without entering it."""
+    from tests.helpers.runtime import OmniServer, _resolve_server_deploy_args, get_model_prefix
+
+    original_model = get_model_prefix() + params.model
+    server_args, stage_config_path, replaced = _resolve_server_deploy_args(
+        list(params.server_args or []),
+        params.stage_config_path,
+        "advanced_model",
+    )
+    if params.use_omni:
+        if "--stage-init-timeout" not in server_args:
+            server_args += ["--stage-init-timeout", "600"]
+        if "--init-timeout" not in server_args:
+            server_args += ["--init-timeout", "900"]
+        if "--disable-log-stats" not in server_args and "--log-stats" not in server_args:
+            server_args += ["--log-stats"]
+    if stage_config_path is not None and not replaced:
+        server_args += ["--deploy-config", stage_config_path]
+    if original_model != params.model and "--served-model-name" not in server_args:
+        server_args += ["--served-model-name", params.model]
+    server = OmniServer(
+        original_model,
+        server_args,
+        env_dict=params.env_dict,
+        use_omni=params.use_omni,
+        startup_timeout=params.startup_timeout if startup_timeout is None else startup_timeout,
+    )
+    server.model = params.model
+    return server
+
+
+def relaunch_server(server: Any) -> Any:
+    """Start a fresh server from a live server's already resolved command."""
+    from tests.helpers.runtime import OmniServer
+
+    fresh = OmniServer(
+        server.model,
+        list(server.serve_args),
+        env_dict=getattr(server, "env_dict", None),
+        use_omni=getattr(server, "use_omni", True),
+        startup_timeout=server.startup_timeout,
+    )
+    fresh.__enter__()
+    return fresh
+
+
+def client_for_server(server: Any) -> Any:
+    from tests.helpers.client import OnlineOmniClient
+
+    return OnlineOmniClient(
+        host=server.host,
+        port=server.port,
+        api_key="EMPTY",
+        log_stats=getattr(server, "log_stats", False),
+    )
+
+
+class SharedServer:
+    """One live server reused by later tests in the same class.
+
+    A replacement is started only when ``/health`` is no longer 200. The
+    fixture still owns the original process.
+    """
+
+    def __init__(self, server: Any) -> None:
+        self.server = server
+        self.fixture_server = server
+
+    def relaunch(self) -> Any:
+        fresh = relaunch_server(self.server)
+        if self.server is not self.fixture_server:
+            self.server.__exit__(None, None, None)
+        self.server = fresh
+        return fresh
+
+
+def shared_server_is_healthy(server: Any) -> bool:
+    client = client_for_server(server)
+    try:
+        status = client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
+    except Exception:  # noqa: BLE001
+        return False
+    return status == 200
+
+
+def ensure_shared_oom_server(model: FaultModel, slot: SharedServer) -> Any:
+    """Return the shared server when it is still healthy, otherwise start a new one."""
+    if shared_server_is_healthy(slot.server):
+        return slot.server
+    print("[reliability][shared-oom] /health is not 200; starting a fresh server", flush=True)
+    slot.relaunch()
+    model.warmup(client_for_server(slot.server), slot.server)
+    return slot.server
+
+
+def _process_visible_devices(pid: int) -> set[str]:
+    try:
+        env = psutil.Process(pid).environ()
+    except psutil.Error:
+        return set()
+    for key in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ASCEND_RT_VISIBLE_DEVICES"):
+        raw = env.get(key)
+        if raw:
+            return {token.strip() for token in raw.split(",") if token.strip()}
+    return set()
+
+
+def kill_bad_replica(
+    server: Any,
+    *,
+    pattern: str,
+    devices: str,
+    signal_name: str = "SIGKILL",
+) -> None:
+    """Kill one replica, leaving the other replica's processes alone.
+
+    AR workers are matched by process title (``_replica1``). Diffusion workers
+    that do not carry a replica id are matched by the device set they were given.
+    """
+    _log_server_process_tree(server)
+    root_pids = set(_list_server_process_tree(server)[:1])
+    hits: list[int] = []
+    if pattern:
+        hits = [pid for pid in _pids_in_server_tree_substring_match(server, pattern, limit=16) if pid not in root_pids]
+    if not hits and devices:
+        wanted = {token.strip() for token in devices.split(",") if token.strip()}
+        for pid in _list_server_process_tree(server):
+            if pid in root_pids:
+                continue
+            visible = _process_visible_devices(pid)
+            if visible and visible <= wanted:
+                hits.append(pid)
+    if not hits:
+        pytest.fail(f"no bad-replica process matched pattern={pattern!r} devices={devices!r}")
+    sig = getattr(signal, signal_name, None)
+    if sig is None:
+        raise ValueError(f"Unsupported signal_name: {signal_name}")
+    for pid in hits:
+        name, cmdline = _safe_proc_info(pid)
+        print(
+            f"[reliability][replica] killing pid={pid} name={name} signal={signal_name} cmdline={cmdline}",
+            flush=True,
+        )
+        os.kill(pid, sig)
 
 
 def worker_residual_timeout_after_kill_signal(signal_name: str) -> float:
@@ -1438,17 +1644,26 @@ class FaultModel:
     tree_with_load_signals: tuple[SignalSpec, ...] = TERM_KILL_SIGNALS
     oom_large_fail_message: str = "expected request failure during GPU OOM injection"
     oom_concurrent_fail_message: str = "expected concurrent request failure under OOM injection"
+    replica_scenarios: list[dict[str, Any]] | None = None
+    bad_replica_pattern: str = ""
+    bad_replica_devices: str = ""
 
     def scenarios_for_server_set(self, server_set: str) -> list[dict[str, Any]]:
         """Return deploy scenarios for one fault server set.
 
         The ``oom`` set forces ``enforce_eager`` on ``eager_oom_stage_ids``
         under HIP. Models that do not declare those stages keep their deploy.
+        ``launch`` uses the lifecycle scenario when one is set, so startup
+        faults do not repeat every server mode.
         """
         scenarios = list(self.scenarios)
-        if server_set == "lifecycle":
+        if server_set in ("lifecycle", "launch"):
             if self.lifecycle_scenario is not None:
                 scenarios = [item for item in scenarios if item["test_name"] == self.lifecycle_scenario]
+        elif server_set == "replica":
+            if not self.replica_scenarios:
+                raise ValueError(f"{self.model_id} has no replica deploy")
+            scenarios = list(self.replica_scenarios)
         elif server_set == "oom" and self.eager_oom_stage_ids:
             import torch
 
@@ -1552,6 +1767,28 @@ def server_and_signal_params(
                 )
             )
     return items
+
+
+def launch_scenario_params(
+    model: FaultModel,
+    scenario: type[FaultScenario],
+    *,
+    skip_reason: str | None = None,
+) -> Any:
+    """Parametrize a server spec the test starts itself. The fixture must not start it first."""
+    return pytest.mark.parametrize(
+        "launch_params",
+        server_params(model, server_set=scenario.server_set, skip_reason=skip_reason),
+    )
+
+
+def shared_oom_params(model: FaultModel) -> Any:
+    """One server per OOM deploy, shared by every test in the class."""
+    return pytest.mark.parametrize(
+        "omni_server_shared",
+        server_params(model, server_set="oom"),
+        indirect=True,
+    )
 
 
 def scenario_params(

@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
+
+"""MiniCPM-o 4.5 stage-replica reliability.
+
+Uses ``minicpmo_4_5_3gpu_stage1_replicas.yaml``: one thinker, and two stage-1
+replicas on GPU 1 and GPU 2. A test kills one stage-1 replica.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from tests.dfx.reliability.helpers import scenario_params
+from tests.dfx.reliability.scenarios import ReplicaCrashAtExit, ReplicaCrashIdle, ReplicaCrashWithLoad
+from tests.dfx.reliability.test_minicpmo_4_5 import MiniCPMO45
+from tests.helpers.mark import hardware_marks
+
+_DEPLOY_DIR = Path(__file__).resolve().parents[3] / "vllm_omni" / "deploy"
+_NATIVE_CHAT_TEMPLATE = (
+    Path(__file__).resolve().parents[3] / "vllm_omni/transformers_utils/chat_templates/minicpmo45_native.jinja"
+)
+
+
+class MiniCPMO45Replica(MiniCPMO45):
+    num_cards = 3
+    deploy_dir = _DEPLOY_DIR
+    scenarios = [
+        {
+            "test_name": "minicpmo_4_5_reliability_replica",
+            "server_params": {
+                "model": "openbmb/MiniCPM-o-4_5",
+                "stage_config_name": "minicpmo_4_5_3gpu_stage1_replicas.yaml",
+                "server_args": [
+                    "--trust-remote-code",
+                    "--async-chunk",
+                    "--chat-template",
+                    str(_NATIVE_CHAT_TEMPLATE),
+                    "--chat-template-content-format",
+                    "openai",
+                ],
+            },
+        }
+    ]
+    replica_scenarios = scenarios
+    # devices "1,2": replica 1 is GPU 2.
+    bad_replica_pattern = "StageEngineCoreProc_stage1_replica1"
+    bad_replica_devices = "2"
+
+
+MODEL = MiniCPMO45Replica()
+
+pytestmark = [
+    pytest.mark.slow,
+    *MODEL.extra_marks,
+    *hardware_marks(res=MODEL.res, num_cards=MODEL.num_cards),
+]
+
+
+@scenario_params(MODEL, ReplicaCrashIdle)
+def test_replica_crash_idle(omni_server_function, online_client_function) -> None:
+    """Kill one idle stage-1 replica. The other stage-1 replica still accepts a request."""
+    ReplicaCrashIdle().run(MODEL, omni_server_function, online_client_function)
+
+
+@scenario_params(MODEL, ReplicaCrashWithLoad)
+def test_replica_crash_with_load(omni_server_function, online_client_function) -> None:
+    """Kill one stage-1 replica under load. In-flight work fails, and the other replica still serves."""
+    ReplicaCrashWithLoad().run(MODEL, omni_server_function, online_client_function)
+
+
+@scenario_params(MODEL, ReplicaCrashAtExit)
+def test_replica_crash_at_exit(omni_server_function, online_client_function) -> None:
+    """After one stage-1 replica dies, shutdown finishes or escalates, and a new server can start."""
+    ReplicaCrashAtExit().run(MODEL, omni_server_function, online_client_function)

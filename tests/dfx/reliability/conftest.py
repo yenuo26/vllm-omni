@@ -33,3 +33,24 @@ def omni_server_after_fault_function(omni_server_function: Any, fault_injector: 
     """Inject fault after function-scoped server startup, then yield server."""
     fault_injector(omni_server_function)
     yield omni_server_function
+
+
+@pytest.fixture(scope="class")
+def omni_server_shared(request: pytest.FixtureRequest, run_level: str):
+    """Class-scoped server for OOM cases that leave the API process up."""
+    from tests.dfx.reliability.helpers import SharedServer
+    from tests.helpers.fixtures.runtime import omni_fixture_lock
+    from tests.helpers.runtime import iter_omni_server
+
+    generator = iter_omni_server(request, run_level, omni_fixture_lock)
+    server = next(generator)
+    slot = SharedServer(server)
+    try:
+        yield slot
+    finally:
+        if slot.server is not server:
+            slot.server.__exit__(None, None, None)
+        try:
+            next(generator)
+        except StopIteration:
+            pass

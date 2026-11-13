@@ -37,12 +37,12 @@ INVALID_PARAMETER_ROCM_MARKS = {
         'hardware_marks(res={"cuda": "H100", "rocm": "MI325"})': 2,
     },
 }
-QWEN_HARD_OOM_TESTS = {
-    "test_reliability_fault_gpu_oom_error_contract_consistent_chat_speech",
-    "test_reliability_fault_gpu_oom_large_request_failure",
-    "test_reliability_fault_gpu_oom_concurrent_pressure_failure",
-}
-QWEN_RECOVERY_OOM_TEST = "test_reliability_fault_gpu_oom_recovers_after_fault_removed"
+QWEN_UNDER_LOAD_OOM_CHECKS = (
+    "GpuOomErrorContract",
+    "GpuOomLarge",
+    "GpuOomConcurrent",
+    "GpuOomRecovery",
+)
 
 
 def _assignment_value(tree: ast.Module, name: str) -> ast.AST:
@@ -111,8 +111,9 @@ def test_qwen_oom_uses_free_memory_ceiling_and_eager_params() -> None:
     assert "eager_oom_stage_ids = (0, 1)" in case_source
 
     qwen_source = (RELIABILITY_DIR / "test_qwen3_omni.py").read_text(encoding="utf-8")
-    for test_name in QWEN_HARD_OOM_TESTS | {QWEN_RECOVERY_OOM_TEST}:
-        assert f"def {test_name}(" in qwen_source
+    assert "def test_gpu_oom_under_load(" in qwen_source
+    for class_name in QWEN_UNDER_LOAD_OOM_CHECKS:
+        assert f"{class_name}().run(" in qwen_source
 
     oom_source = (RELIABILITY_DIR / "scenarios" / "oom.py").read_text(encoding="utf-8")
     oom_tree = ast.parse(oom_source)

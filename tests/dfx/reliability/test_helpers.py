@@ -7,6 +7,7 @@ import ast
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -540,3 +541,18 @@ def test_qwen_cuda_oom_scenarios_preserve_normal_runtime_config() -> None:
 
     assert scenarios == base
     assert scenarios is not base
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGKILL is not a Windows signal")
+def test_stuck_pid_is_escalated_to_sigkill() -> None:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"]
+    )
+    try:
+        os.kill(proc.pid, signal.SIGTERM)
+        assert helpers.escalate_live_pids([proc.pid], grace_sec=0.4) is True
+        proc.wait(timeout=5)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)

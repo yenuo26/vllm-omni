@@ -664,6 +664,8 @@ source_file_dependencies:
   omni_qwen3_omni_reliability:
     - *qwen3_omni
     - tests/dfx/reliability/test_qwen3_omni.py
+    - tests/dfx/reliability/test_qwen3_omni_replica.py
+    - tests/helpers/stage_config.py
     - tests/dfx/reliability/scenarios/
     - tests/dfx/reliability/helpers.py
     - tests/dfx/conftest.py
@@ -755,6 +757,8 @@ source_file_dependencies:
   omni_minicpmo_4_5_reliability:
     - *minicpmo_4_5
     - tests/dfx/reliability/test_minicpmo_4_5.py
+    - tests/dfx/reliability/test_minicpmo_4_5_replica.py
+    - vllm_omni/deploy/minicpmo_4_5_3gpu_stage1_replicas.yaml
     - tests/dfx/reliability/scenarios/
     - tests/dfx/reliability/helpers.py
     - tests/dfx/conftest.py

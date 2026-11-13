@@ -20,15 +20,20 @@ from tests.dfx.reliability.helpers import (
     SignalSpec,
     extract_openai_error_contract_from_bytes,
     inject_gpu_oom,
+    launch_scenario_params,
     post_json_raw,
     scenario_params,
     stop_gpu_oom_hogs,
 )
 from tests.dfx.reliability.scenarios import (
+    FullCrashAtExit,
+    FullCrashAtLaunch,
+    GpuOomAtLaunch,
     GpuOomConcurrent,
     GpuOomErrorContract,
     GpuOomLarge,
     GpuOomRecovery,
+    PartialCrashAtExit,
     PartialStageIsolation,
     ProcessKillServeRootNoLoad,
     ProcessKillServeRootWithLoad,
@@ -625,32 +630,17 @@ pytestmark = [
 ]
 
 
-@scenario_params(MODEL, GpuOomErrorContract)
-def test_reliability_fault_gpu_oom_error_contract_consistent_chat_speech(
-    omni_server_function,
-    online_client_function,
-) -> None:
-    """Text chat and audio output both return HTTP 500 under OOM, and the API stays up."""
-    GpuOomErrorContract().run(MODEL, omni_server_function, online_client_function)
-
-
-@scenario_params(MODEL, GpuOomLarge)
-def test_reliability_fault_gpu_oom_large_request_failure(omni_server_function, online_client_function) -> None:
-    GpuOomLarge().run(MODEL, omni_server_function, online_client_function)
-
-
-@scenario_params(MODEL, GpuOomConcurrent)
-def test_reliability_fault_gpu_oom_concurrent_pressure_failure(omni_server_function, online_client_function) -> None:
-    GpuOomConcurrent().run(MODEL, omni_server_function, online_client_function)
-
-
 @scenario_params(MODEL, GpuOomRecovery)
-def test_reliability_fault_gpu_oom_recovers_after_fault_removed(omni_server_function, online_client_function) -> None:
+def test_gpu_oom_under_load(omni_server_function, online_client_function) -> None:
+    """In-service GPU OOM is one case: the error contract, a large request, concurrency, then recovery."""
+    GpuOomErrorContract().run(MODEL, omni_server_function, online_client_function)
+    GpuOomLarge().run(MODEL, omni_server_function, online_client_function)
+    GpuOomConcurrent().run(MODEL, omni_server_function, online_client_function)
     GpuOomRecovery().run(MODEL, omni_server_function, online_client_function)
 
 
 @scenario_params(MODEL, ProcessKillWorkerNoLoad)
-def test_reliability_fault_process_kill_worker_no_load(
+def test_process_kill_worker_no_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -660,7 +650,7 @@ def test_reliability_fault_process_kill_worker_no_load(
 
 
 @scenario_params(MODEL, ProcessKillWorkerWithLoad, skip_reason="issue#8912")
-def test_reliability_fault_process_kill_worker_with_load_request_failure(
+def test_process_kill_worker_with_load_request_failure(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -669,7 +659,7 @@ def test_reliability_fault_process_kill_worker_with_load_request_failure(
 
 
 @scenario_params(MODEL, ProcessKillServeRootNoLoad)
-def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup(
+def test_process_kill_serve_root_no_load_fast_fail_and_cleanup(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -678,7 +668,7 @@ def test_reliability_fault_process_kill_serve_root_no_load_fast_fail_and_cleanup
 
 
 @scenario_params(MODEL, ProcessKillServeRootWithLoad)
-def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_cleanup(
+def test_process_kill_serve_root_with_load_fast_fail_and_cleanup(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -687,7 +677,7 @@ def test_reliability_fault_process_kill_serve_root_with_load_fast_fail_and_clean
 
 
 @scenario_params(MODEL, ProcessKillTreeNoLoad)
-def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
+def test_process_kill_tree_no_load_fast_fail_and_cleanup(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -696,7 +686,7 @@ def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(
 
 
 @scenario_params(MODEL, ProcessKillTreeWithLoad)
-def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
+def test_process_kill_tree_with_load_fast_fail_and_cleanup(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -704,7 +694,31 @@ def test_reliability_fault_process_kill_tree_with_load_fast_fail_and_cleanup(
     ProcessKillTreeWithLoad().run(MODEL, omni_server_function, online_client_function, signal_name)
 
 
+@launch_scenario_params(MODEL, GpuOomAtLaunch)
+def test_gpu_oom_at_launch(launch_params) -> None:
+    """Exhaust GPU memory before startup. The failure is observable, and a later start serves."""
+    GpuOomAtLaunch().run(MODEL, launch_params)
+
+
+@launch_scenario_params(MODEL, FullCrashAtLaunch)
+def test_full_crash_at_launch(launch_params) -> None:
+    """Kill the process tree during startup, then require a clean restart."""
+    FullCrashAtLaunch().run(MODEL, launch_params)
+
+
+@scenario_params(MODEL, FullCrashAtExit)
+def test_full_crash_at_exit(omni_server_function, online_client_function) -> None:
+    """A stuck shutdown escalates to SIGKILL, and a new server can serve."""
+    FullCrashAtExit().run(MODEL, omni_server_function, online_client_function)
+
+
+@scenario_params(MODEL, PartialCrashAtExit)
+def test_partial_crash_at_exit(omni_server_function, online_client_function) -> None:
+    """Kill one stage, then require shutdown to finish or escalate and a restart to serve."""
+    PartialCrashAtExit().run(MODEL, omni_server_function, online_client_function)
+
+
 @scenario_params(MODEL, PartialStageIsolation)
-def test_reliability_fault_partial_stage_isolation(omni_server_function, online_client_function) -> None:
+def test_partial_stage_isolation(omni_server_function, online_client_function) -> None:
     """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
     PartialStageIsolation().run(MODEL, omni_server_function, online_client_function)

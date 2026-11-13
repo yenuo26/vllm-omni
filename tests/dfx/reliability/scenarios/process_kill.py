@@ -21,10 +21,13 @@ from tests.dfx.reliability.helpers import (
     assert_no_server_tree_process_residual_and_gpu_release,
     assert_post_fault_api_unreachable,
     assert_post_fault_health_503,
+    client_for_server,
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
     make_server_tree_kill_fault_injector,
+    relaunch_server,
     run_fault_injection_with_rate_load,
+    shutdown_serve_root_with_escalation,
     sigterm_serve_root_and_assert_cleanup,
     worker_residual_timeout_after_kill_signal,
 )
@@ -231,6 +234,45 @@ class ProcessKillTreeWithLoad(FaultScenario):
         )
         assert_post_fault_api_unreachable(client, scenario=scenario)
         _assert_cleanup(server, scenario=scenario, signal_name=signal)
+
+
+def _relaunch_and_probe(model: FaultModel, server: Any) -> None:
+    recovered = relaunch_server(server)
+    try:
+        model.warmup(client_for_server(recovered), recovered)
+    finally:
+        recovered.__exit__(None, None, None)
+
+
+class FullCrashAtExit(FaultScenario):
+    """Shutdown the whole server. A stuck exit is escalated to SIGKILL, then a new server starts."""
+
+    server_set = "lifecycle"
+
+    def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
+        del signal_name
+        model.warmup(client, server)
+        shutdown_serve_root_with_escalation(server, scenario="full_crash_at_exit")
+        _relaunch_and_probe(model, server)
+
+
+class PartialCrashAtExit(FaultScenario):
+    """Kill one stage, then require shutdown to finish or escalate and a restart to serve."""
+
+    server_set = "lifecycle"
+
+    def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
+        del signal_name
+        model.isolation_warmup(client, server)
+        make_process_kill_fault_injector(
+            grep_patterns=model.isolation_pattern,
+            signal_name="SIGKILL",
+            limit=1,
+            post_kill_wait_seconds=2.0,
+        )(server)
+        model.isolation_after(client, server)
+        shutdown_serve_root_with_escalation(server, scenario="partial_crash_at_exit")
+        _relaunch_and_probe(model, server)
 
 
 class PartialStageIsolation(FaultScenario):

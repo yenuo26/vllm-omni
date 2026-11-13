@@ -76,6 +76,36 @@ class GpuOomConcurrent(FaultScenario):
         _expect_probe_failure(model, model.oom_concurrent_probe, model.oom_concurrent_fail_message, client, server)
 
 
+def _server_unreachable(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "connection" in text or "refused" in text or "unreachable" in text
+
+
+class GpuOomUnderLoad(FaultScenario):
+    """One in-flight request fails observably under OOM, then a later request succeeds.
+
+    If the API process itself died, recovery is a new server rather than a retry.
+    """
+
+    server_set = "oom"
+
+    def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
+        del signal_name
+        _expect_probe_failure(model, model.oom_large_probe, model.oom_large_fail_message, client, server)
+        try:
+            model.warmup(client, server)
+        except Exception as exc:  # noqa: BLE001
+            if not _server_unreachable(exc):
+                raise
+            from tests.dfx.reliability.helpers import client_for_server, relaunch_server
+
+            recovered = relaunch_server(server)
+            try:
+                model.warmup(client_for_server(recovered), recovered)
+            finally:
+                recovered.__exit__(None, None, None)
+
+
 class GpuOomRecovery(FaultScenario):
     # Captured graph pools can serve the probe without a new allocation, so
     # recovery must use the eager OOM server. Models with no eager stage ids
