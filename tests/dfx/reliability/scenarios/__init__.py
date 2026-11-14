@@ -23,6 +23,7 @@ from tests.dfx.reliability.scenarios.process_kill import (
 )
 from tests.dfx.reliability.scenarios.replica import (
     ReplicaCrashAtExit,
+    ReplicaCrashAtLaunch,
     ReplicaCrashIdle,
     ReplicaCrashWithLoad,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "ProcessKillWorkerNoLoad",
     "ProcessKillWorkerWithLoad",
     "ReplicaCrashAtExit",
+    "ReplicaCrashAtLaunch",
     "ReplicaCrashIdle",
     "ReplicaCrashWithLoad",
 ]

@@ -13,8 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.dfx.reliability.helpers import scenario_params
-from tests.dfx.reliability.scenarios import ReplicaCrashAtExit, ReplicaCrashIdle, ReplicaCrashWithLoad
+from tests.dfx.reliability.helpers import launch_scenario_params, scenario_params
+from tests.dfx.reliability.scenarios import (
+    ReplicaCrashAtExit,
+    ReplicaCrashAtLaunch,
+    ReplicaCrashIdle,
+    ReplicaCrashWithLoad,
+)
 from tests.dfx.reliability.test_minicpmo_4_5 import MiniCPMO45
 from tests.helpers.mark import hardware_marks
 
@@ -61,7 +66,7 @@ pytestmark = [
 
 @scenario_params(MODEL, ReplicaCrashIdle)
 def test_replica_crash_idle(omni_server_function, online_client_function) -> None:
-    """Kill one idle stage-1 replica. The other stage-1 replica still accepts a request."""
+    """Kill one idle stage-1 replica. Six later multimodal requests must all succeed."""
     ReplicaCrashIdle().run(MODEL, omni_server_function, online_client_function)
 
 
@@ -75,3 +80,9 @@ def test_replica_crash_with_load(omni_server_function, online_client_function) -
 def test_replica_crash_at_exit(omni_server_function, online_client_function) -> None:
     """After one stage-1 replica dies, shutdown finishes or escalates, and a new server can start."""
     ReplicaCrashAtExit().run(MODEL, omni_server_function, online_client_function)
+
+
+@launch_scenario_params(MODEL, ReplicaCrashAtLaunch)
+def test_replica_crash_at_launch(launch_params) -> None:
+    """Kill a stage-1 replica before readiness; require the original instance to serve."""
+    ReplicaCrashAtLaunch().run(MODEL, launch_params)

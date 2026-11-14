@@ -197,7 +197,7 @@ def test_stage_crash_at_launch(launch_params) -> None:
 
 
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
-def test_full_crash_tree_at_launch(launch_params) -> None:
+def test_process_tree_crash_at_launch(launch_params) -> None:
     """Kill the process tree during startup, then require a clean restart."""
     FullCrashAtLaunch().run(MODEL, launch_params)
 
