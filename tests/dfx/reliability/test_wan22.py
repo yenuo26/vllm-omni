@@ -377,7 +377,7 @@ def test_process_kill_worker_with_load_request_failure(
 
 
 @scenario_params(MODEL, ProcessKillServeRootNoLoad)
-def test_process_kill_serve_root_no_load_fast_fail_and_cleanup(
+def test_full_crash_serve_root_at_idle(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -386,7 +386,7 @@ def test_process_kill_serve_root_no_load_fast_fail_and_cleanup(
 
 
 @scenario_params(MODEL, ProcessKillServeRootWithLoad)
-def test_process_kill_serve_root_with_load_fast_fail_and_cleanup(
+def test_full_crash_serve_root_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -395,7 +395,7 @@ def test_process_kill_serve_root_with_load_fast_fail_and_cleanup(
 
 
 @scenario_params(MODEL, ProcessKillTreeNoLoad)
-def test_process_kill_tree_no_load_fast_fail_and_cleanup(
+def test_full_crash_tree_at_idle(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -404,7 +404,7 @@ def test_process_kill_tree_no_load_fast_fail_and_cleanup(
 
 
 @scenario_params(MODEL, ProcessKillTreeWithLoad)
-def test_process_kill_tree_with_load_fast_fail_and_cleanup(
+def test_full_crash_tree_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -419,13 +419,13 @@ def test_gpu_oom_at_launch(launch_params) -> None:
 
 
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
-def test_full_crash_at_launch(launch_params) -> None:
+def test_full_crash_tree_at_launch(launch_params) -> None:
     """Kill the process tree during startup, then require a clean restart."""
     FullCrashAtLaunch().run(MODEL, launch_params)
 
 
 @scenario_params(MODEL, FullCrashAtExit)
-def test_full_crash_at_exit(omni_server_function, online_client_function) -> None:
+def test_full_crash_serve_root_at_exit(omni_server_function, online_client_function) -> None:
     """A stuck shutdown escalates to SIGKILL, and a new server can serve."""
     FullCrashAtExit().run(MODEL, omni_server_function, online_client_function)
 
