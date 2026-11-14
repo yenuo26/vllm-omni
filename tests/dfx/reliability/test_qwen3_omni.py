@@ -29,6 +29,7 @@ from tests.dfx.reliability.scenarios import (
     FullCrashAtLaunch,
     GpuOomAtLaunch,
     GpuOomUnderLoad,
+    GracefulShutdown,
     PartialCrashAtExit,
     PartialCrashAtLaunch,
     PartialStageIsolation,
@@ -44,15 +45,7 @@ from tests.helpers.media import generate_synthetic_audio, generate_synthetic_ima
 from tests.helpers.runtime import dummy_messages_from_mix_data
 from tests.helpers.stage_config import get_deploy_config_path
 
-QWEN_SERVE_ROOT_SIGNALS: tuple[SignalSpec, ...] = (
-    ("SIGTERM", None),
-    ("SIGINT", None),
-    ("SIGKILL", "vllm issue#43060"),
-)
-QWEN_TREE_WITH_LOAD_SIGNALS: tuple[SignalSpec, ...] = (
-    ("SIGTERM", "issue#8912"),
-    ("SIGKILL", None),
-)
+QWEN_SERVE_ROOT_SIGNALS: tuple[SignalSpec, ...] = (("SIGKILL", "vllm issue#43060"),)
 
 RUNTIME_WORKER_PATTERN = "StageEngineCoreProc_stage0"
 _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC = 30
@@ -232,7 +225,6 @@ class Qwen3Omni(FaultModel):
     concurrent_timeout_sec = 30.0
     serve_root_signals = QWEN_SERVE_ROOT_SIGNALS
     serve_root_with_load_signals = QWEN_SERVE_ROOT_SIGNALS
-    tree_with_load_signals = QWEN_TREE_WITH_LOAD_SIGNALS
     oom_large_fail_message = "expected large chat payload request failure during GPU OOM injection"
 
     def warmup(self, client: Any, server: Any) -> None:
@@ -379,7 +371,7 @@ pytestmark = [
 
 
 @scenario_params(MODEL, GpuOomUnderLoad)
-def test_gpu_oom_under_load(omni_server_function, online_client_function) -> None:
+def test_gpu_oom_at_load(omni_server_function, online_client_function) -> None:
     """One async-chunk OOM injection, followed by recovery or a restart-required state.
 
     A healthy instance must serve the same multimodal request again. A 503 or
@@ -400,7 +392,7 @@ def test_stage_crash_at_idle_001(
 
 
 @scenario_params(MODEL, ProcessKillWorkerWithLoad, skip_reason="issue#8912")
-def test_worker_crash_at_load(
+def test_stage_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -458,7 +450,10 @@ def test_stage_crash_at_launch(launch_params) -> None:
 
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
 def test_process_tree_crash_at_launch(launch_params) -> None:
-    """Kill the process tree during startup, then require a clean restart."""
+    """Kill the startup process tree; later serial cases cover fresh startup and service.
+
+    This case alone does not verify restart recovery.
+    """
     FullCrashAtLaunch().run(MODEL, launch_params)
 
 
@@ -472,3 +467,9 @@ def test_stage_crash_at_exit(omni_server_function, online_client_function) -> No
 def test_stage_crash_at_idle_002(omni_server_function, online_client_function) -> None:
     """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
     PartialStageIsolation().run(MODEL, omni_server_function, online_client_function)
+
+
+@scenario_params(MODEL, GracefulShutdown)
+def test_graceful_shutdown(omni_server_function, online_client_function) -> None:
+    """SIGTERM the healthy root; all children and resources must clear within 60s."""
+    GracefulShutdown().run(MODEL, omni_server_function, online_client_function)

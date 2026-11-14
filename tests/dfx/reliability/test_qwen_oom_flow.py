@@ -156,7 +156,5 @@ def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, outcome
 
 def test_qwen_oom_does_not_capture_live_server_output():
     tree = ast.parse(Path(__file__).with_name("test_qwen3_omni.py").read_text(encoding="utf-8"))
-    case = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "test_gpu_oom_under_load"
-    )
+    case = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "test_gpu_oom_at_load")
     assert [arg.arg for arg in case.args.args] == ["omni_server_function", "online_client_function"]

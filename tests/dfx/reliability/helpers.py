@@ -28,6 +28,7 @@ import re
 import select
 import shlex
 import signal
+import stat as stat_module
 import subprocess
 import sys
 import time
@@ -1317,8 +1318,6 @@ def worker_residual_timeout_after_kill_signal(signal_name: str) -> float:
     """Wall-clock budget for fault-snapshot PIDs / GPU to clear after ``signal_name``."""
     if signal_name == "SIGKILL":
         return 30.0
-    if signal_name == "SIGINT":
-        return 120.0
     if signal_name == "SIGTERM":
         return 90.0
     return 30.0
@@ -1390,7 +1389,9 @@ def _capture_linux_shm_objects(pids: Sequence[int]) -> list[tuple[str, int, int]
     return sorted(objects)
 
 
-def _remaining_linux_shm_objects(objects: Sequence[tuple[str, int, int]]) -> list[str]:
+def _remaining_linux_shm_objects(
+    objects: Sequence[tuple[str, int, int]], *, ignore_named_fifos: bool = False
+) -> list[str]:
     remaining: list[str] = []
     for name, device, inode in objects:
         try:
@@ -1399,6 +1400,8 @@ def _remaining_linux_shm_objects(objects: Sequence[tuple[str, int, int]]) -> lis
             continue
         # A reused name with a different inode belongs to a different object.
         if (stat.st_dev, stat.st_ino) == (device, inode):
+            if ignore_named_fifos and stat_module.S_ISFIFO(stat.st_mode):
+                continue
             remaining.append(name)
     return remaining
 
@@ -1409,6 +1412,7 @@ def assert_no_server_tree_process_residual_and_gpu_release(
     scenario: str,
     timeout_sec: float = 30.0,
     poll_interval_sec: float = 0.5,
+    allow_fifo_residual: bool = False,
 ) -> None:
     """Assert no live PIDs remain from the fault-time server tree and no GPU use by those PIDs.
 
@@ -1424,6 +1428,10 @@ def assert_no_server_tree_process_residual_and_gpu_release(
     device/inode pairs, so unrelated objects reusing a name do not fail cleanup.
     Objects created after the snapshot and references retained by processes
     outside the captured tree are not independently inventoried here.
+
+    Whole-tree SIGKILL may allow named FIFO paths to remain: no owner survives
+    to unlink them. Other SHM objects, process/FD and GPU checks stay mandatory.
+    Graceful shutdown and partial/root-only crashes keep strict FIFO checks.
 
     Note: if a child is reparented to PID 1 while staying alive, its PID is unchanged
     and remains detected; if it **exits and a new unrelated process reuses the same
@@ -1459,8 +1467,16 @@ def assert_no_server_tree_process_residual_and_gpu_release(
             gpu_telemetry_available = True
             last_gpu_leaks = {pid: mem_mb for pid, mem_mb in gpu_map.items() if pid in tree_pid_set and mem_mb > 0}
         last_fds = _linux_fd_counts(tree_pids)
-        last_shm = _remaining_linux_shm_objects(snapshot.get("shm_objects", []))
+        shm_objects = snapshot.get("shm_objects", [])
+        last_shm = _remaining_linux_shm_objects(shm_objects)
+        fifo_residual: list[str] = []
+        if allow_fifo_residual:
+            required_shm = _remaining_linux_shm_objects(shm_objects, ignore_named_fifos=True)
+            fifo_residual = sorted(set(last_shm) - set(required_shm))
+            last_shm = required_shm
         if not last_alive and not last_gpu_leaks and not last_fds and not last_shm:
+            if fifo_residual:
+                logger.warning("[%s] named FIFO paths remain after whole-tree SIGKILL: %s", scenario, fifo_residual)
             return
         time.sleep(poll_interval_sec)
 
@@ -1734,13 +1750,8 @@ def make_process_kill_fault_injector(
 # (signal name, skip reason). ``None`` means the signal runs.
 SignalSpec = tuple[str, str | None]
 
-# SIGTERM and SIGKILL, both executed. Serve-root adds SIGINT on top of this pair.
-TERM_KILL_SIGNALS: tuple[SignalSpec, ...] = (("SIGTERM", None), ("SIGKILL", None))
-SERVE_ROOT_SIGNALS: tuple[SignalSpec, ...] = (
-    ("SIGTERM", None),
-    ("SIGINT", None),
-    ("SIGKILL", None),
-)
+# Crash injection is abrupt; graceful shutdown has its own scenario.
+CRASH_SIGNALS: tuple[SignalSpec, ...] = (("SIGKILL", None),)
 
 INFLIGHT_INJECTION_REQUEST_RATE = 0.3
 INFLIGHT_INJECTION_REQUEST_COUNT = 10
@@ -1767,11 +1778,11 @@ class FaultModel:
     concurrent_workers: int = 3
     concurrent_timeout_sec: float = 40.0
     health_miss_skip: str | None = None
-    worker_signals: tuple[SignalSpec, ...] = TERM_KILL_SIGNALS
-    serve_root_signals: tuple[SignalSpec, ...] = SERVE_ROOT_SIGNALS
-    serve_root_with_load_signals: tuple[SignalSpec, ...] = SERVE_ROOT_SIGNALS
-    tree_signals: tuple[SignalSpec, ...] = TERM_KILL_SIGNALS
-    tree_with_load_signals: tuple[SignalSpec, ...] = TERM_KILL_SIGNALS
+    worker_signals: tuple[SignalSpec, ...] = CRASH_SIGNALS
+    serve_root_signals: tuple[SignalSpec, ...] = CRASH_SIGNALS
+    serve_root_with_load_signals: tuple[SignalSpec, ...] = CRASH_SIGNALS
+    tree_signals: tuple[SignalSpec, ...] = CRASH_SIGNALS
+    tree_with_load_signals: tuple[SignalSpec, ...] = CRASH_SIGNALS
     oom_large_fail_message: str = "expected request failure during GPU OOM injection"
     oom_concurrent_fail_message: str = "expected concurrent request failure under OOM injection"
     replica_scenarios: list[dict[str, Any]] | None = None

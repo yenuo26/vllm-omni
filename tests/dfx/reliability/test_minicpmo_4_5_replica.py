@@ -19,6 +19,7 @@ from tests.dfx.reliability.scenarios import (
     ReplicaCrashAtLaunch,
     ReplicaCrashIdle,
     ReplicaCrashWithLoad,
+    ReplicaGracefulShutdown,
 )
 from tests.dfx.reliability.test_minicpmo_4_5 import MiniCPMO45
 from tests.helpers.mark import hardware_marks
@@ -65,20 +66,20 @@ pytestmark = [
 
 
 @scenario_params(MODEL, ReplicaCrashIdle)
-def test_replica_crash_idle(omni_server_function, online_client_function) -> None:
+def test_replica_crash_at_idle(omni_server_function, online_client_function) -> None:
     """Kill one idle stage-1 replica. Six later multimodal requests must all succeed."""
     ReplicaCrashIdle().run(MODEL, omni_server_function, online_client_function)
 
 
 @scenario_params(MODEL, ReplicaCrashWithLoad)
-def test_replica_crash_with_load(omni_server_function, online_client_function) -> None:
+def test_replica_crash_at_load(omni_server_function, online_client_function) -> None:
     """Kill one stage-1 replica under load. In-flight work fails, and the other replica still serves."""
     ReplicaCrashWithLoad().run(MODEL, omni_server_function, online_client_function)
 
 
 @scenario_params(MODEL, ReplicaCrashAtExit)
 def test_replica_crash_at_exit(omni_server_function, online_client_function) -> None:
-    """After one stage-1 replica dies, shutdown finishes or escalates, and a new server can start."""
+    """Begin normal shutdown, kill one stage-1 replica, and require timely cleanup of the whole instance."""
     ReplicaCrashAtExit().run(MODEL, omni_server_function, online_client_function)
 
 
@@ -86,3 +87,9 @@ def test_replica_crash_at_exit(omni_server_function, online_client_function) -> 
 def test_replica_crash_at_launch(launch_params) -> None:
     """Kill a stage-1 replica before readiness; require the original instance to serve."""
     ReplicaCrashAtLaunch().run(MODEL, launch_params)
+
+
+@scenario_params(MODEL, ReplicaGracefulShutdown)
+def test_graceful_shutdown(omni_server_function, online_client_function) -> None:
+    """SIGTERM the healthy root; all children and resources must clear within 60s."""
+    ReplicaGracefulShutdown().run(MODEL, omni_server_function, online_client_function)

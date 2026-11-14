@@ -166,7 +166,13 @@ class PartialCrashAtLaunch(FaultScenario):
 
 
 class FullCrashAtLaunch(FaultScenario):
-    """Kill the process tree as soon as it exists, then require a clean restart."""
+    """Kill the process tree during startup without an extra recovery launch.
+
+    Subsequent selected serial cases start fresh instances and exercise their
+    workloads, providing suite-level restart coverage. Running this case alone
+    does not verify restart recovery; coverage requires a later case to run
+    and successfully complete its business preflight.
+    """
 
     server_set = "launch"
 
@@ -198,4 +204,3 @@ class FullCrashAtLaunch(FaultScenario):
                 assert_launch_failure_observable(errors[0])
             else:
                 starting.__exit__(None, None, None)
-        _recover(model, params)

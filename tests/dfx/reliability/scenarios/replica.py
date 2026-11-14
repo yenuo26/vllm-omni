@@ -16,17 +16,18 @@ from tests.dfx.reliability.helpers import (
     INFLIGHT_INJECTION_REQUEST_COUNT,
     INFLIGHT_INJECTION_REQUEST_RATE,
     LAUNCH_FAILURE_TIMEOUT_SEC,
+    SIGTERM_CLEANUP_GRACE_SEC,
     FaultModel,
     FaultScenario,
     _capture_server_fault_snapshot,
     _safe_proc_info,
     assert_no_server_tree_process_residual_and_gpu_release,
+    assert_post_fault_api_unreachable,
     client_for_server,
     kill_bad_replica,
+    make_server_root_kill_fault_injector,
     make_server_tree_kill_fault_injector,
-    relaunch_server,
     run_fault_injection_with_rate_load,
-    shutdown_serve_root_with_escalation,
     start_server_from_params,
 )
 from tests.dfx.reliability.scenarios.launch import _kill_starting_stage
@@ -85,14 +86,6 @@ def _assert_survivor_serves(model: FaultModel, client: Any, server: Any) -> None
         print(f"[replica-crash] survivor request {index + 1}/6 passed", flush=True)
 
 
-def _relaunch_and_probe(model: FaultModel, server: Any) -> None:
-    recovered = relaunch_server(server)
-    try:
-        model.warmup(client_for_server(recovered), recovered)
-    finally:
-        recovered.__exit__(None, None, None)
-
-
 class ReplicaCrashIdle(FaultScenario):
     """An idle replica dies, its PID resources clear, and six later requests all pass.
 
@@ -135,17 +128,51 @@ class ReplicaCrashWithLoad(FaultScenario):
 
 
 class ReplicaCrashAtExit(FaultScenario):
-    """After one replica dies, shutdown finishes or escalates, and a new server can start."""
+    """Begin normal shutdown, kill one replica, and require all processes to exit.
+
+    The SIGTERM deadline includes injection and full-tree resource checks.
+    Timeout fails; fixture teardown alone handles emergency cleanup. No
+    post-fault serving probe, passing SIGKILL escalation, or restart is tested.
+    """
 
     server_set = "replica"
 
     def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
         del signal_name
+        scenario = "replica_crash_at_exit"
         model.warmup(client, server)
-        _kill(model, server)
-        _assert_survivor_serves(model, client, server)
-        shutdown_serve_root_with_escalation(server, scenario="replica_crash_at_exit")
-        _relaunch_and_probe(model, server)
+        # Keep PID identities before SIGTERM: shutdown can reparent workers.
+        snapshot = _capture_server_fault_snapshot(server)
+        targets = []
+        survivors = []
+        stage_prefix = model.bad_replica_pattern.rsplit("_replica", 1)[0] + "_replica"
+        for pid in snapshot["tree_pids"][1:]:
+            name, cmdline = _safe_proc_info(pid)
+            identity = f"{name} {cmdline}"
+            if model.bad_replica_pattern in identity:
+                targets.append(psutil.Process(pid))
+            elif stage_prefix in identity:
+                survivors.append(psutil.Process(pid))
+        assert targets, f"[{scenario}] no replica matched {model.bad_replica_pattern!r}"
+        assert survivors, f"[{scenario}] no sibling replica found before shutdown"
+        _assert_survivors_alive(targets + survivors)
+        deadline = time.monotonic() + SIGTERM_CLEANUP_GRACE_SEC
+        make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
+        for process in targets:
+            assert time.monotonic() < deadline, f"[{scenario}] shutdown deadline expired before fault injection"
+            try:
+                assert process.is_running() and process.status() != psutil.STATUS_ZOMBIE, (
+                    f"[{scenario}] target replica exited before shutdown-time injection: pid={process.pid}"
+                )
+                process.kill()
+            except psutil.NoSuchProcess as exc:
+                raise AssertionError(f"[{scenario}] target replica disappeared before fault injection") from exc
+            print(f"[{scenario}] SIGKILL replica pid={process.pid} after serve-root SIGTERM", flush=True)
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"[{scenario}] shutdown exceeded its grace period"
+        assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=remaining)
+        assert time.monotonic() <= deadline, f"[{scenario}] shutdown did not finish within its grace period"
+        assert_post_fault_api_unreachable(client, scenario=scenario)
 
 
 class ReplicaCrashAtLaunch(FaultScenario):

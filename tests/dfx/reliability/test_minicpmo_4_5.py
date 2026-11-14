@@ -13,7 +13,6 @@ import pytest
 from tests.dfx.reliability.helpers import (
     PARTIAL_ISOLATION_HTTP_TIMEOUT_SEC,
     FaultModel,
-    SignalSpec,
     launch_scenario_params,
     scenario_params,
 )
@@ -21,6 +20,7 @@ from tests.dfx.reliability.scenarios import (
     FullCrashAtLaunch,
     GpuOomAtLaunch,
     GpuOomUnderLoad,
+    GracefulShutdown,
     PartialCrashAtExit,
     PartialCrashAtLaunch,
     PartialStageIsolation,
@@ -35,7 +35,6 @@ from tests.helpers.runtime import dummy_messages_from_mix_data
 from tests.helpers.stage_config import get_deploy_config_path
 
 _MODEL = "openbmb/MiniCPM-o-4_5"
-_SERVE_ROOT_SIGTERM: tuple[SignalSpec, ...] = (("SIGTERM", None),)
 _NATIVE_CHAT_TEMPLATE = (
     Path(__file__).resolve().parents[3] / "vllm_omni/transformers_utils/chat_templates/minicpmo45_native.jinja"
 )
@@ -108,8 +107,6 @@ class MiniCPMO45(FaultModel):
     worker_pattern = "StageEngineCoreProc_stage0"
     isolation_pattern = "StageEngineCoreProc_stage1"
     with_load_timeout_sec = 300.0
-    serve_root_signals = _SERVE_ROOT_SIGTERM
-    serve_root_with_load_signals = _SERVE_ROOT_SIGTERM
     hard_oom_config = {
         "target_mem_ratio": 0.95,
         "max_free_bytes": 256 * 1024 * 1024,
@@ -183,7 +180,7 @@ def test_gpu_oom_at_launch(launch_params) -> None:
 
 
 @scenario_params(MODEL, GpuOomUnderLoad)
-def test_gpu_oom_under_load(omni_server_function, online_client_function) -> None:
+def test_gpu_oom_at_load(omni_server_function, online_client_function) -> None:
     """An audio request fails while GPU memory is exhausted, then a later text request succeeds."""
     GpuOomUnderLoad().run(MODEL, omni_server_function, online_client_function)
 
@@ -196,7 +193,10 @@ def test_stage_crash_at_launch(launch_params) -> None:
 
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
 def test_process_tree_crash_at_launch(launch_params) -> None:
-    """Kill the process tree during startup, then require a clean restart."""
+    """Kill the startup process tree; later serial cases cover fresh startup and service.
+
+    This case alone does not verify restart recovery.
+    """
     FullCrashAtLaunch().run(MODEL, launch_params)
 
 
@@ -207,7 +207,7 @@ def test_stage_crash_at_exit(omni_server_function, online_client_function) -> No
 
 
 @scenario_params(MODEL, ProcessKillWorkerWithLoad)
-def test_worker_crash_at_load(
+def test_stage_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -255,3 +255,9 @@ def test_serve_root_crash_at_load(
 def test_stage_crash_at_idle_002(omni_server_function, online_client_function) -> None:
     """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
     PartialStageIsolation().run(MODEL, omni_server_function, online_client_function)
+
+
+@scenario_params(MODEL, GracefulShutdown)
+def test_graceful_shutdown(omni_server_function, online_client_function) -> None:
+    """SIGTERM the healthy root; all children and resources must clear within 60s."""
+    GracefulShutdown().run(MODEL, omni_server_function, online_client_function)

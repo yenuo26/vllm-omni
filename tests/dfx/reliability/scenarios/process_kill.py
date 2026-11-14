@@ -115,12 +115,15 @@ def _assert_cleanup(server: Any, *, scenario: str, signal_name: str) -> None:
         server,
         scenario=scenario,
         timeout_sec=worker_residual_timeout_after_kill_signal(signal_name),
+        allow_fifo_residual=signal_name == "SIGKILL" and scenario.startswith("kill_serve_tree_"),
     )
 
 
 def _require_signal(signal_name: str | None) -> str:
     if signal_name is None:
         raise RuntimeError("process-kill scenario requires a signal name")
+    if signal_name != "SIGKILL":
+        raise ValueError("crash scenarios require SIGKILL; use GracefulShutdown for SIGTERM")
     return signal_name
 
 
@@ -350,3 +353,31 @@ class PartialStageIsolation(FaultScenario):
         model.isolation_after(client, server)
         assert_api_still_listening(client, scenario=scenario)
         sigterm_serve_root_and_assert_cleanup(server, scenario=scenario)
+
+
+class GracefulShutdown(FaultScenario):
+    """SIGTERM only the root; all descendants and resources must clear in time.
+
+    No crash injection, passing escalation, or restart is part of this case.
+    Fixture emergency cleanup cannot turn a shutdown timeout into success.
+    """
+
+    server_set = "lifecycle"
+
+    def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
+        del signal_name
+        scenario = "graceful_shutdown"
+        model.warmup(client, server)
+        deadline = time.monotonic() + SIGTERM_CLEANUP_GRACE_SEC
+        make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"[{scenario}] shutdown exceeded its grace period before cleanup"
+        assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=remaining)
+        assert time.monotonic() <= deadline, f"[{scenario}] shutdown did not finish within its grace period"
+        assert_post_fault_api_unreachable(client, scenario=scenario)
+
+
+class ReplicaGracefulShutdown(GracefulShutdown):
+    """Normal SIGTERM shutdown with all configured replicas initially healthy."""
+
+    server_set = "replica"

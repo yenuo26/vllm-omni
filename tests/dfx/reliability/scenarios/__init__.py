@@ -12,6 +12,7 @@ from tests.dfx.reliability.scenarios.oom import (
     GpuOomUnderLoad,
 )
 from tests.dfx.reliability.scenarios.process_kill import (
+    GracefulShutdown,
     PartialCrashAtExit,
     PartialStageIsolation,
     ProcessKillServeRootNoLoad,
@@ -20,6 +21,7 @@ from tests.dfx.reliability.scenarios.process_kill import (
     ProcessKillTreeWithLoad,
     ProcessKillWorkerNoLoad,
     ProcessKillWorkerWithLoad,
+    ReplicaGracefulShutdown,
 )
 from tests.dfx.reliability.scenarios.replica import (
     ReplicaCrashAtExit,
@@ -30,6 +32,8 @@ from tests.dfx.reliability.scenarios.replica import (
 
 __all__ = [
     "FullCrashAtLaunch",
+    "GracefulShutdown",
+    "ReplicaGracefulShutdown",
     "GpuOomAtLaunch",
     "GpuOomConcurrent",
     "GpuOomErrorContract",

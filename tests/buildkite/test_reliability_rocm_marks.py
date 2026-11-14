@@ -92,7 +92,7 @@ def test_qwen_oom_uses_free_memory_ceiling_and_eager_params() -> None:
     assert "torch.version" in ast.unparse(ceiling.test)
     assert "eager_oom_stage_ids = (0, 1)" in case_source
     assert "reliability_scenarios_for_eager_oom" in (RELIABILITY_DIR / "helpers.py").read_text(encoding="utf-8")
-    case = functions["test_gpu_oom_under_load"]
+    case = functions["test_gpu_oom_at_load"]
     assert any("GpuOomUnderLoad" in ast.unparse(decorator) for decorator in case.decorator_list)
     assert "_run_oom_under_load" in ast.unparse(case)
     flow = functions["_run_oom_under_load"]

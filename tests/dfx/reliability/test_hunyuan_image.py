@@ -23,6 +23,7 @@ from tests.dfx.reliability.scenarios import (
     GpuOomAtLaunch,
     GpuOomLarge,
     GpuOomRecovery,
+    GracefulShutdown,
     PartialCrashAtExit,
     PartialCrashAtLaunch,
     PartialStageIsolation,
@@ -198,7 +199,10 @@ def test_stage_crash_at_launch(launch_params) -> None:
 
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
 def test_process_tree_crash_at_launch(launch_params) -> None:
-    """Kill the process tree during startup, then require a clean restart."""
+    """Kill the startup process tree; later serial cases cover fresh startup and service.
+
+    This case alone does not verify restart recovery.
+    """
     FullCrashAtLaunch().run(MODEL, launch_params)
 
 
@@ -219,7 +223,7 @@ def test_stage_crash_at_idle_001(
 
 
 @scenario_params(MODEL, ProcessKillWorkerWithLoad)
-def test_worker_crash_at_load(
+def test_stage_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -267,3 +271,9 @@ def test_process_tree_crash_at_load(
 def test_stage_crash_at_idle_002(omni_server_function, online_client_function) -> None:
     """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
     PartialStageIsolation().run(MODEL, omni_server_function, online_client_function)
+
+
+@scenario_params(MODEL, GracefulShutdown)
+def test_graceful_shutdown(omni_server_function, online_client_function) -> None:
+    """SIGTERM the healthy root; all children and resources must clear within 60s."""
+    GracefulShutdown().run(MODEL, omni_server_function, online_client_function)

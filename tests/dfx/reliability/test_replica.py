@@ -35,6 +35,7 @@ def replica():
         time=time,
         psutil=psutil,
         LAUNCH_FAILURE_TIMEOUT_SEC=1,
+        SIGTERM_CLEANUP_GRACE_SEC=60,
         INFLIGHT_INJECTION_REQUEST_COUNT=6,
         INFLIGHT_INJECTION_REQUEST_RATE=1,
     )
@@ -197,3 +198,81 @@ def test_replica_launch_fault_precedes_readiness_and_cleans_up(replica, outcome)
         replica.ReplicaCrashAtLaunch().run(model, params)
         assert events == ["inject", "ready", "probe", "exit", "cleanup"]
     replica.start_server_from_params.assert_called_once_with(params)
+
+
+@pytest.mark.parametrize("outcome", ["clean", "target_exited", "cleanup_leak", "late_cleanup"])
+def test_replica_exit_kills_only_after_sigterm_and_never_recovers_on_timeout(replica, outcome):
+    events: list[str] = []
+    clock = [0.0]
+    replica.time = SimpleNamespace(monotonic=lambda: clock[0])
+    target = Mock(pid=11)
+    sibling = Mock(pid=12)
+    for process in (target, sibling):
+        process.is_running.return_value = True
+        process.status.return_value = psutil.STATUS_RUNNING
+
+    def kill():
+        assert events[-1] == "sigterm"
+        events.append("kill_replica")
+        clock[0] += 0.5
+
+    target.kill.side_effect = kill
+    replica.psutil = SimpleNamespace(
+        Process=lambda pid: {11: target, 12: sibling}[pid],
+        STATUS_ZOMBIE=psutil.STATUS_ZOMBIE,
+        NoSuchProcess=psutil.NoSuchProcess,
+    )
+    snapshot = {"tree_pids": [10, 11, 12], "shm_objects": [("/dev/shm/test", 1, 2)]}
+
+    def capture(server):
+        events.append("snapshot")
+        server.reliability_fault_snapshot = snapshot
+        return snapshot
+
+    replica._capture_server_fault_snapshot = capture
+    replica._safe_proc_info = lambda pid: ("worker", {11: "stage1_replica1", 12: "stage1_replica0"}[pid])
+    model = SimpleNamespace(
+        bad_replica_pattern="stage1_replica1", warmup=Mock(side_effect=lambda *args: events.append("preflight"))
+    )
+    server, client = SimpleNamespace(), object()
+
+    def terminate(server):
+        events.append("sigterm")
+        clock[0] += 0.5
+        if outcome == "target_exited":
+            target.is_running.return_value = False
+
+    root_signal = Mock(return_value=terminate)
+    replica.make_server_root_kill_fault_injector = root_signal
+
+    def cleanup(actual_server, *, scenario, timeout_sec):
+        assert actual_server is server and actual_server.reliability_fault_snapshot is snapshot
+        assert scenario == "replica_crash_at_exit" and timeout_sec == 59.0
+        events.append("cleanup")
+        if outcome == "cleanup_leak":
+            raise AssertionError("resource cleanup timed out")
+        if outcome == "late_cleanup":
+            clock[0] = 61.0
+
+    replica.assert_no_server_tree_process_residual_and_gpu_release = Mock(side_effect=cleanup)
+    replica.assert_post_fault_api_unreachable = Mock(side_effect=lambda *a, **k: events.append("api_down"))
+    replica._assert_survivor_serves = Mock(side_effect=AssertionError("must not probe serving during shutdown"))
+    replica.start_server_from_params = Mock(side_effect=AssertionError("must not restart"))
+    replica.make_server_tree_kill_fault_injector = Mock(side_effect=AssertionError("must not escalate to pass"))
+    expected_error = {
+        "target_exited": "target replica exited",
+        "cleanup_leak": "resource cleanup timed out",
+        "late_cleanup": "did not finish within its grace period",
+    }.get(outcome)
+    if expected_error:
+        with pytest.raises(AssertionError, match=expected_error):
+            replica.ReplicaCrashAtExit().run(model, server, client)
+        replica.assert_post_fault_api_unreachable.assert_not_called()
+    else:
+        replica.ReplicaCrashAtExit().run(model, server, client)
+        assert events == ["preflight", "snapshot", "sigterm", "kill_replica", "cleanup", "api_down"]
+    root_signal.assert_called_once_with(signal_name="SIGTERM", post_kill_wait_seconds=0.0)
+    sibling.kill.assert_not_called()
+    replica.start_server_from_params.assert_not_called()
+    replica._assert_survivor_serves.assert_not_called()
+    replica.make_server_tree_kill_fault_injector.assert_not_called()
