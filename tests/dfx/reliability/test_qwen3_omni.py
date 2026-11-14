@@ -59,6 +59,8 @@ QWEN_TREE_WITH_LOAD_SIGNALS: tuple[SignalSpec, ...] = (
 
 RUNTIME_WORKER_PATTERN = "StageEngineCoreProc_stage0"
 _PROCESS_KILL_WORKER_CHAT_FF_HTTP_TIMEOUT_SEC = 30
+# Includes a fresh interpreter's torch import, CUDA initialization and allocation.
+_OOM_SIDECAR_STARTUP_TIMEOUT_SEC = 120
 
 
 def _default_oom_device_spec() -> str:
@@ -78,7 +80,7 @@ def _hard_oom_config() -> dict[str, Any]:
         "target_mem_ratio": 0.95,
         "max_free_bytes": 32 * 1024 * 1024 if getattr(torch.version, "hip", None) else 256 * 1024 * 1024,
         "hold_seconds": 0,
-        "startup_timeout_sec": 20,
+        "startup_timeout_sec": _OOM_SIDECAR_STARTUP_TIMEOUT_SEC,
         "strict": False,
     }
 
@@ -96,7 +98,7 @@ OOM_RECOVER_INJECTION_CONFIG: dict[str, Any] = {
     "target_mem_ratio": 0.95,
     "max_free_bytes": _recover_oom_max_free_bytes(),
     "hold_seconds": 0,
-    "startup_timeout_sec": 20,
+    "startup_timeout_sec": _OOM_SIDECAR_STARTUP_TIMEOUT_SEC,
     "strict": False,
 }
 FAULT_ERROR_KEYWORDS = (

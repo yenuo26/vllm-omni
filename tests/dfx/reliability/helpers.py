@@ -257,6 +257,7 @@ def _build_sidecar_cmd(
         + r"""
 import sys
 import time
+print("STARTING:import_torch", flush=True)
 import torch
 
 device = int(sys.argv[1])
@@ -266,10 +267,12 @@ strict = sys.argv[4] == "1"
 max_free_bytes_arg = int(sys.argv[5])
 max_free_bytes = None if max_free_bytes_arg < 0 else max_free_bytes_arg
 
+print("STARTING:initialize_device", flush=True)
 torch.cuda.init()
 torch.cuda.set_device(device)
 props = torch.cuda.get_device_properties(device)
 free_before, total_bytes = torch.cuda.mem_get_info(device)
+print(f"STARTING:allocate_memory;device={device};free_before={int(free_before)}", flush=True)
 ratio_target_bytes = int(free_before * target_ratio)
 ceiling_target_bytes = 0 if max_free_bytes is None else max(0, int(free_before) - max_free_bytes)
 target_bytes = max(ratio_target_bytes, ceiling_target_bytes)
@@ -420,37 +423,51 @@ def start_gpu_oom_hog(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        bufsize=0,
     )
     assert proc.stdout is not None
 
-    deadline = time.time() + startup_timeout_sec
+    handle = OomHandle(proc=proc, device=device, target_mem_ratio=target_mem_ratio, start_ts=time.time())
+    deadline = time.monotonic() + startup_timeout_sec
     logs: list[str] = []
-    while time.time() < deadline:
-        ready, _, _ = select.select([proc.stdout], [], [], poll_interval_sec)
-        if ready:
-            line = proc.stdout.readline().strip()
-            if line:
+    pending = b""
+    handed_off = False
+    try:
+        while time.monotonic() < deadline:
+            wait = min(poll_interval_sec, max(0.0, deadline - time.monotonic()))
+            ready, _, _ = select.select([proc.stdout], [], [], wait)
+            if not ready:
+                continue
+            # Read raw bytes: TextIOWrapper can buffer READY behind progress
+            # lines even when select reports no more bytes on the OS pipe.
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
+                if pending:
+                    logs.append(pending.decode("utf-8", errors="replace"))
+                raise RuntimeError(f"OOM sidecar closed stdout before READY; returncode={proc.poll()}; logs={logs}")
+            pending += chunk
+            lines = pending.split(b"\n")
+            pending = lines.pop()
+            for raw_line in lines:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
                 logs.append(line)
                 print(f"[oom-sidecar][gpu={device}] {line}", flush=True)
                 if line.startswith("READY:"):
-                    return OomHandle(
-                        proc=proc,
-                        device=device,
-                        target_mem_ratio=target_mem_ratio,
-                        start_ts=time.time(),
-                    )
+                    handed_off = True
+                    return handle
                 if line.startswith("ERROR:"):
-                    proc.terminate()
-                    raise RuntimeError(f"OOM sidecar failed to reach target: {line}")
-        if proc.poll() is not None:
-            break
-
-    proc.terminate()
-    if logs:
-        print(f"[oom-sidecar][gpu={device}] startup logs: {' | '.join(logs)}", flush=True)
-    raise TimeoutError(f"OOM sidecar startup timeout. logs={logs}")
+                    raise RuntimeError(f"OOM sidecar failed to reach target: {line}; logs={logs}")
+        if pending:
+            logs.append(pending.decode("utf-8", errors="replace"))
+        raise TimeoutError(f"OOM sidecar startup timeout after {startup_timeout_sec}s; logs={logs}")
+    finally:
+        if not handed_off:
+            # Reap before the next injection: terminate alone leaves cleanup
+            # asynchronous and can overlap the next CUDA context/allocations.
+            stop_gpu_oom_hog(handle)
+            proc.stdout.close()
 
 
 def stop_gpu_oom_hog(handle: OomHandle, *, timeout_sec: int = 5) -> None:
@@ -458,14 +475,15 @@ def stop_gpu_oom_hog(handle: OomHandle, *, timeout_sec: int = 5) -> None:
     proc = handle.proc
     if proc is None:
         return
-    if proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=timeout_sec)
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=timeout_sec)
+    if proc.stdout is not None:
+        proc.stdout.close()
 
 
 def _device_spec_from_deploy(deploy: Any, stage_config_path: str | Path) -> str:

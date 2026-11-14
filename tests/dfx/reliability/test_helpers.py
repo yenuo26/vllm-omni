@@ -278,6 +278,45 @@ def test_sidecar_program_uses_rejection_helper_and_compiles() -> None:
     compile(program, "<oom-sidecar>", "exec")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="OOM sidecar pipe polling requires Linux")
+@pytest.mark.parametrize("outcome", ["ready", "error", "eof", "timeout", "partial_line"])
+def test_sidecar_startup_drains_progress_and_reaps_failed_process(monkeypatch, outcome):
+    payloads = {
+        "ready": b"STARTING:import_torch\nREADY:fake\n",
+        "error": b"STARTING:initialize_device\nERROR:allocation failed\n",
+        "eof": b"STARTING:import_torch\nimport failed\n",
+        "timeout": b"STARTING:initialize_device\n",
+        "partial_line": b"STARTING:initialize_device",
+    }
+    # One write exposes the old TextIOWrapper/select read-ahead failure. An
+    # incomplete line must not block readline past the startup deadline either.
+    code = f"import os,time; os.write(1, {payloads[outcome]!r}); "
+    code += "raise SystemExit(7)" if outcome == "eof" else "time.sleep(60)"
+    monkeypatch.setattr(helpers, "_build_sidecar_cmd", lambda *args: [sys.executable, "-u", "-c", code])
+    popen = subprocess.Popen
+    processes = []
+
+    def capture_process(*args, **kwargs):
+        proc = popen(*args, **kwargs)
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(helpers.subprocess, "Popen", capture_process)
+    started = time.monotonic()
+    if outcome == "ready":
+        handle = helpers.start_gpu_oom_hog(startup_timeout_sec=2)
+        helpers.stop_gpu_oom_hog(handle)
+    else:
+        error = TimeoutError if outcome in {"timeout", "partial_line"} else RuntimeError
+        with pytest.raises(error, match="STARTING:"):
+            helpers.start_gpu_oom_hog(startup_timeout_sec=1)
+    assert time.monotonic() - started < 10
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+    assert processes[0].stdout is not None
+    assert processes[0].stdout.closed
+
+
 def test_sidecar_program_runs_in_fresh_subprocess(tmp_path: Path) -> None:
     (tmp_path / "torch.py").write_text(
         """
