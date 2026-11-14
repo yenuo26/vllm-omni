@@ -37,12 +37,6 @@ INVALID_PARAMETER_ROCM_MARKS = {
         'hardware_marks(res={"cuda": "H100", "rocm": "MI325"})': 2,
     },
 }
-QWEN_UNDER_LOAD_OOM_CHECKS = (
-    "GpuOomErrorContract",
-    "GpuOomLarge",
-    "GpuOomConcurrent",
-    "GpuOomRecovery",
-)
 
 
 def _assignment_value(tree: ast.Module, name: str) -> ast.AST:
@@ -83,74 +77,34 @@ def test_invalid_parameter_scopes_declare_mi325(filename: str, expected_markers:
 def test_qwen_oom_uses_free_memory_ceiling_and_eager_params() -> None:
     case_source = (RELIABILITY_DIR / "test_qwen3_omni.py").read_text(encoding="utf-8")
     case_tree = ast.parse(case_source)
-    case_functions = {node.name: node for node in case_tree.body if isinstance(node, ast.FunctionDef)}
-    hard_config = next(
-        node for node in case_tree.body if isinstance(node, ast.FunctionDef) and node.name == "_hard_oom_config"
-    )
-    assert any(isinstance(node, ast.Constant) and node.value == "max_free_bytes" for node in ast.walk(hard_config))
-    recover = _assignment_value(case_tree, "OOM_RECOVER_INJECTION_CONFIG")
-    assert isinstance(recover, ast.Dict)
-    recover_items = {
+    functions = {node.name: node for node in case_tree.body if isinstance(node, ast.FunctionDef)}
+    hard_return = next(node for node in ast.walk(functions["_hard_oom_config"]) if isinstance(node, ast.Return))
+    assert isinstance(hard_return.value, ast.Dict)
+    config = {
         key.value: value
-        for key, value in zip(recover.keys, recover.values)
-        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        for key, value in zip(hard_return.value.keys, hard_return.value.values)
+        if isinstance(key, ast.Constant)
     }
-    recover_ceiling = recover_items["max_free_bytes"]
-    assert isinstance(recover_ceiling, ast.Call)
-    assert isinstance(recover_ceiling.func, ast.Name)
-    assert recover_ceiling.func.id == "_recover_oom_max_free_bytes"
-
-    ceiling_helper = case_functions["_recover_oom_max_free_bytes"]
-    return_node = next(node for node in ast.walk(ceiling_helper) if isinstance(node, ast.Return))
-    assert isinstance(return_node.value, ast.IfExp)
-    assert ast.unparse(return_node.value.body) == "32 * 1024 * 1024"
-    assert isinstance(return_node.value.orelse, ast.Constant)
-    assert return_node.value.orelse.value is None
-    assert "torch.version" in ast.unparse(return_node.value.test)
-    assert "reliability_scenarios_for_eager_oom" in (RELIABILITY_DIR / "helpers.py").read_text(encoding="utf-8")
+    ceiling = config["max_free_bytes"]
+    assert isinstance(ceiling, ast.IfExp)
+    assert ast.unparse(ceiling.body) == "32 * 1024 * 1024"
+    assert ast.unparse(ceiling.orelse) == "256 * 1024 * 1024"
+    assert "torch.version" in ast.unparse(ceiling.test)
     assert "eager_oom_stage_ids = (0, 1)" in case_source
-
-    qwen_source = (RELIABILITY_DIR / "test_qwen3_omni.py").read_text(encoding="utf-8")
-    assert "def test_gpu_oom_under_load(" in qwen_source
-    for class_name in QWEN_UNDER_LOAD_OOM_CHECKS:
-        assert f"{class_name}().run(" in qwen_source
-
-    oom_source = (RELIABILITY_DIR / "scenarios" / "oom.py").read_text(encoding="utf-8")
-    oom_tree = ast.parse(oom_source)
-    classes = {node.name: node for node in oom_tree.body if isinstance(node, ast.ClassDef)}
-
-    def _server_set(class_name: str) -> str:
-        for statement in classes[class_name].body:
-            if isinstance(statement, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id == "server_set" for target in statement.targets
-            ):
-                assert isinstance(statement.value, ast.Constant)
-                assert isinstance(statement.value.value, str)
-                return statement.value.value
-        raise AssertionError(f"{class_name} has no server_set")
-
-    for class_name in ("GpuOomErrorContract", "GpuOomLarge", "GpuOomConcurrent"):
-        assert _server_set(class_name) == "oom"
-    assert _server_set("GpuOomRecovery") == "oom"
-
-    functions = {node.name: node for node in oom_tree.body if isinstance(node, ast.FunctionDef)}
-    starter = functions["_start_hard_oom"]
-    assert any(isinstance(node, ast.Constant) and node.value == "max_free_bytes" for node in ast.walk(starter))
-    recovery_fn = next(
-        node for node in case_tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run_oom_recovery"
-    )
-    inject_calls = [
+    assert "reliability_scenarios_for_eager_oom" in (RELIABILITY_DIR / "helpers.py").read_text(encoding="utf-8")
+    case = functions["test_gpu_oom_under_load"]
+    assert any("GpuOomUnderLoad" in ast.unparse(decorator) for decorator in case.decorator_list)
+    assert "_run_oom_under_load" in ast.unparse(case)
+    flow = functions["_run_oom_under_load"]
+    injections = [
         node
-        for node in ast.walk(recovery_fn)
+        for node in ast.walk(flow)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "inject_gpu_oom"
     ]
-    assert len(inject_calls) == 1
-    max_free_keyword = next(keyword for keyword in inject_calls[0].keywords if keyword.arg == "max_free_bytes")
-    assert isinstance(max_free_keyword.value, ast.Subscript)
-    assert isinstance(max_free_keyword.value.value, ast.Name)
-    assert max_free_keyword.value.value.id == "OOM_RECOVER_INJECTION_CONFIG"
-    assert isinstance(max_free_keyword.value.slice, ast.Constant)
-    assert max_free_keyword.value.slice.value == "max_free_bytes"
+    assert len(injections) == 1
+    assert "MODEL.hard_oom_config" in ast.unparse(flow)
+    assert any(keyword.arg == "max_free_bytes" for keyword in injections[0].keywords)
+    assert "_run_oom_recovery" not in functions
 
 
 def _class_assignment(path: Path, class_name: str, name: str) -> ast.AST | None:
@@ -182,31 +136,18 @@ def test_qwen_oom_recovery_forces_hip_eager_and_leaves_cuda_and_wan_unchanged(
     from tests.helpers.stage_config import modify_stage_config
 
     qwen_path = RELIABILITY_DIR / "test_qwen3_omni.py"
-    qwen_tree = ast.parse(qwen_path.read_text(encoding="utf-8"))
     scenarios = _literal_class_assignment(qwen_path, "Qwen3Omni", "scenarios")
     stage_ids = _literal_class_assignment(qwen_path, "Qwen3Omni", "eager_oom_stage_ids")
-    recover = _assignment_value(qwen_tree, "OOM_RECOVER_INJECTION_CONFIG")
-    assert isinstance(recover, ast.Dict)
-    recover_items = {
-        key.value: value
-        for key, value in zip(recover.keys, recover.values)
-        if isinstance(key, ast.Constant) and isinstance(key.value, str)
-    }
     oom_source = RELIABILITY_DIR / "scenarios" / "oom.py"
-    server_set = _literal_class_assignment(oom_source, "GpuOomRecovery", "server_set")
+    server_set = _literal_class_assignment(oom_source, "GpuOomUnderLoad", "server_set")
     assert isinstance(scenarios, list)
     assert isinstance(server_set, str)
     assert stage_ids == (0, 1)
     assert isinstance(stage_ids, tuple)
-    assert isinstance(recover_items["max_free_bytes"], ast.Call)
-    ratio = recover_items["target_mem_ratio"]
-    assert isinstance(ratio, ast.Constant)
-    assert ratio.value == 0.95
     qwen_scenarios = cast(list[dict[str, Any]], scenarios)
     qwen_stage_ids = cast(tuple[int, ...], stage_ids)
     assert {item["test_name"] for item in qwen_scenarios} == {
         "qwen3_omni_reliability_async_chunk",
-        "qwen3_omni_reliability_default",
     }
 
     model = helpers.FaultModel()

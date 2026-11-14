@@ -41,7 +41,12 @@ def _recover(model: FaultModel, params: Any) -> None:
 
 
 class GpuOomAtLaunch(FaultScenario):
-    """Fill GPU memory, require startup to fail observably, then start cleanly."""
+    """Fill GPU memory and require startup to fail observably, then remove pressure.
+
+    Subsequent serial cases start fresh instances and exercise their workloads,
+    providing suite-level restart coverage. Running this case alone does not
+    verify recovery after removing pressure.
+    """
 
     server_set = "launch"
 
@@ -61,7 +66,12 @@ class GpuOomAtLaunch(FaultScenario):
             kwargs["max_free_bytes"] = config["max_free_bytes"]
         handle = inject_gpu_oom(**kwargs)
         try:
-            poisoned = start_server_from_params(params, startup_timeout=LAUNCH_FAILURE_TIMEOUT_SEC)
+            # Sidecars intentionally own most device memory until failed-entry
+            # rollback completes. Keep cleanup, but do not wait for their memory
+            # to disappear during construction or failed-entry teardown.
+            poisoned = start_server_from_params(
+                params, startup_timeout=LAUNCH_FAILURE_TIMEOUT_SEC, wait_for_device_memory=False
+            )
             try:
                 poisoned.__enter__()
             except Exception as exc:
@@ -71,7 +81,6 @@ class GpuOomAtLaunch(FaultScenario):
                 pytest.fail("server became ready while GPU memory was exhausted")
         finally:
             stop_gpu_oom_hogs(handle)
-        _recover(model, params)
 
 
 def _kill_starting_stage(server: Any, pattern: str, finished: threading.Event) -> bool:

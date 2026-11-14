@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import errno
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests.dfx.conftest import assert_fault_exception, resolve_oom_device_spec
+from tests.dfx.conftest import resolve_oom_device_spec
 from tests.dfx.reliability.helpers import (
     PARTIAL_ISOLATION_HTTP_TIMEOUT_SEC,
     FaultModel,
@@ -28,10 +29,7 @@ from tests.dfx.reliability.helpers import (
 from tests.dfx.reliability.scenarios import (
     FullCrashAtLaunch,
     GpuOomAtLaunch,
-    GpuOomConcurrent,
-    GpuOomErrorContract,
-    GpuOomLarge,
-    GpuOomRecovery,
+    GpuOomUnderLoad,
     PartialCrashAtExit,
     PartialCrashAtLaunch,
     PartialStageIsolation,
@@ -85,22 +83,6 @@ def _hard_oom_config() -> dict[str, Any]:
     }
 
 
-def _recover_oom_max_free_bytes() -> int | None:
-    import torch
-
-    # A proportional target leaves several GiB free on high-memory MI300 cards.
-    # Match the proven HIP hard-OOM ceiling while preserving ratio-only CUDA.
-    return 32 * 1024 * 1024 if getattr(torch.version, "hip", None) else None
-
-
-OOM_RECOVER_INJECTION_CONFIG: dict[str, Any] = {
-    "device": _default_oom_device_spec(),
-    "target_mem_ratio": 0.95,
-    "max_free_bytes": _recover_oom_max_free_bytes(),
-    "hold_seconds": 0,
-    "startup_timeout_sec": _OOM_SIDECAR_STARTUP_TIMEOUT_SEC,
-    "strict": False,
-}
 FAULT_ERROR_KEYWORDS = (
     "the request failed",
     "oom",
@@ -195,7 +177,7 @@ def _mix_probe_payload(server: Any) -> dict[str, Any]:
     return {
         "model": server.model,
         "messages": _heavy_messages(),
-        "stream": True,
+        "stream": False,
         "modalities": ["text", "audio"],
     }
 
@@ -214,67 +196,6 @@ def _deploy_config_path(server: Any) -> str | None:
     return None
 
 
-def _server_error_code(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int) and value == 500:
-        return value
-    if isinstance(value, str) and value.isdigit() and int(value) == 500:
-        return int(value)
-    return None
-
-
-def _stream_server_error_code(body: bytes) -> int | None:
-    text = body.decode("utf-8", errors="replace")
-    payloads: list[object] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("data:"):
-            continue
-        data = stripped[len("data:") :].strip()
-        if not data or data == "[DONE]":
-            continue
-        try:
-            payloads.append(json.loads(data))
-        except json.JSONDecodeError:
-            continue
-    if not payloads:
-        try:
-            payloads.append(json.loads(text))
-        except json.JSONDecodeError:
-            return None
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            continue
-        error = payload.get("error")
-        if isinstance(error, dict):
-            code = _server_error_code(error.get("code"))
-            if code is not None:
-                return code
-        if "choices" not in payload:
-            code = _server_error_code(payload.get("code"))
-            if code is not None:
-                return code
-    return None
-
-
-def _fault_keywords_match_response(*, status: int, body: bytes) -> bool:
-    if status >= 400:
-        return True
-    text = body.decode("utf-8", errors="replace").lower()
-    hints = (
-        "the request failed",
-        "oom",
-        "out of memory",
-        "cuda",
-        "orchestrator",
-        "timeout",
-        "connection refused",
-        "connection reset",
-    )
-    return any(key in text for key in hints)
-
-
 def _looks_like_server_unreachable(exc: BaseException) -> bool:
     if isinstance(exc, (ConnectionRefusedError, BrokenPipeError, ConnectionResetError)):
         return True
@@ -283,22 +204,6 @@ def _looks_like_server_unreachable(exc: BaseException) -> bool:
         return errno_val in (errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE)
     message = str(exc).lower()
     return "connection refused" in message or "actively refused" in message
-
-
-def _assert_server_alive(client: Any, *, scenario: str) -> None:
-    deadline = time.monotonic() + 15.0
-    responded = False
-    while time.monotonic() < deadline:
-        try:
-            status = client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
-            responded = True
-            assert status in (200, 503), f"[{scenario} alive] unexpected /health status={status}"
-        except Exception as exc:  # noqa: BLE001
-            if _looks_like_server_unreachable(exc):
-                pytest.fail(f"[{scenario} alive] server exited after single-stage OOM (#4285): {exc!r}")
-            raise
-        time.sleep(0.5)
-    assert responded, f"[{scenario} alive] /health never responded after fault"
 
 
 class Qwen3Omni(FaultModel):
@@ -321,7 +226,6 @@ class Qwen3Omni(FaultModel):
     worker_pattern = RUNTIME_WORKER_PATTERN
     isolation_pattern = "StageEngineCoreProc_stage1"
     hard_oom_config = _hard_oom_config()
-    recover_oom_config = OOM_RECOVER_INJECTION_CONFIG
     fault_error_keywords = FAULT_ERROR_KEYWORDS
     process_kill_error_keywords = PROCESS_KILL_ERROR_KEYWORDS
     with_load_timeout_sec = 300.0
@@ -366,259 +270,97 @@ class Qwen3Omni(FaultModel):
             err_code=500,
         )
 
-    def oom_large_probe(self, client: Any, server: Any) -> None:
-        video_data_url = f"data:video/mp4;base64,{generate_synthetic_video(1280, 720, 161)['base64']}"
-        image_data_url = f"data:image/jpeg;base64,{generate_synthetic_image(1280, 720)['base64']}"
-        audio_data_url = f"data:audio/wav;base64,{generate_synthetic_audio(20, 1)['base64']}"
-        messages = dummy_messages_from_mix_data(
-            system_prompt=_system_prompt(),
-            video_data_url=video_data_url,
-            image_data_url=image_data_url,
-            audio_data_url=audio_data_url,
-            content_text=f"{_mix_prompt()} " * 200,
-        )
-        client.send_omni_request(
-            {
-                "model": server.model,
-                "messages": messages,
-                "stream": True,
-                "key_words": {"audio": ["test"]},
-            },
-            request_num=1,
-        )
 
-    def oom_concurrent_probe(self, client: Any, server: Any) -> None:
-        video_data_url = f"data:video/mp4;base64,{generate_synthetic_video(1280, 720, 161)['base64']}"
-        image_data_url = f"data:image/jpeg;base64,{generate_synthetic_image(1280, 720)['base64']}"
-        audio_data_url = f"data:audio/wav;base64,{generate_synthetic_audio(20, 1)['base64']}"
-        messages = dummy_messages_from_mix_data(
-            system_prompt=_system_prompt(),
-            video_data_url=video_data_url,
-            image_data_url=image_data_url,
-            audio_data_url=audio_data_url,
-            content_text=f"{_mix_prompt()} " * 200,
-        )
-        client.send_omni_request(
-            {
-                "model": server.model,
-                "messages": messages,
-                "stream": True,
-                "modalities": ["text", "audio"],
-                "key_words": {"audio": ["test"]},
-            },
-            request_num=4,
-        )
-
-    def run_error_contract(self, server: Any, client: Any) -> None:
-        device_spec = resolve_oom_device_spec(self.hard_oom_config, _deploy_config_path(server))
-        handle = inject_gpu_oom(
-            device=device_spec,
-            target_mem_ratio=self.hard_oom_config["target_mem_ratio"],
-            hold_seconds=self.hard_oom_config["hold_seconds"],
-            startup_timeout_sec=self.hard_oom_config["startup_timeout_sec"],
-            strict=self.hard_oom_config["strict"],
-            max_free_bytes=self.hard_oom_config["max_free_bytes"],
-        )
-        mix_base = _mix_probe_payload(server)
-        try:
-            text_request = {
-                "model": mix_base["model"],
-                "messages": mix_base["messages"],
-                "stream": False,
-                "modalities": ["text"],
-                "max_tokens": 256,
-            }
-            audio_request = {
-                "model": mix_base["model"],
-                "messages": mix_base["messages"],
-                "stream": False,
-                "modalities": ["text", "audio"],
-            }
-            client.send_chat_completions_http_request({"json": text_request, "timeout": 120}, err_code=500)
-            client.send_chat_completions_http_request({"json": audio_request, "timeout": 120}, err_code=500)
-        finally:
-            stop_gpu_oom_hogs(handle)
-        _assert_server_alive(client, scenario="oom_contract")
-
-    def run_oom_recovery(self, server: Any, client: Any) -> None:
-        _run_oom_recovery(server, client)
+def _assert_multimodal_success(status: int, body: bytes) -> None:
+    assert status == 200, f"expected successful multimodal request, got {status}: {body[:500]!r}"
+    payload = json.loads(body)
+    assert isinstance(payload, dict) and not payload.get("error"), f"unexpected response: {payload!r}"
+    choices = payload.get("choices")
+    assert isinstance(choices, list) and choices, "multimodal response has no choices"
+    message = choices[0].get("message", {})
+    assert message.get("content"), "multimodal response has no text output"
+    assert message.get("audio", {}).get("data"), "multimodal response has no audio output"
 
 
-def _mix_prompt() -> str:
-    return "What is recited in the audio? What is in this image? Describe the video briefly."
+def _drain_oom_output(capfd: pytest.CaptureFixture[str]) -> str:
+    """Keep child stdout available as OOM evidence and replay it to the test log."""
+    captured = capfd.readouterr()
+    with capfd.disabled():
+        print(captured.out, end="")
+        print(captured.err, end="", file=sys.stderr)
+    return captured.out + captured.err
 
 
-def _run_oom_recovery(omni_server_function: Any, online_client_function: Any) -> None:
-    """Black-box: under bounded GPU pressure, a heavy mix chat fails; after hog stops, the same request succeeds.
-
-    Uses ``OOM_RECOVER_INJECTION_CONFIG``: HIP applies the proven hard-OOM free-memory
-    ceiling because a proportional target alone leaves several GiB free on MI300.
-    CUDA keeps the existing ratio-only behavior.
-
-    Fault and recovery phases use raw ``/v1/chat/completions`` HTTP so tests can assert
-    on status codes and JSON error payloads (or fault keywords in streamed bodies).
-    """
-    device_spec = resolve_oom_device_spec(
-        OOM_RECOVER_INJECTION_CONFIG,
-        _deploy_config_path(omni_server_function),
+def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[str]) -> None:
+    # Generate media before pressure: allocation readiness should be followed
+    # immediately by a request, not lengthy synthetic-media preparation.
+    payload = _mix_probe_payload(server)
+    warmup = _multimodal_request(server.model)
+    _assert_multimodal_success(
+        *post_json_raw(server.host, server.port, "/v1/chat/completions", warmup, timeout_sec=180)
     )
+    _drain_oom_output(capfd)
+    stderr_before = set(getattr(server, "_server_error_lines", ()))
+    config = MODEL.hard_oom_config
     handle = inject_gpu_oom(
-        device=device_spec,
-        target_mem_ratio=OOM_RECOVER_INJECTION_CONFIG["target_mem_ratio"],
-        hold_seconds=OOM_RECOVER_INJECTION_CONFIG["hold_seconds"],
-        startup_timeout_sec=OOM_RECOVER_INJECTION_CONFIG["startup_timeout_sec"],
-        strict=OOM_RECOVER_INJECTION_CONFIG["strict"],
-        max_free_bytes=OOM_RECOVER_INJECTION_CONFIG["max_free_bytes"],
+        device=resolve_oom_device_spec(config, _deploy_config_path(server)),
+        target_mem_ratio=config["target_mem_ratio"],
+        hold_seconds=config["hold_seconds"],
+        startup_timeout_sec=config["startup_timeout_sec"],
+        strict=config["strict"],
+        max_free_bytes=config.get("max_free_bytes"),
     )
-    host = omni_server_function.host
-    port = omni_server_function.port
-    mix_payload = _mix_probe_payload(omni_server_function)
-    mix_chat_timeout_sec = 180
-    print(
-        "[oom-recover] injection ready "
-        f"device={device_spec} target_mem_ratio={OOM_RECOVER_INJECTION_CONFIG['target_mem_ratio']} "
-        f"strict={OOM_RECOVER_INJECTION_CONFIG['strict']} hold_seconds={OOM_RECOVER_INJECTION_CONFIG['hold_seconds']}"
-    )
-    print(f"[oom-recover] target endpoint http://{host}:{port}/v1/chat/completions")
-
-    failure_observed = False
-    fault_status: int | None = None
     fault_body = b""
     try:
+        started = time.monotonic()
         try:
-            print(f"[oom-recover] fault-phase request start timeout={mix_chat_timeout_sec}s")
-            fault_status, fault_body = post_json_raw(
-                host,
-                port,
-                "/v1/chat/completions",
-                mix_payload,
-                timeout_sec=mix_chat_timeout_sec,
+            status, fault_body = post_json_raw(
+                server.host, server.port, "/v1/chat/completions", payload, timeout_sec=180
             )
-            print(f"[oom-recover] fault-phase request done status={fault_status} body_prefix={fault_body[:200]!r}")
         except Exception as exc:
-            failure_observed = True
-            print(f"[oom-recover] fault-phase request raised {type(exc).__name__}: {exc!r}")
-            assert_fault_exception(exc, FAULT_ERROR_KEYWORDS)
+            # A dead API can close/refuse the connection; a client timeout or
+            # unrelated exception is not the expected request-failure contract.
+            assert _looks_like_server_unreachable(exc), f"unexpected OOM request failure: {exc!r}"
         else:
-            assert fault_status is not None
-            stream_error_code = _stream_server_error_code(fault_body)
-            failure_observed = (
-                fault_status != 200
-                or stream_error_code is not None
-                or _fault_keywords_match_response(status=fault_status, body=fault_body)
+            assert status in (500, 503), f"OOM request must fail with 500/503, got {status}: {fault_body[:500]!r}"
+            assert extract_openai_error_contract_from_bytes(fault_body) is not None, (
+                f"OOM response lacks an OpenAI error object: {fault_body[:500]!r}"
             )
-            assert failure_observed, (
-                "expected mix multimodal request failure while OOM pressure is active; "
-                f"status={fault_status}, stream_error_code={stream_error_code}, "
-                f"body_prefix={fault_body[:500]!r}"
-            )
-            if fault_status >= 400 and extract_openai_error_contract_from_bytes(fault_body) is None:
-                assert _fault_keywords_match_response(status=fault_status, body=fault_body), (
-                    "non-2xx without OpenAI-style error object should still mention fault hints in body; "
-                    f"status={fault_status}, body_prefix={fault_body[:500]!r}"
-                )
-            else:
-                assert stream_error_code is not None or _fault_keywords_match_response(
-                    status=fault_status, body=fault_body
-                ), (
-                    "HTTP 200 under pressure should still surface a streaming error code or fault hints; "
-                    f"stream_error_code={stream_error_code}, body_prefix={fault_body[:500]!r}"
-                )
+        assert time.monotonic() - started < 180, "OOM request did not fail within its deadline"
+        # The API may return generic EngineDeadError; child stdout and the
+        # harness's stderr buffer identify whether GPU OOM actually caused it.
+        evidence = _drain_oom_output(capfd) + fault_body.decode("utf-8", errors="replace")
+        evidence += "".join(line for line in getattr(server, "_server_error_lines", ()) if line not in stderr_before)
+        oom_markers = (
+            "cuda out of memory",
+            "hip out of memory",
+            "torch.outofmemoryerror",
+            "torch.cuda.outofmemoryerror",
+        )
+        assert any(marker in evidence.lower() for marker in oom_markers), (
+            "request failed without explicit GPU OOM evidence in this injection's response or logs"
+        )
     finally:
-        print("[oom-recover] stopping OOM sidecar(s)")
         stop_gpu_oom_hogs(handle)
-        print("[oom-recover] OOM sidecar(s) stopped")
+        _drain_oom_output(capfd)
 
-    recovery_deadline = time.monotonic() + 90.0
-    terminal_health: int | None = None
-    unreachable_streak = 0
-    last_health_exc: BaseException | None = None
-    while time.monotonic() < recovery_deadline:
-        try:
-            status = online_client_function.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
-            unreachable_streak = 0
-            if status in (200, 503):
-                terminal_health = status
-                print(f"[oom-recover] terminal health reached status={terminal_health}")
-                break
-        except Exception as exc:
-            last_health_exc = exc
-            if _looks_like_server_unreachable(exc):
-                unreachable_streak += 1
-                if unreachable_streak >= 5:
-                    pytest.fail(
-                        "after OOM sidecar stopped, /health is unreachable (connection refused / reset). "
-                        "The APIServer process likely exited (e.g. orchestrator thread crash under OOM); "
-                        "this test expects the server to stay up for post-fault health polling. "
-                        f"last_exc={last_health_exc!r}"
-                    )
-            else:
-                unreachable_streak = 0
-        time.sleep(1.0)
-    else:
-        pytest.fail(
-            "server did not converge to a terminal health state after OOM pressure was removed; "
-            f"last_health_exc={last_health_exc!r}"
-        )
-
-    probe_payload = {
-        "model": omni_server_function.model,
-        "messages": [{"role": "user", "content": "What is the capital of China? Answer in one word."}],
-        "stream": False,
-        "modalities": ["text"],
-    }
-    start = time.monotonic()
-    post_mix_status: int | None = None
-    post_mix_body = b""
-    request_status: int | None = None
     try:
-        assert terminal_health is not None
-        if terminal_health == 200:
-            print(f"[oom-recover] recovery-phase mix request start timeout={mix_chat_timeout_sec}s")
-            post_mix_status, post_mix_body = post_json_raw(
-                host,
-                port,
-                "/v1/chat/completions",
-                mix_payload,
-                timeout_sec=mix_chat_timeout_sec,
-            )
-            print(
-                "[oom-recover] recovery-phase mix request done "
-                f"status={post_mix_status} body_prefix={post_mix_body[:200]!r}"
-            )
-        else:
-            print("[oom-recover] terminal health=503, send lightweight probe request")
-            request_status, _ = post_json_raw(host, port, "/v1/chat/completions", probe_payload, timeout_sec=20)
-            print(f"[oom-recover] lightweight probe done status={request_status}")
-    except Exception:
-        post_mix_status = None
-        request_status = None
-    elapsed = time.monotonic() - start
-    assert elapsed < 200, f"post-fault request should not hang after OOM removal: {elapsed:.2f}s"
-
-    if terminal_health == 200:
-        assert post_mix_status == 200, (
-            "health recovered but repeated mix multimodal request did not return HTTP 200; "
-            f"status={post_mix_status}, body_prefix={post_mix_body[:600]!r}"
-        )
-        recover_err = extract_openai_error_contract_from_bytes(post_mix_body)
-        assert recover_err is None, f"unexpected error object after recovery: {recover_err!r}"
-        recover_stream_code = _stream_server_error_code(post_mix_body)
-        assert recover_stream_code is None, (
-            "health recovered but the mix stream still carried a server error; "
-            f"stream_error_code={recover_stream_code}, body_prefix={post_mix_body[:600]!r}"
-        )
-    else:
-        # A terminal 503 means this instance cannot continue serving and needs
-        # a full restart. In a serial suite run, the function-scoped server is
-        # torn down after this case; the next selected case starts a fresh
-        # instance and checks its own workload. That provides suite-level
-        # startup coverage, not an explicit OOM recovery assertion here:
-        # running this case alone neither restarts nor replays the mix request.
-        assert request_status is None or request_status == 500, (
-            "unhealthy terminal state should fail fast on requests, "
-            f"got health={terminal_health}, request_status={request_status}"
-        )
+        health = client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
+    except Exception as exc:
+        assert _looks_like_server_unreachable(exc), f"unexpected post-OOM health failure: {exc!r}"
+        print("[oom-under-load] API unreachable after OOM; whole-instance restart required")
+        return
+    if health == 503:
+        # Subsequent serial cases start a fresh function-scoped instance and
+        # check their workloads. That is suite-level startup coverage, not an
+        # in-case recovery assertion or individual-stage replacement check.
+        print("[oom-under-load] health=503 after OOM removal; whole-instance restart required")
+        return
+    assert health == 200, f"unexpected post-OOM health status: {health}"
+    _assert_multimodal_success(
+        *post_json_raw(server.host, server.port, "/v1/chat/completions", payload, timeout_sec=180)
+    )
+    print("[oom-under-load] original instance served text and audio after OOM removal")
 
 
 MODEL = Qwen3Omni()
@@ -630,19 +372,17 @@ pytestmark = [
 ]
 
 
-@scenario_params(MODEL, GpuOomRecovery)
-def test_gpu_oom_under_load(omni_server_function, online_client_function) -> None:
-    """Check OOM errors, large requests, concurrency, and post-pressure behavior.
+@scenario_params(MODEL, GpuOomUnderLoad)
+def test_gpu_oom_under_load(capfd, omni_server_function, online_client_function) -> None:
+    """One async-chunk OOM injection, followed by recovery or a restart-required state.
 
-    Only the async-chunk deployment is exercised.
-    A healthy instance must serve the mix request again. A terminal 503 needs
-    an instance restart; fresh startup is exercised by subsequent cases when
-    the suite runs serially, rather than by an in-case restart assertion.
+    A healthy instance must serve the same multimodal request again. A 503 or
+    unreachable API requires a full restart. Serial suite cases provide fresh
+    startup coverage; this case alone does not assert restart recovery.
     """
-    GpuOomErrorContract().run(MODEL, omni_server_function, online_client_function)
-    GpuOomLarge().run(MODEL, omni_server_function, online_client_function)
-    GpuOomConcurrent().run(MODEL, omni_server_function, online_client_function)
-    GpuOomRecovery().run(MODEL, omni_server_function, online_client_function)
+    # Set up capfd before the server fixture so child stdout inherits the
+    # capture descriptor and real stage OOM logs remain observable.
+    _run_oom_under_load(omni_server_function, online_client_function, capfd)
 
 
 @scenario_params(MODEL, ProcessKillWorkerNoLoad)

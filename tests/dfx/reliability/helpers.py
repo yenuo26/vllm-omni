@@ -1163,7 +1163,9 @@ def assert_launch_failure_observable(exc: BaseException) -> None:
     assert any(hint in text for hint in _LAUNCH_FAILURE_HINTS), f"startup failure was not observable: {exc!r}"
 
 
-def start_server_from_params(params: Any, *, startup_timeout: int | None = None) -> Any:
+def start_server_from_params(
+    params: Any, *, startup_timeout: int | None = None, wait_for_device_memory: bool = True
+) -> Any:
     """Build an ``OmniServer`` the same way the reliability fixture does, without entering it."""
     from tests.helpers.runtime import OmniServer, _resolve_server_deploy_args, get_model_prefix
 
@@ -1190,6 +1192,7 @@ def start_server_from_params(params: Any, *, startup_timeout: int | None = None)
         env_dict=params.env_dict,
         use_omni=params.use_omni,
         startup_timeout=params.startup_timeout if startup_timeout is None else startup_timeout,
+        wait_for_device_memory=wait_for_device_memory,
     )
     server.model = params.model
     return server
