@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 import psutil
 import pytest
+from typing_extensions import NotRequired
 
 if TYPE_CHECKING:
     from tests.helpers.runtime import OmniServerParams
@@ -60,6 +61,7 @@ class ServerFaultSnapshot(TypedDict):
     tree_pids: list[int]
     worker_pids: list[int]
     worker_markers: list[str]
+    shm_objects: NotRequired[list[tuple[str, int, int]]]
 
 
 # Substrings matched against ``psutil.Process.name`` + argv text for classifying GPU
@@ -1291,6 +1293,85 @@ def worker_residual_timeout_after_kill_signal(signal_name: str) -> float:
     return 30.0
 
 
+_LINUX_PROC_ROOT = Path("/proc")
+_LINUX_SHM_ROOT = Path("/dev/shm")
+
+
+def _linux_fd_counts(pids: Sequence[int]) -> dict[int, int]:
+    """Include zombie PIDs: they must not retain open file descriptors either."""
+    if sys.platform != "linux":
+        return {}
+    counts: dict[int, int] = {}
+    for pid in pids:
+        try:
+            count = sum(1 for _ in (_LINUX_PROC_ROOT / str(pid) / "fd").iterdir())
+        except FileNotFoundError:
+            continue
+        if count:
+            counts[pid] = count
+    return counts
+
+
+def _capture_linux_shm_objects(pids: Sequence[int]) -> list[tuple[str, int, int]]:
+    """Track named POSIX SHM/semaphores referenced by this tree, not global growth.
+
+    Closed descriptors can leave live mappings, so inspect both fd and maps.
+    Already-unlinked objects have no name to leak; the process/FD checks cover
+    their holders. Permission errors propagate rather than claiming coverage.
+    """
+    if sys.platform != "linux":
+        return []
+    objects: set[tuple[str, int, int]] = set()
+    for pid in pids:
+        proc = _LINUX_PROC_ROOT / str(pid)
+        try:
+            descriptors = list((proc / "fd").iterdir())
+        except FileNotFoundError:
+            descriptors = []
+        for descriptor in descriptors:
+            try:
+                target = descriptor.readlink()
+                if target.is_relative_to(_LINUX_SHM_ROOT):
+                    stat = target.stat()
+                    fd_stat = descriptor.stat()
+                    if (stat.st_dev, stat.st_ino) == (fd_stat.st_dev, fd_stat.st_ino):
+                        objects.add((str(target), stat.st_dev, stat.st_ino))
+            except FileNotFoundError:
+                continue
+        try:
+            mappings = (proc / "maps").read_text().splitlines()
+        except FileNotFoundError:
+            continue
+        for line in mappings:
+            fields = line.split(maxsplit=5)
+            if len(fields) != 6:
+                continue
+            target = Path(fields[5])
+            if not target.is_relative_to(_LINUX_SHM_ROOT):
+                continue
+            try:
+                stat = target.stat()
+            except FileNotFoundError:
+                continue
+            major, minor = fields[3].split(":")
+            if stat.st_ino == int(fields[4]) and stat.st_dev == os.makedev(int(major, 16), int(minor, 16)):
+                objects.add((str(target), stat.st_dev, stat.st_ino))
+    return sorted(objects)
+
+
+def _remaining_linux_shm_objects(objects: Sequence[tuple[str, int, int]]) -> list[str]:
+    remaining: list[str] = []
+    for name, device, inode in objects:
+        try:
+            stat = Path(name).stat()
+        except FileNotFoundError:
+            continue
+        # A reused name with a different inode belongs to a different object.
+        if (stat.st_dev, stat.st_ino) == (device, inode):
+            remaining.append(name)
+    return remaining
+
+
 def assert_no_server_tree_process_residual_and_gpu_release(
     server: Any,
     *,
@@ -1306,6 +1387,12 @@ def assert_no_server_tree_process_residual_and_gpu_release(
 
     **Zombie** PIDs (exited children not yet reaped by the test ``Popen``) are excluded
     from the "alive" list; ``psutil.pid_exists`` alone would false-positive on them.
+
+    On Linux, also require captured PIDs' FD tables to empty and the named
+    /dev/shm objects referenced at injection time to disappear. Identity uses
+    device/inode pairs, so unrelated objects reusing a name do not fail cleanup.
+    Objects created after the snapshot and references retained by processes
+    outside the captured tree are not independently inventoried here.
 
     Note: if a child is reparented to PID 1 while staying alive, its PID is unchanged
     and remains detected; if it **exits and a new unrelated process reuses the same
@@ -1323,6 +1410,8 @@ def assert_no_server_tree_process_residual_and_gpu_release(
     deadline = time.monotonic() + timeout_sec
     last_alive: list[int] = []
     last_gpu_leaks: dict[int, int] = {}
+    last_fds: dict[int, int] = {}
+    last_shm: list[str] = []
     gpu_telemetry_available: bool | None = None
     while time.monotonic() < deadline:
         last_alive = list_alive_pids(tree_pids)
@@ -1338,12 +1427,16 @@ def assert_no_server_tree_process_residual_and_gpu_release(
         else:
             gpu_telemetry_available = True
             last_gpu_leaks = {pid: mem_mb for pid, mem_mb in gpu_map.items() if pid in tree_pid_set and mem_mb > 0}
-        if not last_alive and not last_gpu_leaks:
+        last_fds = _linux_fd_counts(tree_pids)
+        last_shm = _remaining_linux_shm_objects(snapshot.get("shm_objects", []))
+        if not last_alive and not last_gpu_leaks and not last_fds and not last_shm:
             return
         time.sleep(poll_interval_sec)
 
     assert not last_alive, f"[{scenario}] residual server-tree processes remain alive: {last_alive}"
     assert not last_gpu_leaks, f"[{scenario}] server-tree PID GPU memory not released: {last_gpu_leaks}"
+    assert not last_fds, f"[{scenario}] server-tree file descriptors remain open: {last_fds}"
+    assert not last_shm, f"[{scenario}] named shared memory/semaphores remain: {last_shm}"
 
 
 def assert_no_worker_residual_and_gpu_release(
@@ -1387,7 +1480,13 @@ def _capture_server_fault_snapshot(
         "tree_pids": tree_pids,
         "worker_pids": worker_pids,
         "worker_markers": list(markers),
+        "shm_objects": _capture_linux_shm_objects(tree_pids),
     }
+    # Later shutdown injection must retain objects captured before a stage died.
+    previous = getattr(server, "reliability_fault_snapshot", None)
+    if isinstance(previous, dict):
+        snapshot["tree_pids"] = sorted(set(tree_pids) | set(previous.get("tree_pids", [])))
+        snapshot["shm_objects"] = sorted(set(snapshot["shm_objects"]) | set(previous.get("shm_objects", [])))
     setattr(server, "reliability_fault_snapshot", snapshot)
     return snapshot
 

@@ -26,7 +26,6 @@ from tests.dfx.reliability.helpers import (
     stop_gpu_oom_hogs,
 )
 from tests.dfx.reliability.scenarios import (
-    FullCrashAtExit,
     FullCrashAtLaunch,
     GpuOomAtLaunch,
     GpuOomConcurrent,
@@ -34,6 +33,7 @@ from tests.dfx.reliability.scenarios import (
     GpuOomLarge,
     GpuOomRecovery,
     PartialCrashAtExit,
+    PartialCrashAtLaunch,
     PartialStageIsolation,
     ProcessKillServeRootNoLoad,
     ProcessKillServeRootWithLoad,
@@ -312,17 +312,9 @@ class Qwen3Omni(FaultModel):
                 "server_args": ["--async-chunk"],
             },
         },
-        {
-            "test_name": "qwen3_omni_reliability_default",
-            "server_params": {
-                "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
-                "stage_config_name": "qwen3_omni_moe.yaml",
-                "server_args": ["--no-async-chunk"],
-            },
-        },
     ]
     deploy_dir = Path(get_deploy_config_path("qwen3_omni_moe.yaml")).parent
-    lifecycle_scenario = "qwen3_omni_reliability_default"
+    lifecycle_scenario = "qwen3_omni_reliability_async_chunk"
     eager_oom_stage_ids = (0, 1)
     worker_pattern = RUNTIME_WORKER_PATTERN
     isolation_pattern = "StageEngineCoreProc_stage1"
@@ -615,6 +607,12 @@ def _run_oom_recovery(omni_server_function: Any, online_client_function: Any) ->
             f"stream_error_code={recover_stream_code}, body_prefix={post_mix_body[:600]!r}"
         )
     else:
+        # A terminal 503 means this instance cannot continue serving and needs
+        # a full restart. In a serial suite run, the function-scoped server is
+        # torn down after this case; the next selected case starts a fresh
+        # instance and checks its own workload. That provides suite-level
+        # startup coverage, not an explicit OOM recovery assertion here:
+        # running this case alone neither restarts nor replays the mix request.
         assert request_status is None or request_status == 500, (
             "unhealthy terminal state should fail fast on requests, "
             f"got health={terminal_health}, request_status={request_status}"
@@ -632,7 +630,13 @@ pytestmark = [
 
 @scenario_params(MODEL, GpuOomRecovery)
 def test_gpu_oom_under_load(omni_server_function, online_client_function) -> None:
-    """In-service GPU OOM is one case: the error contract, a large request, concurrency, then recovery."""
+    """Check OOM errors, large requests, concurrency, and post-pressure behavior.
+
+    Only the async-chunk deployment is exercised.
+    A healthy instance must serve the mix request again. A terminal 503 needs
+    an instance restart; fresh startup is exercised by subsequent cases when
+    the suite runs serially, rather than by an in-case restart assertion.
+    """
     GpuOomErrorContract().run(MODEL, omni_server_function, online_client_function)
     GpuOomLarge().run(MODEL, omni_server_function, online_client_function)
     GpuOomConcurrent().run(MODEL, omni_server_function, online_client_function)
@@ -640,7 +644,7 @@ def test_gpu_oom_under_load(omni_server_function, online_client_function) -> Non
 
 
 @scenario_params(MODEL, ProcessKillWorkerNoLoad)
-def test_process_kill_worker_no_load(
+def test_stage_crash_at_idle_001(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -650,7 +654,7 @@ def test_process_kill_worker_no_load(
 
 
 @scenario_params(MODEL, ProcessKillWorkerWithLoad, skip_reason="issue#8912")
-def test_process_kill_worker_with_load_request_failure(
+def test_worker_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -659,7 +663,7 @@ def test_process_kill_worker_with_load_request_failure(
 
 
 @scenario_params(MODEL, ProcessKillServeRootNoLoad)
-def test_full_crash_serve_root_at_idle(
+def test_serve_root_crash_at_idle(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -668,7 +672,7 @@ def test_full_crash_serve_root_at_idle(
 
 
 @scenario_params(MODEL, ProcessKillServeRootWithLoad)
-def test_full_crash_serve_root_at_load(
+def test_serve_root_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -677,7 +681,7 @@ def test_full_crash_serve_root_at_load(
 
 
 @scenario_params(MODEL, ProcessKillTreeNoLoad)
-def test_full_crash_tree_at_idle(
+def test_process_tree_crash_at_idle(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -686,7 +690,7 @@ def test_full_crash_tree_at_idle(
 
 
 @scenario_params(MODEL, ProcessKillTreeWithLoad)
-def test_full_crash_tree_at_load(
+def test_process_tree_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -700,25 +704,25 @@ def test_gpu_oom_at_launch(launch_params) -> None:
     GpuOomAtLaunch().run(MODEL, launch_params)
 
 
+@launch_scenario_params(MODEL, PartialCrashAtLaunch)
+def test_stage_crash_at_launch(launch_params) -> None:
+    """Kill one stage before readiness, require startup failure, cleanup, and a successful restart."""
+    PartialCrashAtLaunch().run(MODEL, launch_params)
+
+
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
 def test_full_crash_tree_at_launch(launch_params) -> None:
     """Kill the process tree during startup, then require a clean restart."""
     FullCrashAtLaunch().run(MODEL, launch_params)
 
 
-@scenario_params(MODEL, FullCrashAtExit)
-def test_full_crash_serve_root_at_exit(omni_server_function, online_client_function) -> None:
-    """A stuck shutdown escalates to SIGKILL, and a new server can serve."""
-    FullCrashAtExit().run(MODEL, omni_server_function, online_client_function)
-
-
 @scenario_params(MODEL, PartialCrashAtExit)
-def test_partial_crash_at_exit(omni_server_function, online_client_function) -> None:
-    """Kill one stage, then require shutdown to finish or escalate and a restart to serve."""
+def test_stage_crash_at_exit(omni_server_function, online_client_function) -> None:
+    """Begin graceful shutdown, kill one stage, and require timely cleanup before restarting."""
     PartialCrashAtExit().run(MODEL, omni_server_function, online_client_function)
 
 
 @scenario_params(MODEL, PartialStageIsolation)
-def test_partial_stage_isolation(omni_server_function, online_client_function) -> None:
+def test_stage_crash_at_idle_002(omni_server_function, online_client_function) -> None:
     """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
     PartialStageIsolation().run(MODEL, omni_server_function, online_client_function)

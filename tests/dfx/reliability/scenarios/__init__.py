@@ -3,7 +3,7 @@
 
 """Fault scenarios. Each class owns one fault's steps; model tests call ``run``."""
 
-from tests.dfx.reliability.scenarios.launch import FullCrashAtLaunch, GpuOomAtLaunch
+from tests.dfx.reliability.scenarios.launch import FullCrashAtLaunch, GpuOomAtLaunch, PartialCrashAtLaunch
 from tests.dfx.reliability.scenarios.oom import (
     GpuOomConcurrent,
     GpuOomErrorContract,
@@ -12,7 +12,6 @@ from tests.dfx.reliability.scenarios.oom import (
     GpuOomUnderLoad,
 )
 from tests.dfx.reliability.scenarios.process_kill import (
-    FullCrashAtExit,
     PartialCrashAtExit,
     PartialStageIsolation,
     ProcessKillServeRootNoLoad,
@@ -29,7 +28,6 @@ from tests.dfx.reliability.scenarios.replica import (
 )
 
 __all__ = [
-    "FullCrashAtExit",
     "FullCrashAtLaunch",
     "GpuOomAtLaunch",
     "GpuOomConcurrent",
@@ -38,6 +36,7 @@ __all__ = [
     "GpuOomRecovery",
     "GpuOomUnderLoad",
     "PartialCrashAtExit",
+    "PartialCrashAtLaunch",
     "PartialStageIsolation",
     "ProcessKillServeRootNoLoad",
     "ProcessKillServeRootWithLoad",

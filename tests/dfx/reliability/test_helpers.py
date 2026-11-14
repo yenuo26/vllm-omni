@@ -106,6 +106,7 @@ def test_process_cleanup_remains_mandatory_without_gpu_telemetry(
     monkeypatch.setattr(helpers.time, "sleep", lambda _: None)
     monkeypatch.setattr(helpers, "list_alive_pids", lambda _: [42])
     monkeypatch.setattr(helpers, "query_gpu_compute_pid_used_memory_mb", lambda: None)
+    monkeypatch.setattr(helpers, "_linux_fd_counts", lambda _: {})
 
     with pytest.raises(AssertionError, match="residual server-tree processes remain alive"):
         helpers.assert_no_server_tree_process_residual_and_gpu_release(
@@ -121,6 +122,7 @@ def test_process_cleanup_can_pass_without_gpu_telemetry(monkeypatch: pytest.Monk
     monkeypatch.setattr(helpers.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(helpers, "list_alive_pids", lambda _: [])
     monkeypatch.setattr(helpers, "query_gpu_compute_pid_used_memory_mb", lambda: None)
+    monkeypatch.setattr(helpers, "_linux_fd_counts", lambda _: {})
 
     helpers.assert_no_server_tree_process_residual_and_gpu_release(
         server,
@@ -556,3 +558,99 @@ def test_stuck_pid_is_escalated_to_sigkill() -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@pytest.mark.parametrize("mapped", [True, False])
+def test_linux_shm_snapshot_tracks_mapped_objects(tmp_path, monkeypatch, mapped):
+    monkeypatch.setattr(helpers.sys, "platform", "linux")
+    monkeypatch.setattr(helpers, "_LINUX_PROC_ROOT", tmp_path / "proc")
+    monkeypatch.setattr(helpers, "_LINUX_SHM_ROOT", tmp_path / "shm")
+    shm = tmp_path / "shm"
+    shm.mkdir()
+    owned = shm / "psm_owned"
+    owned.write_bytes(b"payload")
+    unrelated = shm / "psm_unrelated"
+    unrelated.write_bytes(b"other task")
+    proc = tmp_path / "proc" / "42"
+    (proc / "fd").mkdir(parents=True)
+    stat = owned.stat()
+    # Device conversion is the OS seam; keep this fake /proc test portable.
+    monkeypatch.setattr(helpers.os, "makedev", lambda major, minor: major, raising=False)
+    (proc / "maps").write_text(f"1000-2000 rw-s 0000 {stat.st_dev:x}:0 {stat.st_ino} {owned}\n" if mapped else "")
+    objects = helpers._capture_linux_shm_objects([42, 999])
+    assert helpers._remaining_linux_shm_objects(objects) == ([str(owned)] if mapped else [])
+    owned.unlink()
+    assert helpers._remaining_linux_shm_objects(objects) == []
+    assert unrelated.exists()
+
+
+def test_linux_shm_reused_name_is_not_a_residual(tmp_path):
+    shm = tmp_path / "psm_reused"
+    shm.write_bytes(b"new object")
+    stat = shm.stat()
+    assert helpers._remaining_linux_shm_objects([(str(shm), stat.st_dev, stat.st_ino + 1)]) == []
+
+
+def test_linux_fd_check_includes_pids_excluded_from_alive_list(tmp_path, monkeypatch):
+    monkeypatch.setattr(helpers.sys, "platform", "linux")
+    monkeypatch.setattr(helpers, "_LINUX_PROC_ROOT", tmp_path)
+    descriptors = tmp_path / "42" / "fd"
+    descriptors.mkdir(parents=True)
+    fd = descriptors / "3"
+    fd.touch()
+    assert helpers._linux_fd_counts([42, 999]) == {42: 1}
+    fd.unlink()
+    assert helpers._linux_fd_counts([42, 999]) == {}
+
+
+@pytest.mark.parametrize("resource", ["fd", "shm"])
+def test_cleanup_rejects_linux_resource_residual_after_process_exit(monkeypatch, resource):
+    server = SimpleNamespace(reliability_fault_snapshot={"tree_pids": [42]})
+    ticks = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(helpers.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(helpers.time, "sleep", lambda _: None)
+    monkeypatch.setattr(helpers, "list_alive_pids", lambda _: [])
+    monkeypatch.setattr(helpers, "query_gpu_compute_pid_used_memory_mb", lambda: None)
+    monkeypatch.setattr(helpers, "_linux_fd_counts", lambda _: {42: 1} if resource == "fd" else {})
+    monkeypatch.setattr(
+        helpers, "_remaining_linux_shm_objects", lambda _: ["/dev/shm/owned"] if resource == "shm" else []
+    )
+    message = "file descriptors remain open" if resource == "fd" else "named shared memory/semaphores remain"
+    with pytest.raises(AssertionError, match=message):
+        helpers.assert_no_server_tree_process_residual_and_gpu_release(server, scenario="linux", timeout_sec=1)
+
+
+def test_fault_snapshot_preserves_resources_of_previously_killed_stage(monkeypatch):
+    server = SimpleNamespace(reliability_fault_snapshot={"tree_pids": [41, 42], "shm_objects": [("old", 1, 2)]})
+    monkeypatch.setattr(helpers, "_resolve_runtime_worker_markers", lambda *args: ())
+    monkeypatch.setattr(helpers, "_list_server_process_tree", lambda _: [41])
+    monkeypatch.setattr(helpers, "_capture_linux_shm_objects", lambda _: [("new", 1, 3)])
+    snapshot = helpers._capture_server_fault_snapshot(server)
+    assert snapshot["tree_pids"] == [41, 42]
+    assert set(snapshot["shm_objects"]) == {("old", 1, 2), ("new", 1, 3)}
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Requires Linux /proc and /dev/shm")
+@pytest.mark.parametrize("mapping_only", [False, True])
+def test_linux_shm_snapshot_reads_real_proc(mapping_only):
+    import mmap
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(prefix="omni-reliability-", dir="/dev/shm", delete=False) as backing:
+        path = Path(backing.name)
+        backing.write(b"x" * 4096)
+        backing.flush()
+        mapping = mmap.mmap(backing.fileno(), 4096) if mapping_only else None
+        try:
+            if mapping_only:
+                backing.close()
+            objects = helpers._capture_linux_shm_objects([os.getpid()])
+            captured = [item for item in objects if item[0] == str(path)]
+            assert len(captured) == 1
+            assert helpers._remaining_linux_shm_objects(captured) == [str(path)]
+            path.unlink()
+            assert helpers._remaining_linux_shm_objects(captured) == []
+        finally:
+            if mapping is not None:
+                mapping.close()
+            path.unlink(missing_ok=True)

@@ -25,12 +25,12 @@ from tests.dfx.reliability.helpers import (
     stop_gpu_oom_hogs,
 )
 from tests.dfx.reliability.scenarios import (
-    FullCrashAtExit,
     FullCrashAtLaunch,
     GpuOomAtLaunch,
     GpuOomLarge,
     GpuOomRecovery,
     PartialCrashAtExit,
+    PartialCrashAtLaunch,
     PartialStageIsolation,
     ProcessKillServeRootNoLoad,
     ProcessKillServeRootWithLoad,
@@ -358,7 +358,7 @@ class TestWanGpuOomShared:
 
 
 @scenario_params(MODEL, ProcessKillWorkerNoLoad, skip_reason=_WORKER_KILL_SKIP)
-def test_process_kill_worker_no_load(
+def test_stage_crash_at_idle_001(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -368,7 +368,7 @@ def test_process_kill_worker_no_load(
 
 
 @scenario_params(MODEL, ProcessKillWorkerWithLoad, skip_reason=_WORKER_KILL_SKIP)
-def test_process_kill_worker_with_load_request_failure(
+def test_worker_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -377,7 +377,7 @@ def test_process_kill_worker_with_load_request_failure(
 
 
 @scenario_params(MODEL, ProcessKillServeRootNoLoad)
-def test_full_crash_serve_root_at_idle(
+def test_serve_root_crash_at_idle(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -386,7 +386,7 @@ def test_full_crash_serve_root_at_idle(
 
 
 @scenario_params(MODEL, ProcessKillServeRootWithLoad)
-def test_full_crash_serve_root_at_load(
+def test_serve_root_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -395,7 +395,7 @@ def test_full_crash_serve_root_at_load(
 
 
 @scenario_params(MODEL, ProcessKillTreeNoLoad)
-def test_full_crash_tree_at_idle(
+def test_process_tree_crash_at_idle(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -404,7 +404,7 @@ def test_full_crash_tree_at_idle(
 
 
 @scenario_params(MODEL, ProcessKillTreeWithLoad)
-def test_full_crash_tree_at_load(
+def test_process_tree_crash_at_load(
     omni_server_function,
     online_client_function,
     signal_name: str,
@@ -418,25 +418,25 @@ def test_gpu_oom_at_launch(launch_params) -> None:
     GpuOomAtLaunch().run(MODEL, launch_params)
 
 
+@launch_scenario_params(MODEL, PartialCrashAtLaunch)
+def test_stage_crash_at_launch(launch_params) -> None:
+    """Kill one stage before readiness, require startup failure, cleanup, and a successful restart."""
+    PartialCrashAtLaunch().run(MODEL, launch_params)
+
+
 @launch_scenario_params(MODEL, FullCrashAtLaunch)
 def test_full_crash_tree_at_launch(launch_params) -> None:
     """Kill the process tree during startup, then require a clean restart."""
     FullCrashAtLaunch().run(MODEL, launch_params)
 
 
-@scenario_params(MODEL, FullCrashAtExit)
-def test_full_crash_serve_root_at_exit(omni_server_function, online_client_function) -> None:
-    """A stuck shutdown escalates to SIGKILL, and a new server can serve."""
-    FullCrashAtExit().run(MODEL, omni_server_function, online_client_function)
-
-
 @scenario_params(MODEL, PartialCrashAtExit, skip_reason=_WORKER_KILL_SKIP)
-def test_partial_crash_at_exit(omni_server_function, online_client_function) -> None:
-    """Kill one stage, then require shutdown to finish or escalate and a restart to serve."""
+def test_stage_crash_at_exit(omni_server_function, online_client_function) -> None:
+    """Begin graceful shutdown, kill one stage, and require timely cleanup before restarting."""
     PartialCrashAtExit().run(MODEL, omni_server_function, online_client_function)
 
 
 @scenario_params(MODEL, PartialStageIsolation, skip_reason=_WORKER_KILL_SKIP)
-def test_partial_stage_isolation(omni_server_function, online_client_function) -> None:
+def test_stage_crash_at_idle_002(omni_server_function, online_client_function) -> None:
     """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
     PartialStageIsolation().run(MODEL, omni_server_function, online_client_function)

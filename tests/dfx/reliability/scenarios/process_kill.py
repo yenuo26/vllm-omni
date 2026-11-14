@@ -9,14 +9,18 @@ import concurrent.futures
 import time
 from typing import Any
 
+import psutil
 import pytest
 
 from tests.dfx.conftest import assert_fault_exception
 from tests.dfx.reliability.helpers import (
     INFLIGHT_INJECTION_REQUEST_COUNT,
     INFLIGHT_INJECTION_REQUEST_RATE,
+    SIGTERM_CLEANUP_GRACE_SEC,
     FaultModel,
     FaultScenario,
+    _list_server_process_tree,
+    _safe_proc_info,
     assert_api_still_listening,
     assert_no_server_tree_process_residual_and_gpu_release,
     assert_post_fault_api_unreachable,
@@ -27,7 +31,6 @@ from tests.dfx.reliability.helpers import (
     make_server_tree_kill_fault_injector,
     relaunch_server,
     run_fault_injection_with_rate_load,
-    shutdown_serve_root_with_escalation,
     sigterm_serve_root_and_assert_cleanup,
     worker_residual_timeout_after_kill_signal,
 )
@@ -126,6 +129,11 @@ class ProcessKillWorkerNoLoad(FaultScenario):
 
     ``assert_fast_fail`` uses ``err_code=500``. A client timeout raises and fails the
     test. The concurrent checker runs only after that probe, then ``/health`` must end at 503.
+
+    In a serial model-suite run, teardown releases this function-scoped server
+    and the next selected case starts a fresh instance and checks its workload.
+    This provides suite-level whole-instance restart coverage, not an explicit
+    recovery assertion in this case. No individual stage replacement is tested.
     """
 
     signals_attr = "worker_signals"
@@ -161,6 +169,13 @@ class ProcessKillWorkerWithLoad(FaultScenario):
 
 
 class ProcessKillServeRootNoLoad(FaultScenario):
+    """Kill an idle serve root and verify API disappearance and resource cleanup.
+
+    In a serial model-suite run, the next selected case starts a fresh
+    function-scoped server and checks its own workload. This is suite-level
+    startup coverage; this scenario alone does not assert restart success.
+    """
+
     signals_attr = "serve_root_signals"
 
     def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
@@ -173,6 +188,15 @@ class ProcessKillServeRootNoLoad(FaultScenario):
 
 
 class ProcessKillServeRootWithLoad(FaultScenario):
+    """Kill the serve root under load and verify request failure and cleanup.
+
+    In a serial model-suite run, the next selected case starts a fresh
+    function-scoped server and checks its own workload. This is suite-level
+    startup coverage; this scenario alone does not assert restart success.
+    Load checks require an exception and bounded completion, not a specific
+    in-flight HTTP error contract.
+    """
+
     signals_attr = "serve_root_with_load_signals"
 
     def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
@@ -195,6 +219,13 @@ class ProcessKillServeRootWithLoad(FaultScenario):
 
 
 class ProcessKillTreeNoLoad(FaultScenario):
+    """Kill an idle process tree and verify API disappearance and resource cleanup.
+
+    In a serial model-suite run, the next selected case starts a fresh
+    function-scoped server and checks its own workload. This is suite-level
+    startup coverage; this scenario alone does not assert restart success.
+    """
+
     signals_attr = "tree_signals"
 
     def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
@@ -211,6 +242,15 @@ class ProcessKillTreeNoLoad(FaultScenario):
 
 
 class ProcessKillTreeWithLoad(FaultScenario):
+    """Kill the process tree under load and verify request failure and cleanup.
+
+    In a serial model-suite run, the next selected case starts a fresh
+    function-scoped server and checks its own workload. This is suite-level
+    startup coverage; this scenario alone does not assert restart success.
+    Load checks require an exception and bounded completion, not a specific
+    in-flight HTTP error contract.
+    """
+
     signals_attr = "tree_with_load_signals"
 
     def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
@@ -244,39 +284,57 @@ def _relaunch_and_probe(model: FaultModel, server: Any) -> None:
         recovered.__exit__(None, None, None)
 
 
-class FullCrashAtExit(FaultScenario):
-    """Shutdown the whole server. A stuck exit is escalated to SIGKILL, then a new server starts."""
-
-    server_set = "lifecycle"
-
-    def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
-        del signal_name
-        model.warmup(client, server)
-        shutdown_serve_root_with_escalation(server, scenario="full_crash_at_exit")
-        _relaunch_and_probe(model, server)
-
-
 class PartialCrashAtExit(FaultScenario):
-    """Kill one stage, then require shutdown to finish or escalate and a restart to serve."""
+    """SIGTERM the serve root, then kill one stage while shutdown is in progress.
+
+    Shutdown and resource cleanup must finish within the SIGTERM grace period.
+    There is no passing escalation path: a timeout fails this scenario, and the
+    fixture's teardown handles any emergency cleanup after that failure.
+    """
 
     server_set = "lifecycle"
 
     def run(self, model: FaultModel, server: Any, client: Any, signal_name: str | None = None) -> None:
         del signal_name
-        model.isolation_warmup(client, server)
-        make_process_kill_fault_injector(
-            grep_patterns=model.isolation_pattern,
-            signal_name="SIGKILL",
-            limit=1,
-            post_kill_wait_seconds=2.0,
-        )(server)
-        model.isolation_after(client, server)
-        shutdown_serve_root_with_escalation(server, scenario="partial_crash_at_exit")
+        scenario = "stage_crash_at_exit"
+        model.warmup(client, server)
+        # Resolve a descendant before SIGTERM: the root can exit and reparent
+        # its workers during shutdown. psutil.Process.kill guards PID reuse.
+        tree = _list_server_process_tree(server)
+        target_pid: int | None = None
+        for pid in tree[1:]:
+            name, cmdline = _safe_proc_info(pid)
+            if model.isolation_pattern in f"{name} {cmdline}":
+                target_pid = pid
+                break
+        assert target_pid is not None, f"[{scenario}] no stage matched {model.isolation_pattern!r}"
+        worker = psutil.Process(target_pid)
+        deadline = time.monotonic() + SIGTERM_CLEANUP_GRACE_SEC
+        make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
+        try:
+            assert worker.is_running() and worker.status() != psutil.STATUS_ZOMBIE, (
+                f"[{scenario}] target stage exited before shutdown-time fault injection"
+            )
+            worker.kill()
+        except psutil.NoSuchProcess:
+            pytest.fail(f"[{scenario}] target stage disappeared before shutdown-time fault injection")
+        print(f"[{scenario}] SIGKILL stage pid={target_pid} after serve-root SIGTERM", flush=True)
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"[{scenario}] shutdown exceeded its grace period before cleanup checks"
+        assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=remaining)
+        assert time.monotonic() <= deadline, f"[{scenario}] shutdown did not finish within its grace period"
+        assert_post_fault_api_unreachable(client, scenario=scenario)
         _relaunch_and_probe(model, server)
 
 
 class PartialStageIsolation(FaultScenario):
-    """Kill one stage or one worker. Requests bound to it fail, and one SIGTERM still exits the API."""
+    """Kill one stage or one worker, check isolation, then exit with one SIGTERM.
+
+    In a serial model-suite run, the next selected case starts a fresh
+    function-scoped instance and checks its workload after this instance exits.
+    This provides suite-level whole-instance restart coverage, not an explicit
+    recovery assertion in this case. No individual stage replacement is tested.
+    """
 
     server_set = "lifecycle"
 

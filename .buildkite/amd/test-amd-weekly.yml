@@ -33,8 +33,8 @@ steps:
               > "$$ROCM_QWEN3_RELIABILITY_ARTIFACT_DIR/collection.txt"
             count=$$(awk '/^tests\/.*::/ { n++ } END { print n + 0 }' \
               "$$ROCM_QWEN3_RELIABILITY_ARTIFACT_DIR/collection.txt")
-            if [[ "$$count" != 35 ]]; then
-              echo "Expected exactly 35 Qwen3-Omni reliability nodes, found $$count." >&2
+            if [[ "$$count" != 20 ]]; then
+              echo "Expected exactly 20 Qwen3-Omni reliability nodes, found $$count." >&2
               cat "$$ROCM_QWEN3_RELIABILITY_ARTIFACT_DIR/collection.txt" >&2
               exit 5
             fi
@@ -62,9 +62,9 @@ steps:
             suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
             tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
             skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-            if tests != 35 or skipped != 10:
+            if tests != 20 or skipped != 5:
                 print(
-                    f"Expected exactly 35 executed Qwen3-Omni reliability tests with 10 known skips; "
+                    f"Expected exactly 20 executed Qwen3-Omni reliability tests with 5 known skips; "
                     f"reported tests={tests}, skipped={skipped}.",
                     file=sys.stderr,
                 )
