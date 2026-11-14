@@ -39,6 +39,7 @@ from tests.dfx.reliability.scenarios import (
     ProcessKillTreeWithLoad,
     ProcessKillWorkerNoLoad,
     ProcessKillWorkerWithLoad,
+    ServeRootCrashAtLaunch,
 )
 from tests.helpers.mark import hardware_marks
 from tests.helpers.media import generate_synthetic_audio, generate_synthetic_image, generate_synthetic_video
@@ -234,7 +235,7 @@ class Qwen3Omni(FaultModel):
         client.send_omni_request(_multimodal_request(server.model), request_num=1)
 
     def submit_serve_load(self, client: Any, server: Any) -> None:
-        client.send_omni_request(_text_request(server.model), request_num=1)
+        client.send_omni_request(_multimodal_request(server.model), request_num=1)
 
     def submit_concurrent(self, client: Any, server: Any) -> Any:
         return client.send_chat_completions_http_request(
@@ -444,7 +445,7 @@ def test_gpu_oom_at_launch(launch_params) -> None:
 
 @launch_scenario_params(MODEL, PartialCrashAtLaunch)
 def test_stage_crash_at_launch(launch_params) -> None:
-    """Kill one stage before readiness, require startup failure, cleanup, and a successful restart."""
+    """Kill a stage before readiness; require failure and cleanup, with recovery covered by later serial cases."""
     PartialCrashAtLaunch().run(MODEL, launch_params)
 
 
@@ -459,7 +460,11 @@ def test_process_tree_crash_at_launch(launch_params) -> None:
 
 @scenario_params(MODEL, PartialCrashAtExit)
 def test_stage_crash_at_exit(omni_server_function, online_client_function) -> None:
-    """Begin graceful shutdown, kill one stage, and require timely cleanup before restarting."""
+    """Begin shutdown, kill one stage, and require timely cleanup.
+
+    Later serial cases cover fresh startup and service; this case does not
+    independently verify restart recovery.
+    """
     PartialCrashAtExit().run(MODEL, omni_server_function, online_client_function)
 
 
@@ -473,3 +478,9 @@ def test_stage_crash_at_idle_002(omni_server_function, online_client_function) -
 def test_graceful_shutdown(omni_server_function, online_client_function) -> None:
     """SIGTERM the healthy root; all children and resources must clear within 60s."""
     GracefulShutdown().run(MODEL, omni_server_function, online_client_function)
+
+
+@launch_scenario_params(MODEL, ServeRootCrashAtLaunch)
+def test_serve_root_crash_at_launch(launch_params) -> None:
+    """SIGKILL only the root before readiness, after a worker exists; require orphan cleanup."""
+    ServeRootCrashAtLaunch().run(MODEL, launch_params)

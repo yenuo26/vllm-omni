@@ -3,7 +3,12 @@
 
 """Fault scenarios. Each class owns one fault's steps; model tests call ``run``."""
 
-from tests.dfx.reliability.scenarios.launch import FullCrashAtLaunch, GpuOomAtLaunch, PartialCrashAtLaunch
+from tests.dfx.reliability.scenarios.launch import (
+    FullCrashAtLaunch,
+    GpuOomAtLaunch,
+    PartialCrashAtLaunch,
+    ServeRootCrashAtLaunch,
+)
 from tests.dfx.reliability.scenarios.oom import (
     GpuOomConcurrent,
     GpuOomErrorContract,
@@ -32,6 +37,7 @@ from tests.dfx.reliability.scenarios.replica import (
 
 __all__ = [
     "FullCrashAtLaunch",
+    "ServeRootCrashAtLaunch",
     "GracefulShutdown",
     "ReplicaGracefulShutdown",
     "GpuOomAtLaunch",

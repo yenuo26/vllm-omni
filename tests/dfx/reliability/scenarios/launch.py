@@ -23,21 +23,14 @@ from tests.dfx.reliability.helpers import (
     _safe_proc_info,
     assert_launch_failure_observable,
     assert_no_server_tree_process_residual_and_gpu_release,
+    assert_post_fault_api_unreachable,
     client_for_server,
+    escalate_live_pids,
     inject_gpu_oom,
     make_server_tree_kill_fault_injector,
     start_server_from_params,
     stop_gpu_oom_hogs,
 )
-
-
-def _recover(model: FaultModel, params: Any) -> None:
-    server = start_server_from_params(params)
-    try:
-        server.__enter__()
-        model.warmup(client_for_server(server), server)
-    finally:
-        server.__exit__(None, None, None)
 
 
 class GpuOomAtLaunch(FaultScenario):
@@ -105,12 +98,14 @@ def _kill_starting_stage(server: Any, pattern: str, finished: threading.Event) -
 
 
 class PartialCrashAtLaunch(FaultScenario):
-    """Kill one stage during startup, require bounded failure, cleanup, and restart.
+    """Kill one stage during startup, then require bounded failure and cleanup.
 
     The injection is scoped to descendants matching the model's worker pattern.
     Startup failure before injection or a ready server is a failure, not coverage.
-    The server harness owns rollback on failed entry; recovery runs only after
-    that rollback and the resource-residual assertions have completed.
+    The server harness owns rollback on failed entry. Subsequent selected
+    serial cases start fresh instances and check their business workloads.
+    This is suite-level recovery coverage only when a later preflight succeeds;
+    this case alone does not verify restart recovery.
     """
 
     server_set = "launch"
@@ -162,7 +157,6 @@ class PartialCrashAtLaunch(FaultScenario):
         assert_no_server_tree_process_residual_and_gpu_release(
             starting, scenario="stage_crash_at_launch", timeout_sec=60.0
         )
-        _recover(model, params)
 
 
 class FullCrashAtLaunch(FaultScenario):
@@ -204,3 +198,82 @@ class FullCrashAtLaunch(FaultScenario):
                 assert_launch_failure_observable(errors[0])
             else:
                 starting.__exit__(None, None, None)
+
+
+class ServeRootCrashAtLaunch(FaultScenario):
+    """Kill only the root after a worker appears, strictly before readiness.
+
+    Failed-entry rollback must not kill descendants before the assertions:
+    this scenario tests their own response to root death. Emergency harness
+    teardown runs only after validation (including failures). Later serial
+    cases provide fresh-start coverage; this case never restarts the service.
+    """
+
+    server_set = "launch"
+
+    def run(self, model: FaultModel, server: Any, client: Any = None, signal_name: str | None = None) -> None:
+        del client, signal_name
+        params = server
+        starting = start_server_from_params(params)
+        finished = threading.Event()
+        ready = threading.Event()
+        errors: list[BaseException] = []
+
+        def start() -> None:
+            try:
+                # __enter__ automatically kills the tree on startup failure,
+                # which would hide orphaned workers after root-only SIGKILL.
+                starting._start_server()
+                ready.set()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        thread = threading.Thread(target=start, daemon=True)
+        thread.start()
+        injected = False
+        captured_pids: list[int] = []
+        validated = False
+        try:
+            deadline = time.monotonic() + params.startup_timeout
+            while time.monotonic() < deadline and not finished.is_set():
+                tree = _list_server_process_tree(starting)
+                workers = [pid for pid in tree[1:] if model.worker_pattern in " ".join(_safe_proc_info(pid))]
+                if workers:
+                    snapshot = _capture_server_fault_snapshot(starting)
+                    captured_pids = list(snapshot["tree_pids"])
+                    assert not finished.is_set() and not starting._owns_listening_port(), (
+                        "server became ready before root startup fault injection"
+                    )
+                    sigkill = getattr(signal, "SIGKILL", None)
+                    assert sigkill is not None, "SIGKILL is required for root crash injection"
+                    os.kill(snapshot["root_pids"][0], sigkill)
+                    injected = True
+                    print(f"[serve-root-crash-at-launch] SIGKILL root with workers={workers}", flush=True)
+                    break
+                time.sleep(0.05)
+            assert injected, (
+                f"no root crash injected after a worker appeared: ready={ready.is_set()}, errors={errors!r}"
+            )
+            thread.join(LAUNCH_FAILURE_TIMEOUT_SEC)
+            assert not thread.is_alive(), "startup did not fail within the post-root-crash deadline"
+            assert not ready.is_set() and errors, "startup did not report failure after root SIGKILL"
+            assert_launch_failure_observable(errors[0])
+            assert_post_fault_api_unreachable(client_for_server(starting), scenario="serve_root_crash_at_launch")
+            assert_no_server_tree_process_residual_and_gpu_release(
+                starting, scenario="serve_root_crash_at_launch", timeout_sec=30
+            )
+            validated = True
+        finally:
+            # Never use this cleanup as evidence that the service recovered its
+            # children. All resource assertions above precede harness teardown.
+            try:
+                if not validated and captured_pids:
+                    # Root death can reparent workers: rediscovering its tree
+                    # in __exit__ alone cannot reclaim those orphaned PIDs.
+                    escalate_live_pids(captured_pids, grace_sec=0.0)
+            finally:
+                starting.__exit__(None, None, None)
+            thread.join(30)
+            assert not thread.is_alive(), "startup thread survived emergency cleanup"

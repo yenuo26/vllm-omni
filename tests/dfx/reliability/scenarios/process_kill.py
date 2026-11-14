@@ -25,11 +25,9 @@ from tests.dfx.reliability.helpers import (
     assert_no_server_tree_process_residual_and_gpu_release,
     assert_post_fault_api_unreachable,
     assert_post_fault_health_503,
-    client_for_server,
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
     make_server_tree_kill_fault_injector,
-    relaunch_server,
     run_fault_injection_with_rate_load,
     sigterm_serve_root_and_assert_cleanup,
     worker_residual_timeout_after_kill_signal,
@@ -279,20 +277,15 @@ class ProcessKillTreeWithLoad(FaultScenario):
         _assert_cleanup(server, scenario=scenario, signal_name=signal)
 
 
-def _relaunch_and_probe(model: FaultModel, server: Any) -> None:
-    recovered = relaunch_server(server)
-    try:
-        model.warmup(client_for_server(recovered), recovered)
-    finally:
-        recovered.__exit__(None, None, None)
-
-
 class PartialCrashAtExit(FaultScenario):
     """SIGTERM the serve root, then kill one stage while shutdown is in progress.
 
     Shutdown and resource cleanup must finish within the SIGTERM grace period.
     There is no passing escalation path: a timeout fails this scenario, and the
     fixture's teardown handles any emergency cleanup after that failure.
+    Subsequent selected serial cases provide fresh-start recovery coverage
+    only when their business preflight succeeds; this case does not restart
+    the instance or independently verify restart recovery.
     """
 
     server_set = "lifecycle"
@@ -327,7 +320,6 @@ class PartialCrashAtExit(FaultScenario):
         assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=remaining)
         assert time.monotonic() <= deadline, f"[{scenario}] shutdown did not finish within its grace period"
         assert_post_fault_api_unreachable(client, scenario=scenario)
-        _relaunch_and_probe(model, server)
 
 
 class PartialStageIsolation(FaultScenario):

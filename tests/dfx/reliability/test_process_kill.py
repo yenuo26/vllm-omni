@@ -88,7 +88,6 @@ def test_stage_exit_requires_shutdown_before_kill_and_no_timeout_escalation(monk
     monkeypatch.setattr(
         process_kill, "assert_post_fault_api_unreachable", lambda *args, **kwargs: events.append("api_gone")
     )
-    monkeypatch.setattr(process_kill, "_relaunch_and_probe", lambda *args: events.append("restart"))
 
     def unexpected_signal(*args, **kwargs):
         pytest.fail("must not escalate or kill the tree to pass shutdown")
@@ -97,8 +96,7 @@ def test_stage_exit_requires_shutdown_before_kill_and_no_timeout_escalation(monk
     monkeypatch.setattr(process_kill, "make_process_kill_fault_injector", unexpected_signal)
     if expected_error is None:
         process_kill.PartialCrashAtExit().run(model, server, client)
-        assert events == ["warmup", "SIGTERM", "stage_SIGKILL", "cleanup", "api_gone", "restart"]
+        assert events == ["warmup", "SIGTERM", "stage_SIGKILL", "cleanup", "api_gone"]
     else:
         with pytest.raises((AssertionError, pytest.fail.Exception), match=expected_error):
             process_kill.PartialCrashAtExit().run(model, server, client)
-        assert "restart" not in events

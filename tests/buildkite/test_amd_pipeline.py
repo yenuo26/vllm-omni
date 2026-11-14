@@ -1438,11 +1438,11 @@ def test_weekly_reliability_is_distinct_from_nightly() -> None:
         "Reliability Test · qwen3-omni": {
             "artifact_path": "artifacts/rocm-qwen3-omni-reliability/**/*",
             "artifact_env": "ROCM_QWEN3_RELIABILITY_ARTIFACT_DIR",
-            "expected_nodes": 13,
+            "expected_nodes": 14,
             "expected_skipped": 3,
             "timeout": "220m",
-            "collection_message": "Expected exactly 13 Qwen3-Omni reliability nodes",
-            "junit_message": ("Expected exactly 13 executed Qwen3-Omni reliability tests with 3 known skips"),
+            "collection_message": "Expected exactly 14 Qwen3-Omni reliability nodes",
+            "junit_message": ("Expected exactly 14 executed Qwen3-Omni reliability tests with 3 known skips"),
         },
         "Reliability Test · wan22": {
             "artifact_path": "artifacts/rocm-wan22-reliability/**/*",
@@ -1552,9 +1552,9 @@ def test_weekly_invalid_parameter_single_gpu_jobs_use_sdpa() -> None:
             "Reliability Test · qwen3-omni",
             "ROCM_QWEN3_RELIABILITY_ARTIFACT_DIR",
             "qwen3-reliability-guard",
-            13,
+            14,
             3,
-            "Expected exactly 13 executed Qwen3-Omni reliability tests with 3 known skips",
+            "Expected exactly 14 executed Qwen3-Omni reliability tests with 3 known skips",
         ),
         (
             "Reliability Test · wan22",

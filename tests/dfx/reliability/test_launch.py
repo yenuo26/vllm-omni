@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -62,7 +63,7 @@ def test_launch_stage_injection_never_falls_back_to_unrelated_processes(monkeypa
         ("startup_hang", "startup did not terminate"),
     ],
 )
-def test_stage_crash_launch_requires_injection_failure_cleanup_and_recovery(monkeypatch, outcome, expected_error):
+def test_stage_crash_launch_requires_injection_failure_and_cleanup(monkeypatch, outcome, expected_error):
     events = []
     release = threading.Event()
 
@@ -85,7 +86,8 @@ def test_stage_crash_launch_requires_injection_failure_cleanup_and_recovery(monk
 
     starting = Server()
     monkeypatch.setattr(launch, "LAUNCH_FAILURE_TIMEOUT_SEC", 0.1)
-    monkeypatch.setattr(launch, "start_server_from_params", lambda *args, **kwargs: starting)
+    factory = Mock(return_value=starting)
+    monkeypatch.setattr(launch, "start_server_from_params", factory)
 
     def inject(*args):
         if outcome in {"early_failure", "ready_before_kill"}:
@@ -103,17 +105,17 @@ def test_stage_crash_launch_requires_injection_failure_cleanup_and_recovery(monk
     monkeypatch.setattr(
         launch, "assert_no_server_tree_process_residual_and_gpu_release", lambda *args, **kwargs: events.append("clean")
     )
-    monkeypatch.setattr(launch, "_recover", lambda *args: events.append("recover"))
     if expected_error is not None:
         with pytest.raises(AssertionError, match=expected_error):
             launch.PartialCrashAtLaunch().run(_LaunchModel(), object())
-        assert "recover" not in events
     else:
         launch.PartialCrashAtLaunch().run(_LaunchModel(), object())
-        assert events == ["stage_killed", "rollback", "clean", "recover"]
+        assert events == ["stage_killed", "rollback", "clean"]
+
+    assert factory.call_count == 1
 
 
-def test_stage_crash_launch_cleanup_failure_blocks_restart(monkeypatch):
+def test_stage_crash_launch_cleanup_failure_propagates(monkeypatch):
     release = threading.Event()
 
     class Server:
@@ -134,10 +136,6 @@ def test_stage_crash_launch_cleanup_failure_blocks_restart(monkeypatch):
     def residual(*args, **kwargs):
         raise AssertionError("shared memory residual")
 
-    def unexpected_restart(*args):
-        pytest.fail("must not restart before resource cleanup succeeds")
-
     monkeypatch.setattr(launch, "assert_no_server_tree_process_residual_and_gpu_release", residual)
-    monkeypatch.setattr(launch, "_recover", unexpected_restart)
     with pytest.raises(AssertionError, match="shared memory residual"):
         launch.PartialCrashAtLaunch().run(_LaunchModel(), object())
