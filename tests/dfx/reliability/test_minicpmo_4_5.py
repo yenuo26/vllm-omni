@@ -142,7 +142,7 @@ class MiniCPMO45(FaultModel):
     oom_large_fail_message = "expected audio chat failure during GPU OOM injection"
 
     def warmup(self, client: Any, server: Any) -> None:
-        _assert_text_200(client, server.model)
+        client.send_chat_completions_http_request({"json": _audio_request(server.model), "timeout": 120})
 
     def submit_worker_load(self, client: Any, server: Any) -> None:
         client.send_chat_completions_http_request({"json": _audio_request(server.model), "timeout": 120})
@@ -157,7 +157,7 @@ class MiniCPMO45(FaultModel):
         client.send_chat_completions_http_request({"json": _audio_request(server.model), "timeout": 60})
 
     def isolation_warmup(self, client: Any, server: Any) -> None:
-        _assert_text_200(client, server.model)
+        self.warmup(client, server)
 
     def isolation_after(self, client: Any, server: Any) -> None:
         _assert_text_200(client, server.model)

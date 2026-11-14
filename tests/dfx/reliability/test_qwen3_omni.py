@@ -261,7 +261,7 @@ class Qwen3Omni(FaultModel):
         )
 
     def isolation_warmup(self, client: Any, server: Any) -> None:
-        _assert_text_200(client, server.model)
+        self.warmup(client, server)
 
     def isolation_after(self, client: Any, server: Any) -> None:
         _assert_text_200(client, server.model)
@@ -300,6 +300,7 @@ def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[s
         *post_json_raw(server.host, server.port, "/v1/chat/completions", warmup, timeout_sec=180)
     )
     _drain_oom_output(capfd)
+    print("[oom-under-load] multimodal preflight passed; starting memory pressure", flush=True)
     stderr_before = set(getattr(server, "_server_error_lines", ()))
     config = MODEL.hard_oom_config
     handle = inject_gpu_oom(
@@ -311,17 +312,26 @@ def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[s
         max_free_bytes=config.get("max_free_bytes"),
     )
     fault_body = b""
+    status: int | None = None
     try:
         started = time.monotonic()
+        print("[oom-under-load] pressure ready; sending one heavy multimodal request (timeout=180s)", flush=True)
         try:
             status, fault_body = post_json_raw(
                 server.host, server.port, "/v1/chat/completions", payload, timeout_sec=180
             )
         except Exception as exc:
+            print(f"[oom-under-load] request exception after {time.monotonic() - started:.3f}s: {exc!r}", flush=True)
             # A dead API can close/refuse the connection; a client timeout or
             # unrelated exception is not the expected request-failure contract.
             assert _looks_like_server_unreachable(exc), f"unexpected OOM request failure: {exc!r}"
         else:
+            # Bound diagnostics; never print the request's base64 media.
+            print(
+                f"[oom-under-load] request status={status}, elapsed={time.monotonic() - started:.3f}s, "
+                f"response_bytes={len(fault_body)}, response_head={fault_body[:4096]!r}",
+                flush=True,
+            )
             assert status in (500, 503), f"OOM request must fail with 500/503, got {status}: {fault_body[:500]!r}"
             assert extract_openai_error_contract_from_bytes(fault_body) is not None, (
                 f"OOM response lacks an OpenAI error object: {fault_body[:500]!r}"
@@ -329,19 +339,27 @@ def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[s
         assert time.monotonic() - started < 180, "OOM request did not fail within its deadline"
         # The API may return generic EngineDeadError; child stdout and the
         # harness's stderr buffer identify whether GPU OOM actually caused it.
-        evidence = _drain_oom_output(capfd) + fault_body.decode("utf-8", errors="replace")
-        evidence += "".join(line for line in getattr(server, "_server_error_lines", ()) if line not in stderr_before)
+        captured_logs = _drain_oom_output(capfd)
+        stderr_delta = "".join(line for line in getattr(server, "_server_error_lines", ()) if line not in stderr_before)
+        evidence = captured_logs + fault_body.decode("utf-8", errors="replace") + stderr_delta
         oom_markers = (
             "cuda out of memory",
             "hip out of memory",
             "torch.outofmemoryerror",
             "torch.cuda.outofmemoryerror",
+            "cuda error: out of memory",
+            "hip error: out of memory",
+            "cuda_error_out_of_memory",
+            "hiperroroutofmemory",
         )
         assert any(marker in evidence.lower() for marker in oom_markers), (
-            "request failed without explicit GPU OOM evidence in this injection's response or logs"
+            "request failed without explicit GPU OOM evidence in this injection's response or logs; "
+            f"status={status}, response_head={fault_body[:4096]!r}, "
+            f"captured_log_tail={captured_logs[-4096:]!r}, stderr_tail={stderr_delta[-4096:]!r}"
         )
     finally:
         stop_gpu_oom_hogs(handle)
+        print("[oom-under-load] memory pressure removed", flush=True)
         _drain_oom_output(capfd)
 
     try:

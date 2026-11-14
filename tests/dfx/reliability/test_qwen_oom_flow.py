@@ -50,6 +50,8 @@ def qwen_oom():
         ("recovered", None),
         ("stage_dead", None),
         ("api_dead", None),
+        ("driver_oom", None),
+        ("accelerator_oom", None),
         ("no_oom_evidence", "without explicit GPU OOM evidence"),
         ("stale_oom_evidence", "without explicit GPU OOM evidence"),
         ("warmup_failed", "expected successful multimodal"),
@@ -100,7 +102,12 @@ def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, capfd, 
             assert events == ["warmup", "inject"]
             events.append("fault")
             if outcome not in {"no_oom_evidence", "stale_oom_evidence"}:
-                print("torch.OutOfMemoryError: CUDA out of memory")
+                print(
+                    {
+                        "driver_oom": "Returning 2 (CUDA_ERROR_OUT_OF_MEMORY) from cuDevicePrimaryCtxRetain",
+                        "accelerator_oom": "torch.AcceleratorError: CUDA error: out of memory",
+                    }.get(outcome, "torch.OutOfMemoryError: CUDA out of memory")
+                )
             if outcome == "request_timeout":
                 raise TimeoutError("request timed out")
             if outcome == "fault_succeeded":
@@ -125,8 +132,12 @@ def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, capfd, 
     qwen_oom.post_json_raw = post
     client = SimpleNamespace(send_health_http_request=health)
     if expected_error is not None:
-        with pytest.raises(AssertionError, match=expected_error):
+        with pytest.raises(AssertionError, match=expected_error) as error:
             qwen_oom._run_oom_under_load(server, client, capfd)
+        if outcome in {"no_oom_evidence", "stale_oom_evidence"}:
+            assert "status=500" in str(error.value)
+            assert "engine dead" in str(error.value)
+            assert "stderr_tail=" in str(error.value)
     else:
         qwen_oom._run_oom_under_load(server, client, capfd)
     if outcome == "warmup_failed":
