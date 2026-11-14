@@ -480,7 +480,7 @@ def test_graceful_shutdown(omni_server_function, online_client_function) -> None
     GracefulShutdown().run(MODEL, omni_server_function, online_client_function)
 
 
-@launch_scenario_params(MODEL, ServeRootCrashAtLaunch)
+@launch_scenario_params(MODEL, ServeRootCrashAtLaunch, skip_reason="vllm issue#43060")
 def test_serve_root_crash_at_launch(launch_params) -> None:
     """SIGKILL only the root before readiness, after a worker exists; require orphan cleanup."""
     ServeRootCrashAtLaunch().run(MODEL, launch_params)
