@@ -27,7 +27,6 @@ def qwen_oom():
     sources = {
         Path(__file__).with_name("test_qwen3_omni.py"): {
             "_assert_multimodal_success",
-            "_drain_oom_output",
             "_looks_like_server_unreachable",
             "_run_oom_under_load",
         },
@@ -52,6 +51,7 @@ def qwen_oom():
         ("api_dead", None),
         ("driver_oom", None),
         ("accelerator_oom", None),
+        ("allocator_oom", None),
         ("no_oom_evidence", "without explicit GPU OOM evidence"),
         ("stale_oom_evidence", "without explicit GPU OOM evidence"),
         ("warmup_failed", "expected successful multimodal"),
@@ -61,7 +61,7 @@ def qwen_oom():
         ("recovery_failed", "no audio output"),
     ],
 )
-def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, capfd, outcome, expected_error):
+def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, outcome, expected_error):
     events = []
     requests = []
     payload = {"model": "qwen", "modalities": ["text", "audio"], "stream": False}
@@ -102,10 +102,14 @@ def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, capfd, 
             assert events == ["warmup", "inject"]
             events.append("fault")
             if outcome not in {"no_oom_evidence", "stale_oom_evidence"}:
-                print(
+                server._server_error_lines.append(
                     {
                         "driver_oom": "Returning 2 (CUDA_ERROR_OUT_OF_MEMORY) from cuDevicePrimaryCtxRetain",
                         "accelerator_oom": "torch.AcceleratorError: CUDA error: out of memory",
+                        "allocator_oom": (
+                            "[rank0]: CUDACachingAllocator.cpp:3934 memory allocation failed with OOM on device 0 "
+                            "while trying to allocate 109051904 bytes (free: 3997696, total: 84942979072)."
+                        ),
                     }.get(outcome, "torch.OutOfMemoryError: CUDA out of memory")
                 )
             if outcome == "request_timeout":
@@ -133,13 +137,13 @@ def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, capfd, 
     client = SimpleNamespace(send_health_http_request=health)
     if expected_error is not None:
         with pytest.raises(AssertionError, match=expected_error) as error:
-            qwen_oom._run_oom_under_load(server, client, capfd)
+            qwen_oom._run_oom_under_load(server, client)
         if outcome in {"no_oom_evidence", "stale_oom_evidence"}:
             assert "status=500" in str(error.value)
             assert "engine dead" in str(error.value)
             assert "stderr_tail=" in str(error.value)
     else:
-        qwen_oom._run_oom_under_load(server, client, capfd)
+        qwen_oom._run_oom_under_load(server, client)
     if outcome == "warmup_failed":
         assert events == ["warmup"]
     else:
@@ -150,9 +154,9 @@ def test_qwen_oom_uses_one_injection_and_stops_before_recovery(qwen_oom, capfd, 
         assert events == ["warmup", "inject", "fault", "stop", "health", "recovery"]
 
 
-def test_qwen_oom_capture_starts_before_server_fixture():
+def test_qwen_oom_does_not_capture_live_server_output():
     tree = ast.parse(Path(__file__).with_name("test_qwen3_omni.py").read_text(encoding="utf-8"))
     case = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "test_gpu_oom_under_load"
     )
-    assert [arg.arg for arg in case.args.args][:2] == ["capfd", "omni_server_function"]
+    assert [arg.arg for arg in case.args.args] == ["omni_server_function", "online_client_function"]

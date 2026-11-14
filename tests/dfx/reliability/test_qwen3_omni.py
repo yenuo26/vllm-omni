@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import errno
 import json
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -282,16 +281,7 @@ def _assert_multimodal_success(status: int, body: bytes) -> None:
     assert message.get("audio", {}).get("data"), "multimodal response has no audio output"
 
 
-def _drain_oom_output(capfd: pytest.CaptureFixture[str]) -> str:
-    """Keep child stdout available as OOM evidence and replay it to the test log."""
-    captured = capfd.readouterr()
-    with capfd.disabled():
-        print(captured.out, end="")
-        print(captured.err, end="", file=sys.stderr)
-    return captured.out + captured.err
-
-
-def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[str]) -> None:
+def _run_oom_under_load(server: Any, client: Any) -> None:
     # Generate media before pressure: allocation readiness should be followed
     # immediately by a request, not lengthy synthetic-media preparation.
     payload = _mix_probe_payload(server)
@@ -299,7 +289,6 @@ def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[s
     _assert_multimodal_success(
         *post_json_raw(server.host, server.port, "/v1/chat/completions", warmup, timeout_sec=180)
     )
-    _drain_oom_output(capfd)
     print("[oom-under-load] multimodal preflight passed; starting memory pressure", flush=True)
     stderr_before = set(getattr(server, "_server_error_lines", ()))
     config = MODEL.hard_oom_config
@@ -337,11 +326,10 @@ def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[s
                 f"OOM response lacks an OpenAI error object: {fault_body[:500]!r}"
             )
         assert time.monotonic() - started < 180, "OOM request did not fail within its deadline"
-        # The API may return generic EngineDeadError; child stdout and the
-        # harness's stderr buffer identify whether GPU OOM actually caused it.
-        captured_logs = _drain_oom_output(capfd)
+        # The API may return generic EngineDeadError; the harness's stderr
+        # buffer can identify whether GPU OOM actually caused it.
         stderr_delta = "".join(line for line in getattr(server, "_server_error_lines", ()) if line not in stderr_before)
-        evidence = captured_logs + fault_body.decode("utf-8", errors="replace") + stderr_delta
+        evidence = fault_body.decode("utf-8", errors="replace") + stderr_delta
         oom_markers = (
             "cuda out of memory",
             "hip out of memory",
@@ -351,16 +339,16 @@ def _run_oom_under_load(server: Any, client: Any, capfd: pytest.CaptureFixture[s
             "hip error: out of memory",
             "cuda_error_out_of_memory",
             "hiperroroutofmemory",
+            "memory allocation failed with oom on device",
         )
         assert any(marker in evidence.lower() for marker in oom_markers), (
             "request failed without explicit GPU OOM evidence in this injection's response or logs; "
             f"status={status}, response_head={fault_body[:4096]!r}, "
-            f"captured_log_tail={captured_logs[-4096:]!r}, stderr_tail={stderr_delta[-4096:]!r}"
+            f"stderr_tail={stderr_delta[-4096:]!r}"
         )
     finally:
         stop_gpu_oom_hogs(handle)
         print("[oom-under-load] memory pressure removed", flush=True)
-        _drain_oom_output(capfd)
 
     try:
         health = client.send_health_http_request({"timeout": 5}, err_code=(200, 503))[0].status_code
@@ -391,16 +379,14 @@ pytestmark = [
 
 
 @scenario_params(MODEL, GpuOomUnderLoad)
-def test_gpu_oom_under_load(capfd, omni_server_function, online_client_function) -> None:
+def test_gpu_oom_under_load(omni_server_function, online_client_function) -> None:
     """One async-chunk OOM injection, followed by recovery or a restart-required state.
 
     A healthy instance must serve the same multimodal request again. A 503 or
     unreachable API requires a full restart. Serial suite cases provide fresh
     startup coverage; this case alone does not assert restart recovery.
     """
-    # Set up capfd before the server fixture so child stdout inherits the
-    # capture descriptor and real stage OOM logs remain observable.
-    _run_oom_under_load(omni_server_function, online_client_function, capfd)
+    _run_oom_under_load(omni_server_function, online_client_function)
 
 
 @scenario_params(MODEL, ProcessKillWorkerNoLoad)
