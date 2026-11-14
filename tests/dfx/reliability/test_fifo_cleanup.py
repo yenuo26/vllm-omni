@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
-"""Only whole-tree SIGKILL may leave named FIFOs; other resources stay strict."""
+"""SIGKILL FIFO exceptions stay scoped; all other resources remain strict."""
 
 from __future__ import annotations
 
@@ -25,7 +25,11 @@ def cleanup():
     for path, names in [
         (
             root / "helpers.py",
-            {"_remaining_linux_shm_objects", "assert_no_server_tree_process_residual_and_gpu_release"},
+            {
+                "_remaining_linux_shm_objects",
+                "assert_no_server_tree_process_residual_and_gpu_release",
+                "capture_exclusive_fifo_objects",
+            },
         ),
         (root / "scenarios/process_kill.py", {"_assert_cleanup"}),
     ]:
@@ -89,3 +93,28 @@ def test_only_tree_crash_selects_fifo_exception(cleanup, scenario, allowed):
         timeout_sec=30,
         allow_fifo_residual=allowed,
     )
+
+
+def test_partial_crash_exempts_only_target_exclusive_fifo_identities(cleanup):
+    target = ("target", 1, 2)
+    shared = ("shared", 1, 3)
+    regular = ("data_segment", 1, 4)
+    survivor = ("survivor", 1, 5)
+    objects = [target, shared, regular, survivor]
+    modes = {name: stat.S_IFIFO if name != "data_segment" else stat.S_IFREG for name, _, _ in objects}
+    inodes = {name: inode for name, _, inode in objects}
+    cleanup.Path = lambda name: SimpleNamespace(
+        stat=lambda: SimpleNamespace(st_dev=1, st_ino=inodes[name], st_mode=modes[name])
+    )
+    cleanup._capture_linux_shm_objects = lambda pids: [target, shared, regular] if pids == [11] else [shared, survivor]
+    allowed = cleanup.capture_exclusive_fifo_objects([11], [10, 11, 12])
+    assert allowed == [target]
+    assert cleanup._remaining_linux_shm_objects(objects, allowed_fifo_objects=allowed) == [
+        "shared",
+        "data_segment",
+        "survivor",
+    ]
+    assert cleanup._remaining_linux_shm_objects(objects) == ["target", "shared", "data_segment", "survivor"]
+    # A wrong inode must not exempt a different object with the same name.
+    assert cleanup._remaining_linux_shm_objects([target], allowed_fifo_objects=[("target", 1, 999)]) == ["target"]
+    assert cleanup._remaining_linux_shm_objects([regular], allowed_fifo_objects=[regular]) == ["data_segment"]

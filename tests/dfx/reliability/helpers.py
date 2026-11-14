@@ -1390,7 +1390,10 @@ def _capture_linux_shm_objects(pids: Sequence[int]) -> list[tuple[str, int, int]
 
 
 def _remaining_linux_shm_objects(
-    objects: Sequence[tuple[str, int, int]], *, ignore_named_fifos: bool = False
+    objects: Sequence[tuple[str, int, int]],
+    *,
+    ignore_named_fifos: bool = False,
+    allowed_fifo_objects: Sequence[tuple[str, int, int]] = (),
 ) -> list[str]:
     remaining: list[str] = []
     for name, device, inode in objects:
@@ -1400,10 +1403,27 @@ def _remaining_linux_shm_objects(
             continue
         # A reused name with a different inode belongs to a different object.
         if (stat.st_dev, stat.st_ino) == (device, inode):
-            if ignore_named_fifos and stat_module.S_ISFIFO(stat.st_mode):
+            if stat_module.S_ISFIFO(stat.st_mode) and (
+                ignore_named_fifos or (name, device, inode) in allowed_fifo_objects
+            ):
                 continue
             remaining.append(name)
     return remaining
+
+
+def capture_exclusive_fifo_objects(target_pids: Sequence[int], tree_pids: Sequence[int]) -> list[tuple[str, int, int]]:
+    """Snapshot FIFOs held by killed targets, excluding references from survivors."""
+    target_objects = set(_capture_linux_shm_objects(target_pids))
+    other_objects = set(_capture_linux_shm_objects(sorted(set(tree_pids) - set(target_pids))))
+    exclusive = []
+    for name, device, inode in sorted(target_objects - other_objects):
+        try:
+            current = Path(name).stat()
+        except FileNotFoundError:
+            continue
+        if (current.st_dev, current.st_ino) == (device, inode) and stat_module.S_ISFIFO(current.st_mode):
+            exclusive.append((name, device, inode))
+    return exclusive
 
 
 def assert_no_server_tree_process_residual_and_gpu_release(
@@ -1413,6 +1433,7 @@ def assert_no_server_tree_process_residual_and_gpu_release(
     timeout_sec: float = 30.0,
     poll_interval_sec: float = 0.5,
     allow_fifo_residual: bool = False,
+    allowed_fifo_objects: Sequence[tuple[str, int, int]] = (),
 ) -> None:
     """Assert no live PIDs remain from the fault-time server tree and no GPU use by those PIDs.
 
@@ -1431,7 +1452,8 @@ def assert_no_server_tree_process_residual_and_gpu_release(
 
     Whole-tree SIGKILL may allow named FIFO paths to remain: no owner survives
     to unlink them. Other SHM objects, process/FD and GPU checks stay mandatory.
-    Graceful shutdown and partial/root-only crashes keep strict FIFO checks.
+    For shutdown-time partial crashes, allowed_fifo_objects may exempt only
+    pre-injection target-exclusive FIFO identities. All other FIFOs stay strict.
 
     Note: if a child is reparented to PID 1 while staying alive, its PID is unchanged
     and remains detected; if it **exits and a new unrelated process reuses the same
@@ -1470,13 +1492,15 @@ def assert_no_server_tree_process_residual_and_gpu_release(
         shm_objects = snapshot.get("shm_objects", [])
         last_shm = _remaining_linux_shm_objects(shm_objects)
         fifo_residual: list[str] = []
-        if allow_fifo_residual:
-            required_shm = _remaining_linux_shm_objects(shm_objects, ignore_named_fifos=True)
+        if allow_fifo_residual or allowed_fifo_objects:
+            required_shm = _remaining_linux_shm_objects(
+                shm_objects, ignore_named_fifos=allow_fifo_residual, allowed_fifo_objects=allowed_fifo_objects
+            )
             fifo_residual = sorted(set(last_shm) - set(required_shm))
             last_shm = required_shm
         if not last_alive and not last_gpu_leaks and not last_fds and not last_shm:
             if fifo_residual:
-                logger.warning("[%s] named FIFO paths remain after whole-tree SIGKILL: %s", scenario, fifo_residual)
+                logger.warning("[%s] exempt named FIFO paths remain after SIGKILL: %s", scenario, fifo_residual)
             return
         time.sleep(poll_interval_sec)
 

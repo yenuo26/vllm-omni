@@ -25,6 +25,7 @@ from tests.dfx.reliability.helpers import (
     assert_no_server_tree_process_residual_and_gpu_release,
     assert_post_fault_api_unreachable,
     assert_post_fault_health_503,
+    capture_exclusive_fifo_objects,
     make_process_kill_fault_injector,
     make_server_root_kill_fault_injector,
     make_server_tree_kill_fault_injector,
@@ -305,6 +306,7 @@ class PartialCrashAtExit(FaultScenario):
                 break
         assert target_pid is not None, f"[{scenario}] no stage matched {model.isolation_pattern!r}"
         worker = psutil.Process(target_pid)
+        killed_fifos = capture_exclusive_fifo_objects([target_pid], tree)
         deadline = time.monotonic() + SIGTERM_CLEANUP_GRACE_SEC
         make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
         try:
@@ -317,7 +319,9 @@ class PartialCrashAtExit(FaultScenario):
         print(f"[{scenario}] SIGKILL stage pid={target_pid} after serve-root SIGTERM", flush=True)
         remaining = deadline - time.monotonic()
         assert remaining > 0, f"[{scenario}] shutdown exceeded its grace period before cleanup checks"
-        assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=remaining)
+        assert_no_server_tree_process_residual_and_gpu_release(
+            server, scenario=scenario, timeout_sec=remaining, allowed_fifo_objects=killed_fifos
+        )
         assert time.monotonic() <= deadline, f"[{scenario}] shutdown did not finish within its grace period"
         assert_post_fault_api_unreachable(client, scenario=scenario)
 

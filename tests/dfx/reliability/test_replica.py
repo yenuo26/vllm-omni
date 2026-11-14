@@ -236,6 +236,15 @@ def test_replica_exit_kills_only_after_sigterm_and_never_recovers_on_timeout(rep
     )
     server, client = SimpleNamespace(), object()
 
+    killed_fifos = [("/dev/shm/target_fifo", 1, 2)]
+
+    def capture_fifos(target_pids, tree_pids):
+        assert target_pids == [11] and tree_pids == [10, 11, 12]
+        assert events[-1] == "snapshot" and "sigterm" not in events
+        return killed_fifos
+
+    replica.capture_exclusive_fifo_objects = capture_fifos
+
     def terminate(server):
         events.append("sigterm")
         clock[0] += 0.5
@@ -245,7 +254,8 @@ def test_replica_exit_kills_only_after_sigterm_and_never_recovers_on_timeout(rep
     root_signal = Mock(return_value=terminate)
     replica.make_server_root_kill_fault_injector = root_signal
 
-    def cleanup(actual_server, *, scenario, timeout_sec):
+    def cleanup(actual_server, *, scenario, timeout_sec, allowed_fifo_objects):
+        assert allowed_fifo_objects == killed_fifos
         assert actual_server is server and actual_server.reliability_fault_snapshot is snapshot
         assert scenario == "replica_crash_at_exit" and timeout_sec == 59.0
         events.append("cleanup")

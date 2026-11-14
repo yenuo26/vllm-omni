@@ -69,13 +69,23 @@ def test_stage_exit_requires_shutdown_before_kill_and_no_timeout_escalation(monk
 
     monkeypatch.setattr(process_kill.psutil, "Process", process)
 
+    killed_fifos = [("/dev/shm/target_fifo", 1, 2)]
+
+    def capture_fifos(target_pids, tree_pids):
+        assert target_pids == [11] and tree_pids == [10, 11]
+        assert events == ["warmup"]
+        return killed_fifos
+
+    monkeypatch.setattr(process_kill, "capture_exclusive_fifo_objects", capture_fifos)
+
     def root_injector(**kwargs):
         assert kwargs == {"signal_name": "SIGTERM", "post_kill_wait_seconds": 0.0}
         return lambda _: events.append("SIGTERM")
 
     monkeypatch.setattr(process_kill, "make_server_root_kill_fault_injector", root_injector)
 
-    def cleanup(actual_server, *, scenario, timeout_sec):
+    def cleanup(actual_server, *, scenario, timeout_sec, allowed_fifo_objects):
+        assert allowed_fifo_objects == killed_fifos
         assert actual_server is server
         assert events[-1] == "stage_SIGKILL"
         assert timeout_sec == 60.0

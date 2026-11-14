@@ -23,6 +23,7 @@ from tests.dfx.reliability.helpers import (
     _safe_proc_info,
     assert_no_server_tree_process_residual_and_gpu_release,
     assert_post_fault_api_unreachable,
+    capture_exclusive_fifo_objects,
     client_for_server,
     kill_bad_replica,
     make_server_root_kill_fault_injector,
@@ -156,6 +157,7 @@ class ReplicaCrashAtExit(FaultScenario):
         assert targets, f"[{scenario}] no replica matched {model.bad_replica_pattern!r}"
         assert survivors, f"[{scenario}] no sibling replica found before shutdown"
         _assert_survivors_alive(targets + survivors)
+        killed_fifos = capture_exclusive_fifo_objects([process.pid for process in targets], snapshot["tree_pids"])
         deadline = time.monotonic() + SIGTERM_CLEANUP_GRACE_SEC
         make_server_root_kill_fault_injector(signal_name="SIGTERM", post_kill_wait_seconds=0.0)(server)
         for process in targets:
@@ -170,7 +172,9 @@ class ReplicaCrashAtExit(FaultScenario):
             print(f"[{scenario}] SIGKILL replica pid={process.pid} after serve-root SIGTERM", flush=True)
         remaining = deadline - time.monotonic()
         assert remaining > 0, f"[{scenario}] shutdown exceeded its grace period"
-        assert_no_server_tree_process_residual_and_gpu_release(server, scenario=scenario, timeout_sec=remaining)
+        assert_no_server_tree_process_residual_and_gpu_release(
+            server, scenario=scenario, timeout_sec=remaining, allowed_fifo_objects=killed_fifos
+        )
         assert time.monotonic() <= deadline, f"[{scenario}] shutdown did not finish within its grace period"
         assert_post_fault_api_unreachable(client, scenario=scenario)
 
