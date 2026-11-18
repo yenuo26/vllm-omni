@@ -467,7 +467,7 @@ def render_issue_close_confirm_html(
 
     return "\n".join(
         [
-            '<details class="bk-section" open>',
+            '<details class="bk-section panel nightly-root nightly-root--issue-close" open>',
             '<summary class="bk-section-summary">',
             _heading_html(
                 "Issue 关闭确认 · close candidates",

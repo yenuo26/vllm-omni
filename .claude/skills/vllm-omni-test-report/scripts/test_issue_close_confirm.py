@@ -217,6 +217,7 @@ class RenderAndSnapshotTests(unittest.TestCase):
     def test_render_empty_and_candidate_table(self):
         empty = render_issue_close_confirm_html(issues=[], candidates=[], pipelines={})
         self.assertIn("Issue 关闭确认", empty)
+        self.assertIn("bk-section panel nightly-root nightly-root--issue-close", empty)
         self.assertIn("No theoretically closable issues", empty)
 
         issue = _issue(
