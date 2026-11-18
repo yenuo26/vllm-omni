@@ -4539,9 +4539,9 @@ def emit_report_html(
                     "the table below is a plain failure-signature clustering (all marked No match)."
                 )
         body_parts.append(_render_issue_alert_html(alert_groups, note=alert_note))
-    # Issue 关闭确认: inverse of Issue Alert — start from still-open
-    # ``ci-failure`` issues and list only those with positive pass evidence
-    # on the latest CUDA / NPU scheduled nightlies. Advisory only.
+    # Issue close confirmation: inverse of Issue Alert — start from every
+    # still-open ``ci-failure`` issue and confirm it against the latest
+    # CUDA / NPU scheduled nightlies. Advisory only.
     if issue_close_confirm:
         body_parts.append(
             render_issue_close_confirm_section(
@@ -4933,7 +4933,7 @@ def main() -> None:
     parser.add_argument(
         "--no-issue-close-confirm",
         action="store_true",
-        help="Skip the Issue 关闭确认 chapter (open ci-failure issues vs latest CUDA/NPU nightlies).",
+        help="Skip the Issue close confirmation chapter (open ci-failure issues vs latest CUDA/NPU nightlies).",
     )
     args = parser.parse_args()
 

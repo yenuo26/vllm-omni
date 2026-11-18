@@ -7,8 +7,14 @@ import unittest
 from collections import namedtuple
 
 from issue_close_confirm import (
+    STATUS_CLOSABLE,
+    STATUS_FAILING,
+    STATUS_INSUFFICIENT,
     PipelineSnapshot,
+    attach_clean_streaks,
     collect_close_candidates,
+    collect_confirmations,
+    count_consecutive_clean_runs,
     evaluate_issue,
     extract_node_ids,
     infer_sides,
@@ -45,6 +51,8 @@ def _snap(label: str, jobs: list[dict], *, number: int = 1, available: bool = Tr
         build_url=f"https://buildkite.com/vllm/pipe/builds/{number}",
         jobs=jobs,
         available=available,
+        org="vllm",
+        pipeline="pipe",
     )
 
 
@@ -129,7 +137,7 @@ class JobKindAndEvaluateTests(unittest.TestCase):
             "NPU": _snap("NPU", [_job("Unrelated NPU Job")], number=11925),
         }
         cand = evaluate_issue(issue, pipelines)
-        self.assertIsNotNone(cand)
+        self.assertEqual(cand.status, STATUS_CLOSABLE)
         self.assertEqual(cand.sides, ("CUDA",))
         self.assertIn("CUDA", cand.results)
         self.assertNotIn("NPU", cand.results)
@@ -143,7 +151,9 @@ class JobKindAndEvaluateTests(unittest.TestCase):
                 [_job("Diffusion X2V Wan2.2 Accuracy Test", state="failed", failed=["a.py::t"])],
             ),
         }
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        row = evaluate_issue(issue, pipelines)
+        self.assertEqual(row.status, STATUS_FAILING)
+        self.assertEqual(row.clean_streak, 0)
 
     def test_not_closable_when_node_still_failing_elsewhere(self):
         issue = _issue(
@@ -160,7 +170,7 @@ class JobKindAndEvaluateTests(unittest.TestCase):
                 ],
             ),
         }
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        self.assertEqual(evaluate_issue(issue, pipelines).status, STATUS_FAILING)
 
     def test_npu_only_issue_not_closed_by_cuda_green(self):
         issue = _issue(13, "Omni Function Test NPU failed")
@@ -171,7 +181,7 @@ class JobKindAndEvaluateTests(unittest.TestCase):
                 [_job("Omni Function Test NPU", state="failed", failed=["a.py::t"])],
             ),
         }
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        self.assertEqual(evaluate_issue(issue, pipelines).status, STATUS_FAILING)
 
     def test_both_sides_required_when_issue_mentions_both(self):
         issue = _issue(14, "Omni Function Test failed on CUDA and NPU")
@@ -179,31 +189,70 @@ class JobKindAndEvaluateTests(unittest.TestCase):
             "CUDA": _snap("CUDA", [_job("Omni Function Test")]),
             "NPU": _snap("NPU", [_job("Omni Function Test", state="failed", failed=["a.py::t"])], number=2),
         }
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        self.assertEqual(evaluate_issue(issue, pipelines).status, STATUS_FAILING)
         pipelines["NPU"] = _snap("NPU", [_job("Omni Function Test")], number=2)
         cand = evaluate_issue(issue, pipelines)
-        self.assertIsNotNone(cand)
+        self.assertEqual(cand.status, STATUS_CLOSABLE)
         self.assertEqual(cand.sides, ("CUDA", "NPU"))
 
     def test_missing_pipeline_is_not_closable(self):
         issue = _issue(15, "Omni Function Test failed on NPU")
         pipelines = {"CUDA": _snap("CUDA", [_job("Omni Function Test")])}
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        self.assertEqual(evaluate_issue(issue, pipelines).status, STATUS_INSUFFICIENT)
 
     def test_unknown_kind_is_not_closable(self):
         issue = _issue(16, "Omni Function Test failed on H100")
         pipelines = {
             "CUDA": _snap("CUDA", [_job("Omni Function Test", summary="", log_error="fetch failed")]),
         }
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        self.assertEqual(evaluate_issue(issue, pipelines).status, STATUS_INSUFFICIENT)
 
     def test_no_job_identity_is_not_closable(self):
         issue = _issue(17, "something is broken on H100")
         pipelines = {"CUDA": _snap("CUDA", [_job("Omni Function Test")])}
-        self.assertIsNone(evaluate_issue(issue, pipelines))
+        self.assertEqual(evaluate_issue(issue, pipelines).status, STATUS_INSUFFICIENT)
 
 
-class RenderAndSnapshotTests(unittest.TestCase):
+class StreakAndRenderTests(unittest.TestCase):
+    def test_count_consecutive_clean_runs(self):
+        name = "Omni Function Test"
+        history = [
+            (3, [_job(name, state="passed")]),
+            (2, [_job(name, state="passed")]),
+            (1, [_job(name, state="failed")]),
+        ]
+        self.assertEqual(count_consecutive_clean_runs([name], history), 2)
+        history_fail_latest = [
+            (3, [_job(name, state="failed")]),
+            (2, [_job(name, state="passed")]),
+        ]
+        self.assertEqual(count_consecutive_clean_runs([name], history_fail_latest), 0)
+        self.assertEqual(count_consecutive_clean_runs([name], []), 0)
+
+    def test_attach_streak_uses_min_across_required_sides(self):
+        issue = _issue(14, "Omni Function Test failed on CUDA and NPU")
+        pipelines = {
+            "CUDA": _snap("CUDA", [_job("Omni Function Test")], number=10),
+            "NPU": _snap("NPU", [_job("Omni Function Test")], number=20),
+        }
+        rows = collect_confirmations([issue], pipelines, histories={})
+        self.assertEqual(rows[0].status, STATUS_CLOSABLE)
+        # No history yet → n/a until attach gets histories
+        self.assertIsNone(rows[0].clean_streak)
+        histories = {
+            "CUDA": [
+                (10, [_job("Omni Function Test", state="passed")]),
+                (9, [_job("Omni Function Test", state="passed")]),
+                (8, [_job("Omni Function Test", state="passed")]),
+            ],
+            "NPU": [
+                (20, [_job("Omni Function Test", state="passed")]),
+                (19, [_job("Omni Function Test", state="failed")]),
+            ],
+        }
+        attach_clean_streaks(rows, histories)
+        self.assertEqual(rows[0].clean_streak, 1)
+
     def test_snapshots_from_bk_results(self):
         Target = namedtuple("Target", "label org pipeline")
         target = Target(label="CUDA", org="vllm", pipeline="vllm-omni")
@@ -214,30 +263,58 @@ class RenderAndSnapshotTests(unittest.TestCase):
         self.assertEqual(snaps["CUDA"].build_number, 20013)
         self.assertEqual(snaps["CUDA"].build_url, "https://buildkite.com/vllm/vllm-omni/builds/20013")
 
-    def test_render_empty_and_candidate_table(self):
-        empty = render_issue_close_confirm_html(issues=[], candidates=[], pipelines={})
-        self.assertIn("Issue 关闭确认", empty)
+    def test_render_lists_all_issues_in_english_with_streak_column(self):
+        empty = render_issue_close_confirm_html(issues=[], candidates=[], pipelines={}, rows=[])
+        self.assertIn("Issue close confirmation", empty)
         self.assertIn("bk-section panel nightly-root nightly-root--issue-close", empty)
-        self.assertIn("No theoretically closable issues", empty)
+        self.assertNotIn("Issue 关闭确认", empty)
+        self.assertIn("No open ci-failure issues were loaded", empty)
 
-        issue = _issue(
+        closable = _issue(
             10,
             "Diffusion X2V Wan2.2 Accuracy Test failed on H100",
             "tests/e2e/test_wan.py::test_ssim",
         )
+        failing = _issue(11, "Diffusion X2V Wan2.2 Accuracy Test still failing on H100")
         pipelines = {
-            "CUDA": _snap("CUDA", [_job("Diffusion X2V Wan2.2 Accuracy Test")], number=20013),
+            "CUDA": _snap(
+                "CUDA",
+                [_job("Diffusion X2V Wan2.2 Accuracy Test")],
+                number=20013,
+            ),
         }
-        cands = collect_close_candidates([issue], pipelines)
+        # Make #11 fail by giving a failing job — but same name green in snap.
+        # Evaluate #11 against a failing pipeline instead, then combine rows.
+        failing_pipelines = {
+            "CUDA": _snap(
+                "CUDA",
+                [_job("Diffusion X2V Wan2.2 Accuracy Test", state="failed", failed=["a.py::t"])],
+                number=20013,
+            ),
+        }
+        rows = collect_confirmations([closable], pipelines, histories={
+            "CUDA": [
+                (20013, [_job("Diffusion X2V Wan2.2 Accuracy Test", state="passed")]),
+                (20000, [_job("Diffusion X2V Wan2.2 Accuracy Test", state="passed")]),
+                (19990, [_job("Diffusion X2V Wan2.2 Accuracy Test", state="passed")]),
+            ]
+        })
+        rows += collect_confirmations([failing], failing_pipelines)
         html = render_issue_close_confirm_html(
-            issues=[issue],
-            candidates=cands,
+            issues=[closable, failing],
+            candidates=[r for r in rows if r.status == STATUS_CLOSABLE],
             pipelines=pipelines,
+            rows=rows,
         )
+        self.assertIn("Issue close confirmation", html)
+        self.assertIn("Consecutive clean runs", html)
+        self.assertIn("Confirmation", html)
         self.assertIn("#10", html)
-        self.assertIn("passed on #20013", html)
-        self.assertIn("Latest CUDA", html)
-        self.assertIn("<strong>1</strong> theoretically closable", html)
+        self.assertIn("#11", html)
+        self.assertIn('<span class="issue-close-streak">3</span> scheduled nightlies', html)
+        self.assertIn("Theoretically closable", html)
+        self.assertIn("Still failing", html)
+        self.assertIn("<strong>2</strong> open ci-failure issues scanned", html)
 
 
 if __name__ == "__main__":
