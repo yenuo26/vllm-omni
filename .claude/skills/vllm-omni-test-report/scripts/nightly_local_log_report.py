@@ -48,6 +48,10 @@ from pytest_log_parse import (  # noqa: E402
     parse_pytest_log,
 )
 from report_html_theme import EDITORIAL_THEME_CSS  # noqa: E402
+from issue_close_confirm import (  # noqa: E402
+    ISSUE_CLOSE_CONFIRM_CSS,
+    render_issue_close_confirm_section,
+)
 from report_naming import (  # noqa: E402
     default_nightly_html_path,
     nightly_report_title,
@@ -4408,6 +4412,7 @@ def emit_report_html(
     bk_results: dict[BkTarget, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]] | None = None,
     weekly_results: dict[str, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]] | None = None,
     issue_alert: bool = True,
+    issue_close_confirm: bool = True,
 ) -> None:
     # Manifest-driven job list: ``timing_summary.log`` is the source of truth
     # for the job list + status; ``.log`` files are only parsed for FAILED
@@ -4484,6 +4489,7 @@ def emit_report_html(
         + "  color: #fff;\n"
         + "}\n"
         + _ISSUE_ALERT_CSS
+        + ISSUE_CLOSE_CONFIRM_CSS
     )
 
     body_parts: list[str] = [
@@ -4533,6 +4539,17 @@ def emit_report_html(
                     "the table below is a plain failure-signature clustering (all marked No match)."
                 )
         body_parts.append(_render_issue_alert_html(alert_groups, note=alert_note))
+    # Issue close confirmation: inverse of Issue Alert — start from every
+    # still-open ``ci-failure`` issue and confirm it against the latest
+    # CUDA / NPU scheduled nightlies. Advisory only.
+    if issue_close_confirm:
+        body_parts.append(
+            render_issue_close_confirm_section(
+                bk_results,
+                _resolve_github_token(),
+                enabled=True,
+            )
+        )
     body_parts.append(
         '<details class="bk-section panel nightly-root nightly-root--buildkite"><summary class="bk-section-summary">'
     )
@@ -4913,6 +4930,11 @@ def main() -> None:
         action="store_true",
         help="Skip the issue-dedup alert chapter (GitHub issue search for failure groups).",
     )
+    parser.add_argument(
+        "--no-issue-close-confirm",
+        action="store_true",
+        help="Skip the Issue close confirmation chapter (open ci-failure issues vs latest CUDA/NPU nightlies).",
+    )
     args = parser.parse_args()
 
     if args.stdout and args.html_report:
@@ -4952,6 +4974,7 @@ def main() -> None:
                 bk_results=bk_results,
                 weekly_results=weekly_results,
                 issue_alert=not args.no_issue_alert,
+                issue_close_confirm=not args.no_issue_close_confirm,
             )
         print(f"Wrote {out}")
     else:
@@ -4963,6 +4986,7 @@ def main() -> None:
             bk_results=bk_results,
             weekly_results=weekly_results,
             issue_alert=not args.no_issue_alert,
+            issue_close_confirm=not args.no_issue_close_confirm,
         )
 
 
