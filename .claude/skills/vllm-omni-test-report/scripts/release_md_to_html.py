@@ -132,6 +132,8 @@ def _release_section_theme(title_plain: str) -> tuple[str, str]:
         return "version", _RELEASE_SVG_TAG
     if "test conclusion" in low:
         return "conclusion", _RELEASE_SVG_CHECK
+    if "performance and accuracy" in low:
+        return "metrics", _RELEASE_SVG_CHART
     if "metrics" in low:
         return "metrics", _RELEASE_SVG_CHART
     if "metric analysis" in low:
@@ -177,6 +179,12 @@ def release_conclusion_widget_html(
     Rows whose index is in :data:`RELEASE_CONCLUSION_GUIDE_ROW_INDICES` render
     in the table and stay user-selectable, but the final Go / Rejected verdict
     ignores them.
+
+    Every row has an **Evidence** editor: the operator can paste a URL or an
+    image (clipboard or file picker) as supporting evidence. Evidence is
+    mirrored to a ``data-evidence`` attribute (Save-As / print / PDF) and to
+    ``localStorage`` (same-origin reloads), with an in-memory fallback for
+    ``file://`` where Chrome may deny ``localStorage``.
     """
     rows: list[str] = []
     for i, item in enumerate(RELEASE_CONCLUSION_ITEMS):
@@ -212,12 +220,22 @@ def release_conclusion_widget_html(
             f' aria-pressed="{pass_pressed}">Pass</button>'
             f'<button type="button" class="conc-btn conc-fail {fail_cls}" data-conc="fail"'
             f' aria-pressed="{fail_pressed}">Fail</button>'
-            f"</div>{hint}</td></tr>"
+            f"</div>{hint}</td>"
+            '<td class="conc-evidence-cell">'
+            f'<div class="conc-evidence" data-conc-evidence="{i}" data-evidence="">'
+            '<ul class="conc-evidence-list" aria-label="Evidence"></ul>'
+            '<div class="conc-evidence-edit">'
+            '<textarea class="conc-evidence-input" rows="2" '
+            'placeholder="Paste a link or image as evidence"></textarea>'
+            '<label class="conc-evidence-upload">'
+            '<input type="file" class="conc-evidence-file" accept="image/*" multiple>'
+            "Add image</label>"
+            "</div></div></td></tr>"
         )
     rows_s = "\n".join(rows)
     return f"""<div class="release-conclusion-wrap">
 <table class="release-conclusion-table">
-<thead><tr><th>Check item</th><th>Result</th></tr></thead>
+<thead><tr><th>Check item</th><th>Result</th><th>Evidence</th></tr></thead>
 <tbody>
 {rows_s}
 </tbody>
@@ -229,6 +247,194 @@ def release_conclusion_widget_html(
 (function () {{
   var wrap = document.querySelector('.release-conclusion-wrap');
   if (!wrap) return;
+  var LS_PREFIX = 'release-conclusion-evidence:';
+  var mem = {{}};
+  function lsGet(k) {{
+    try {{
+      var v = localStorage.getItem(k);
+      if (v !== null) mem[k] = v;
+      return v;
+    }} catch (e) {{
+      return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null;
+    }}
+  }}
+  function lsSet(k, v) {{
+    mem[k] = v || '';
+    try {{
+      if (v) localStorage.setItem(k, v);
+      else localStorage.removeItem(k);
+    }} catch (e) {{ /* localStorage unavailable (e.g. file:// in Chrome) */ }}
+  }}
+  function allowedUrl(u) {{
+    if (!u || typeof u !== 'string') return false;
+    var s = u.trim();
+    if (/^https?:\\/\\//i.test(s)) return true;
+    if (/^data:image\\/(png|jpe?g|gif|webp);base64,/i.test(s)) return true;
+    return false;
+  }}
+  function normalizeUrl(s) {{
+    s = (s || '').trim();
+    if (/^www\\./i.test(s)) return 'https://' + s;
+    return s;
+  }}
+  function looksUrl(s) {{
+    s = (s || '').trim();
+    return /^(https?:\\/\\/|www\\.)\\S+$/i.test(s);
+  }}
+  function escapeHtml(s) {{
+    return String(s).replace(/[&<>"']/g, function (c) {{
+      return ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c];
+    }});
+  }}
+  function readItems(box) {{
+    var raw = box.getAttribute('data-evidence') || '';
+    if (!raw) {{
+      var idx = box.getAttribute('data-conc-evidence');
+      raw = lsGet(LS_PREFIX + idx) || '';
+    }}
+    if (!raw) return [];
+    try {{
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }} catch (e) {{
+      return [];
+    }}
+  }}
+  function writeItems(box, items) {{
+    var raw = items.length ? JSON.stringify(items) : '';
+    box.setAttribute('data-evidence', raw);
+    var idx = box.getAttribute('data-conc-evidence');
+    if (idx !== null) lsSet(LS_PREFIX + idx, raw);
+    renderList(box);
+  }}
+  function addItems(box, extra) {{
+    var items = readItems(box);
+    extra.forEach(function (it) {{
+      if (!it || !it.t) return;
+      if (it.t === 'url' && !allowedUrl(it.h)) return;
+      if (it.t === 'img' && !allowedUrl(it.s)) return;
+      if (it.t === 'img' && it.s && it.s.length > 1800000) return;
+      items.push(it);
+    }});
+    writeItems(box, items);
+  }}
+  function renderList(box) {{
+    var list = box.querySelector('.conc-evidence-list');
+    if (!list) return;
+    list.innerHTML = '';
+    readItems(box).forEach(function (it, i) {{
+      var li = document.createElement('li');
+      li.className = 'conc-evidence-item';
+      if (it.t === 'url' && allowedUrl(it.h)) {{
+        var a = document.createElement('a');
+        a.href = it.h;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = it.l || it.h;
+        li.appendChild(a);
+      }} else if (it.t === 'img' && allowedUrl(it.s)) {{
+        var img = document.createElement('img');
+        img.src = it.s;
+        img.alt = it.l || 'Evidence image';
+        img.className = 'conc-evidence-thumb';
+        li.appendChild(img);
+      }} else {{
+        return;
+      }}
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'conc-evidence-remove';
+      rm.setAttribute('data-evidence-index', String(i));
+      rm.setAttribute('aria-label', 'Remove evidence');
+      rm.textContent = '×';
+      li.appendChild(rm);
+      list.appendChild(li);
+    }});
+  }}
+  function addFile(box, file) {{
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) return;
+    if (file.size > 1200000) return;
+    var reader = new FileReader();
+    reader.onload = function () {{
+      var s = String(reader.result || '');
+      if (allowedUrl(s)) addItems(box, [{{t:'img', s:s, l:file.name || 'image'}}]);
+    }};
+    reader.readAsDataURL(file);
+  }}
+  wrap.querySelectorAll('.conc-evidence').forEach(function (box) {{
+    var idx = box.getAttribute('data-conc-evidence');
+    var attr = box.getAttribute('data-evidence') || '';
+    if (!attr) {{
+      var stored = lsGet(LS_PREFIX + idx);
+      if (stored) box.setAttribute('data-evidence', stored);
+    }}
+    renderList(box);
+    var ta = box.querySelector('.conc-evidence-input');
+    var file = box.querySelector('.conc-evidence-file');
+    if (ta) {{
+      ta.addEventListener('paste', function (e) {{
+        var cd = e.clipboardData;
+        var added = false;
+        if (cd && cd.files && cd.files.length) {{
+          for (var i = 0; i < cd.files.length; i++) addFile(box, cd.files[i]);
+          added = true;
+        }}
+        if (cd && cd.items && !added) {{
+          for (var j = 0; j < cd.items.length; j++) {{
+            if (cd.items[j].type.indexOf('image/') === 0) {{
+              var f = cd.items[j].getAsFile();
+              if (f) {{ addFile(box, f); added = true; }}
+            }}
+          }}
+        }}
+        var text = cd ? (cd.getData('text') || '') : '';
+        var extras = [];
+        text.split(/\\s+/).forEach(function (tok) {{
+          var u = normalizeUrl(tok);
+          if (looksUrl(u) && allowedUrl(normalizeUrl(u).indexOf('www.') === 0 ? 'https://' + u.replace(/^www\\./i,'www.') : u) || looksUrl(tok)) {{
+            var href = normalizeUrl(tok);
+            if (allowedUrl(href)) extras.push({{t:'url', h:href}});
+          }}
+        }});
+        if (added || extras.length) {{
+          e.preventDefault();
+          if (extras.length) addItems(box, extras);
+          ta.value = '';
+        }}
+      }});
+      ta.addEventListener('keydown', function (e) {{
+        if (e.key !== 'Enter' || e.shiftKey) return;
+        e.preventDefault();
+        var raw = (ta.value || '').trim();
+        if (!raw) return;
+        var extras = [];
+        raw.split(/\\s+/).forEach(function (tok) {{
+          var href = normalizeUrl(tok);
+          if (allowedUrl(href)) extras.push({{t:'url', h:href}});
+        }});
+        if (extras.length) {{ addItems(box, extras); ta.value = ''; }}
+      }});
+    }}
+    if (file) {{
+      file.addEventListener('change', function () {{
+        for (var i = 0; i < (file.files || []).length; i++) addFile(box, file.files[i]);
+        file.value = '';
+      }});
+    }}
+  }});
+  wrap.addEventListener('click', function (e) {{
+    var rm = e.target && e.target.closest ? e.target.closest('.conc-evidence-remove') : null;
+    if (rm) {{
+      var box = rm.closest('.conc-evidence');
+      if (!box) return;
+      var ix = parseInt(rm.getAttribute('data-evidence-index') || '-1', 10);
+      var items = readItems(box);
+      if (ix >= 0 && ix < items.length) {{
+        items.splice(ix, 1);
+        writeItems(box, items);
+      }}
+    }}
+  }});
   function allPass() {{
     // Verdict ignores (Guide) rows: those are advisory only and must not
     // change the final Go / Rejected outcome.
@@ -3670,6 +3876,40 @@ except Exception:  # pragma: no cover
     _FAIL_STATUS_MODAL_HTML = ""
 
 
+
+_RELEASE_EXPORT_PDF_SCRIPT = """<script>
+(function () {
+  var btn = document.getElementById("release-export-pdf");
+  if (!btn) return;
+  var snapshot = [];
+  function expandAll() {
+    snapshot = [];
+    document.querySelectorAll(".release-doc details").forEach(function (d) {
+      snapshot.push(d.open);
+      d.open = true;
+    });
+  }
+  function restore() {
+    var nodes = document.querySelectorAll(".release-doc details");
+    for (var i = 0; i < nodes.length; i++) {
+      if (i < snapshot.length) nodes[i].open = snapshot[i];
+    }
+    snapshot = [];
+  }
+  btn.addEventListener("click", function () {
+    expandAll();
+    document.body.classList.add("release-printing");
+    window.addEventListener("afterprint", function onAfter() {
+      window.removeEventListener("afterprint", onAfter);
+      document.body.classList.remove("release-printing");
+      restore();
+    });
+    window.print();
+  });
+})();
+</script>"""
+
+
 def wrap_html_document(
     *,
     title: str,
@@ -3691,6 +3931,10 @@ def wrap_html_document(
         f"<h1>{t}</h1>"
         f'<p class="tagline">{tl}</p>'
         "</div></div>"
+        '<div class="brand-actions">'
+        '<button type="button" class="release-export-pdf-btn" id="release-export-pdf">'
+        "Export PDF</button>"
+        "</div>"
         "</div></div>"
     )
     shell = f'<div class="shell"><div class="release-doc">{meta}\n{body_inner}</div></div>'
@@ -3722,6 +3966,7 @@ def wrap_html_document(
 {_RESOURCE_USAGE_SCRIPT}
 {_DEVICE_HOURS_BUILD_SCRIPT}
 {_METRIC_ANALYSIS_SCRIPT}
+{_RELEASE_EXPORT_PDF_SCRIPT}
 </body>
 </html>
 """

@@ -77,6 +77,9 @@ from skip_issue_monitor import (  # noqa: E402
     render_skip_issue_monitor_preview_section,
     render_skip_issue_monitor_section,
 )
+from perf_accuracy_summary import (  # noqa: E402
+    render_perf_accuracy_summary_section,
+)
 
 CI_FAILURE_LABEL = "ci-failure"  # matches GitHub label on vllm-project/vllm-omni
 
@@ -1914,6 +1917,37 @@ def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
             jid = j.get("id") or ""
             link = f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{no}#{jid}"
             failed_steps.append((name, (j.get("state") or "").lower(), link))
+
+def reportable_buildkite_jobs(
+    build: dict,
+    *,
+    build_no: int,
+    label: str,
+    b200_filter: bool = False,
+) -> list[dict[str, str]]:
+    """Normalize reportable Buildkite jobs into ``name`` / ``state`` / ``url`` / ``build`` dicts."""
+    jobs: list[dict[str, str]] = []
+    for j in build.get("jobs") or []:
+        name = (j.get("name") or "").strip()
+        if not name:
+            continue
+        if b200_filter:
+            if not _b200_is_reportable_job(name):
+                continue
+        elif UPLOAD_PIPELINE_RE.match(name):
+            continue
+        jid = j.get("id") or ""
+        jobs.append(
+            {
+                "name": name.replace("|", "/"),
+                "state": (j.get("state") or "").lower(),
+                "url": f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{build_no}#{jid}",
+                "build": f"{label} #{build_no}",
+            }
+        )
+    return jobs
+
+
     return {
         "build_no": int(no),
         "branch": build.get("branch") or BRANCH,
@@ -1924,6 +1958,9 @@ def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
         "failed": failed,
         "broken": broken,
         "failed_steps": failed_steps,
+        "jobs": reportable_buildkite_jobs(
+            build, build_no=int(no), label="B200 (scheduled release)", b200_filter=True
+        ),
     }
 
 
@@ -2875,6 +2912,11 @@ def preview_report_markdown(
     metric_analysis_section = render_metric_analysis_section()
 
     version_info_block = render_version_info_section(release_version, release_commit)
+    perf_acc_block = render_perf_accuracy_summary_section(
+        log_dirs=[("H200", None), ("H800", None), ("A100", None), ("A3", None)],
+        report_date=stats_to,
+        buildkite_sources=[],
+    )
 
     return f"""# vLLM-Omni Test Report - Scheduled Nightly
 
@@ -2883,6 +2925,8 @@ def preview_report_markdown(
 {metric_analysis_section}
 
 {quality_defense_block}
+
+{perf_acc_block}
 
 {test_result}
 
@@ -2894,6 +2938,9 @@ def preview_report_markdown(
 - **Version Info:** operator-supplied via `--release-version` / `--release-commit` (shown
   only when provided; drives the Open issues milestone filter and the default filename tag).
 - **Mode:** `compose_full_report.py --preview` (sample tables only)
+- **Performance and Accuracy Summary:** preview renders the chapter with no log dirs and
+  no Buildkite fetch (honest empty notes). The live report fills it from local result
+  files and fetched B200 / H100 scheduled-nightly jobs.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-*`; H100 is Buildkite block
 - **Failure Analysis:** Per-GPU failure detail. Interactive **Status** column
@@ -3484,6 +3531,7 @@ def main() -> None:
     b200_build_no: int | None = None
     b200_build_url: str | None = None
     b200_failed_steps: list[tuple[str, str, str]] | None = None
+    b200_jobs: list[dict[str, str]] = []
     try:
         b200 = fetch_b200_build_summary(token, build_no=args.b200_build)
         b200_passed = b200["passed"]
@@ -3492,6 +3540,7 @@ def main() -> None:
         b200_build_no = b200["build_no"]
         b200_build_url = f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{b200_build_no}"
         b200_failed_steps = b200["failed_steps"]
+        b200_jobs = list(b200.get("jobs") or [])
         b200_body = build_b200_ci_markdown_body(
             build_no=b200["build_no"],
             branch=b200["branch"],
@@ -3510,6 +3559,29 @@ def main() -> None:
         )
     except Exception as e:  # noqa: BLE001 — graceful degradation
         print(f"B200: fetch failed — {e}; chapter omitted", file=sys.stderr)
+
+    # Perf + accuracy summary: reuse the B200 jobs already fetched, and also
+    # pull the latest scheduled nightly *only* for this chapter (the H100 Test
+    # Result roll-up stays omitted). Failures degrade to an empty job list.
+    nightly_jobs: list[dict[str, str]] = []
+    try:
+        nno = latest_scheduled_nightly_number(token)
+        nurl = (
+            f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}"
+            f"/builds/{nno}"
+        )
+        nbuild = http_json(nurl, token)
+        assert isinstance(nbuild, dict)
+        nightly_jobs = reportable_buildkite_jobs(
+            nbuild, build_no=int(nno), label="H100 (scheduled nightly)"
+        )
+        print(
+            f"H100 nightly for perf/acc summary: build #{nno}, "
+            f"{len(nightly_jobs)} reportable job(s)",
+            file=sys.stderr,
+        )
+    except Exception as e:  # noqa: BLE001 — graceful degradation
+        print(f"H100 nightly for perf/acc summary: fetch failed — {e}", file=sys.stderr)
 
     conclusion = render_test_conclusion_section()
     # H100 (Buildkite scheduled nightly) chapter is intentionally omitted from
@@ -3605,6 +3677,19 @@ def main() -> None:
     # ``oi-followup`` / ``ns-outstanding`` / ``fail-status``).
     quality_defense_block = render_quality_defense_section()
     metric_analysis_section = render_metric_analysis_section()
+    perf_acc_block = render_perf_accuracy_summary_section(
+        log_dirs=[
+            ("H200", args.log_dir_h200),
+            ("H800", args.log_dir_h800),
+            ("A100", args.log_dir_a100),
+            ("A3", args.log_dir_a3),
+        ],
+        report_date=report_date,
+        buildkite_sources=[
+            ("B200 (scheduled release)", b200_jobs),
+            ("H100 (scheduled nightly)", nightly_jobs),
+        ],
+    )
     if args.release_version:
         open_issues_source_note = (
             f"REST `label:bug`, state `open`, milestone matching release version "
@@ -3637,6 +3722,8 @@ def main() -> None:
 
 {quality_defense_block}
 
+{perf_acc_block}
+
 {test_result}
 
 {failure_analysis}
@@ -3658,6 +3745,11 @@ def main() -> None:
   `label:bug` + `label:critical`; (4) `UT coverage meets this iteration requirement
   (Guide), Performance regression < 10% (Guide)` is a manual user-selectable
   row that does **not** influence the final Go / Rejected verdict.
+- **Performance and Accuracy Summary:** same-day Buildkite job list (B200 scheduled
+  release + latest H100 scheduled nightly, fetched only for this chapter — the H100
+  Test Result roll-up stays omitted) plus local `result_test_*` / `diffusion_result_*`
+  / `benchmark_results_*` and `result_acc_*.json` from `--log-dir-h200` / `--log-dir-h800`
+  / `--log-dir-a100` / `--log-dir-a3`. Values are quoted only from those sources.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`; H100 chapter intentionally omitted
   (Buildkite scheduled nightly roll-up no longer rendered in the release report).
