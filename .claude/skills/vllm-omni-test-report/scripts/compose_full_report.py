@@ -80,6 +80,11 @@ from skip_issue_monitor import (  # noqa: E402
 from perf_accuracy_summary import (  # noqa: E402
     render_perf_accuracy_summary_section,
 )
+from omni_review_results import (  # noqa: E402
+    maybe_ff_pull_omni_review,
+    perf_acc_log_dirs_from_omni_review,
+    resolve_omni_review_repo,
+)
 
 CI_FAILURE_LABEL = "ci-failure"  # matches GitHub label on vllm-project/vllm-omni
 
@@ -2507,6 +2512,59 @@ def _resolve_perf_assets_dir(
     return None
 
 
+
+def collect_release_perf_acc_log_dirs(args, *, update_repo: bool = True) -> tuple[list[tuple[str, Path | None]], list[str]]:
+    """Assemble Performance / Accuracy log dirs (operator --log-dir-h* plus omni-reviewbot archives)."""
+    log_dirs: list[tuple[str, Path | None]] = []
+    source_notes: list[str] = []
+    for label, path in (
+        ("H200", args.log_dir_h200),
+        ("H800", args.log_dir_h800),
+        ("A100", args.log_dir_a100),
+        ("A3", args.log_dir_a3),
+    ):
+        if path is not None:
+            log_dirs.append((label, path))
+    if not getattr(args, "no_omni_review_results", False):
+        repo = resolve_omni_review_repo(getattr(args, "omni_review_repo", None))
+        if repo is None:
+            print(
+                "omni-reviewbot checkout not found; Performance / Accuracy "
+                "will not include archived Buildkite or Local results",
+                file=sys.stderr,
+            )
+        else:
+            if update_repo:
+                maybe_ff_pull_omni_review(repo)
+            archive_dirs = perf_acc_log_dirs_from_omni_review(repo)
+            if not archive_dirs:
+                print(
+                    f"omni-reviewbot at {repo} has no vllm-omni Buildkite/Local "
+                    "result archives",
+                    file=sys.stderr,
+                )
+            for label, path in archive_dirs:
+                log_dirs.append((label, path))
+                rel = path
+                try:
+                    rel = path.resolve().relative_to(repo.resolve())
+                except ValueError:
+                    pass
+                source_notes.append(f"{label} `{rel}`")
+                print(
+                    f"Performance / Accuracy {label} source: {path}",
+                    file=sys.stderr,
+                )
+    if not log_dirs:
+        log_dirs = [
+            ("H200", args.log_dir_h200),
+            ("H800", args.log_dir_h800),
+            ("A100", args.log_dir_a100),
+            ("A3", args.log_dir_a3),
+        ]
+    return log_dirs, source_notes
+
+
 def render_test_conclusion_section() -> str:
     """``## Test conclusion`` + placeholder for interactive widget (HTML) or static MD."""
     return f"## Test conclusion\n\n{RELEASE_CONCLUSION_PLACEHOLDER}\n\n"
@@ -3257,6 +3315,27 @@ def main() -> None:
         help="Optional. Log root for **Test Result → A3** (same layout as --log-dir-h200).",
     )
     parser.add_argument(
+        "--omni-review-repo",
+        type=Path,
+        default=None,
+        help=(
+            "Optional. Path to the JiusiServe/omni-reviewbot checkout. When omitted, "
+            "the script looks at $OMNI_REVIEW_REPO_ROOT, /workspace/omni-reviewbot, "
+            "/home/wy/omni-reviewbot, then ~/omni-reviewbot. The release Performance "
+            "and Accuracy chapters read the latest "
+            "kanban/data/vllm_omni/buildkite_nightly_raw/<YYYYMMDD> and "
+            "local_nightly_raw/manual_<YYYYMMDD> trees from that repo."
+        ),
+    )
+    parser.add_argument(
+        "--no-omni-review-results",
+        action="store_true",
+        help=(
+            "Optional. Do not load Performance / Accuracy rows from the omni-reviewbot "
+            "vllm-omni archives; only --log-dir-h* (if given) is used."
+        ),
+    )
+    parser.add_argument(
         "--b200-build",
         type=int,
         default=None,
@@ -3905,19 +3984,23 @@ def main() -> None:
     # ``oi-followup`` / ``ns-outstanding`` / ``fail-status``).
     quality_defense_block = render_quality_defense_section()
     metric_analysis_section = render_metric_analysis_section()
+    perf_acc_log_dirs, perf_acc_archive_notes = collect_release_perf_acc_log_dirs(args)
+    # When omni-reviewbot archives supply Buildkite metric JSON, do not also
+    # attach the API job-list note (those payloads have no metric values).
+    archive_has_buildkite = any(label == "Buildkite" for label, _ in perf_acc_log_dirs)
     perf_acc_block = render_perf_accuracy_summary_section(
-        log_dirs=[
-            ("H200", args.log_dir_h200),
-            ("H800", args.log_dir_h800),
-            ("A100", args.log_dir_a100),
-            ("A3", args.log_dir_a3),
-        ],
+        log_dirs=perf_acc_log_dirs,
         report_date=report_date,
-        buildkite_sources=[
-            ("B200 (scheduled release)", b200_jobs),
-            ("H100 (scheduled nightly)", nightly_jobs),
-            ("Weekly (scheduled weekly)", weekly_jobs),
-        ],
+        buildkite_sources=(
+            []
+            if archive_has_buildkite
+            else [
+                ("B200 (scheduled release)", b200_jobs),
+                ("H100 (scheduled nightly)", nightly_jobs),
+                ("Weekly (scheduled weekly)", weekly_jobs),
+            ]
+        ),
+        source_notes=perf_acc_archive_notes,
     )
     if args.release_version:
         open_issues_source_note = (
@@ -3975,14 +4058,11 @@ def main() -> None:
   (Guide), Performance regression < 10% (Guide)` is a manual user-selectable
   row that does **not** influence the final Go / Rejected verdict.
 - **Performance Summary** and **Accuracy Summary:** two chapters of metric-value
-  tables (one numeric column per metric, no filename column) from local
-  `result_test_*` / `diffusion_result_*` / `benchmark_results_*` and
-  `result_acc_*.json` under `--log-dir-h200` / `--log-dir-h800` /
-  `--log-dir-a100` / `--log-dir-a3`. With `--release-version`, Buildkite
-  scheduled nightly, scheduled weekly, and scheduled release B200 are
-  resolved on `release/vX.Y.Z` (not `main`) and noted when jobs were found,
-  but job payloads have no metric values so they are not tabulated. Values
-  are quoted only from those sources.
+  tables (one numeric column per metric, no filename column) from the latest
+  vllm-omni archives in omni-reviewbot (`kanban/data/vllm_omni/buildkite_nightly_raw/<YYYYMMDD>`
+  and `local_nightly_raw/manual_<YYYYMMDD>`), plus any extra `--log-dir-h*` trees.
+  Values are quoted only from those JSON files (`result_test_*` /
+  `diffusion_result_*` / `benchmark_results_*` / `result_acc_*.json`).
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`. With `--release-version`,
   also the latest scheduled nightly, scheduled weekly, and scheduled release B200

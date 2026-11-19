@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Same-day Buildkite + local performance and accuracy chapters for the release report.
+"""Buildkite + local performance and accuracy chapters for the release report.
 
 Renders two H2 chapters — Performance Summary and Accuracy Summary — as
 metric-value tables (one numeric column per metric). Filenames are not table
-content. Values are quoted only from local result files; missing sources get
-an honest empty note. Buildkite job payloads do not carry metric scores, so
-they are mentioned only as a note, never as a job-name table.
+content. Values are quoted only from result JSON files (typically the latest
+omni-reviewbot vllm-omni Buildkite and Local archives, plus any --log-dir-h*
+trees). Missing sources get an honest empty note. Buildkite *API job*
+payloads do not carry metric scores, so those are mentioned only as a note
+when no archived Buildkite JSON was supplied.
 """
 
 from __future__ import annotations
@@ -384,18 +386,24 @@ def render_perf_accuracy_summary_section(
     log_dirs: list[tuple[str, Path | None]],
     report_date: str,
     buildkite_sources: list[tuple[str, list[dict[str, str]]]],
+    source_notes: list[str] | None = None,
 ) -> str:
     """Markdown for ``## Performance Summary`` and ``## Accuracy Summary``.
 
-    ``log_dirs`` is ``[(label, path_or_None), ...]`` (H200 / H800 / A100 / A3).
-    ``buildkite_sources`` is ``[(build label, jobs), ...]``. Buildkite jobs are
-    not tabulated: the API payload has no metric values.
+    ``log_dirs`` is ``[(label, path_or_None), ...]`` (H200 / H800 / A100 / A3,
+    plus Buildkite / Local archive roots from omni-reviewbot).
+    ``buildkite_sources`` is ``[(build label, jobs), ...]``. API job lists are
+    not tabulated: those payloads have no metric values.
+    ``source_notes`` is an optional list of short source labels shown in the
+    chapter intro (for example the omni-reviewbot archive paths used).
     """
     intro_tail = (
         f"(report date `{report_date}`). Each table lists the metric values "
-        "found in the local result files; missing sources are called out "
+        "found in the result JSON files; missing sources are called out "
         "rather than filled in."
     )
+    if source_notes:
+        intro_tail += " Sources: " + "; ".join(source_notes) + "."
 
     perf_rows, perf_notes = _collect_all(log_dirs, kind="performance")
     acc_rows, acc_notes = _collect_all(log_dirs, kind="accuracy")
@@ -412,7 +420,7 @@ def render_perf_accuracy_summary_section(
         lines = [
             title,
             "",
-            f"Same-day {kind} results from **local sync** {intro_tail}",
+            f"Same-day {kind} results from **Buildkite and Local archives** {intro_tail}",
             "",
         ]
         bk_note = _buildkite_metric_note(kind=kind, buildkite_sources=buildkite_sources)

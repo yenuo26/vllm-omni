@@ -146,5 +146,77 @@ class PreviewWiringTests(unittest.TestCase):
         self.assertIn("Export PDF", html)
 
 
+class OmniReviewResultsTests(unittest.TestCase):
+    def test_latest_dirs_prefer_newest_date(self) -> None:
+        import tempfile
+        from omni_review_results import (
+            latest_vllm_omni_result_dirs,
+            perf_acc_log_dirs_from_omni_review,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bk = root / "kanban/data/vllm_omni/buildkite_nightly_raw"
+            local = root / "kanban/data/vllm_omni/local_nightly_raw"
+            (bk / "20261118").mkdir(parents=True)
+            (bk / "20261119").mkdir()
+            (bk / "12330").mkdir()  # numeric build folder, must not win
+            (local / "manual_20261117").mkdir(parents=True)
+            (local / "manual_20261118").mkdir()
+            found = latest_vllm_omni_result_dirs(root)
+            self.assertEqual(found["buildkite_date"], "20261119")
+            self.assertEqual(found["local_date"], "20261118")
+            labels = [label for label, _ in perf_acc_log_dirs_from_omni_review(root)]
+            self.assertEqual(labels, ["Buildkite", "Local"])
+
+    def test_archive_json_is_tabulated_under_buildkite_and_local_hosts(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bk = Path(tmp) / "bk" / "tests" / "dfx" / "perf" / "results"
+            loc = Path(tmp) / "local"
+            bk.mkdir(parents=True)
+            loc.mkdir()
+            (bk / "result_test_sample.json").write_text(
+                json.dumps(
+                    {
+                        "test_name": "bk_qwen_perf",
+                        "model_id": "Qwen3-Omni",
+                        "Hardware": "B200",
+                        "date": "2026-11-18",
+                        "request_throughput": 12.5,
+                        "completed": 10,
+                        "failed": 0,
+                    }
+                )
+            )
+            (loc / "result_acc_sample.json").write_text(
+                json.dumps(
+                    {
+                        "test_name": "local_omniinteract",
+                        "name": "1q1a",
+                        "dataset": "omniinteract",
+                        "Hardware": "L20X",
+                        "date": "2026-11-18",
+                        "accuracy": {"IA_QTF1": 0.3655, "Precision": 0.4, "Recall": 0.3},
+                    }
+                )
+            )
+            md = render_perf_accuracy_summary_section(
+                log_dirs=[("Buildkite", Path(tmp) / "bk"), ("Local", loc)],
+                report_date="2026-11-19",
+                buildkite_sources=[],
+                source_notes=["Buildkite `20261119`", "Local `20261118`"],
+            )
+            self.assertIn("Sources: Buildkite `20261119`; Local `20261118`", md)
+            self.assertIn("| Buildkite |", md)
+            self.assertIn("bk_qwen_perf", md)
+            self.assertIn("12.5", md)
+            self.assertIn("| Local |", md)
+            self.assertIn("0.3655", md)
+            self.assertNotIn("does not include metric values", md)
+
+
 if __name__ == "__main__":
     unittest.main()
