@@ -60,16 +60,18 @@ class PerfAccuracySummaryTests(unittest.TestCase):
             report_date="2026-11-19",
             buildkite_sources=[],
         )
-        self.assertIn("## Performance and Accuracy Summary", md)
+        self.assertIn("## Performance Summary", md)
+        self.assertIn("## Accuracy Summary", md)
+        self.assertNotIn("## Performance and Accuracy Summary", md)
         self.assertIn("report date `2026-11-19`", md)
-        self.assertIn("*No Buildkite builds were fetched for this chapter.*", md)
         for host in ("h200", "h800", "a100", "a3"):
             self.assertIn(f"*No `--log-dir-{host}` supplied", md)
         # Must not invent a pass/fail or a metric when nothing was provided.
-        self.assertNotIn("IA_QTF1=", md)
-        self.assertNotIn("throughput_qps=", md)
+        self.assertNotIn("| IA_QTF1 |", md)
+        self.assertNotIn("0.3655", md)
+        self.assertNotIn("0.4194", md)
 
-    def test_quotes_only_real_local_values_when_logs_exist(self) -> None:
+    def test_quotes_metric_values_in_columns_not_filenames(self) -> None:
         if not SAMPLE_LOG_DIR.is_dir():
             self.skipTest(f"sample log dir missing: {SAMPLE_LOG_DIR}")
         md = render_perf_accuracy_summary_section(
@@ -95,19 +97,35 @@ class PerfAccuracySummaryTests(unittest.TestCase):
                 )
             ],
         )
-        self.assertIn("## Performance and Accuracy Summary", md)
-        self.assertIn("e2e perf llama", md)
-        self.assertIn("accuracy omniinteract", md)
-        self.assertIn("https://buildkite.com/vllm/vllm-omni/builds/1#j", md)
-        # Values taken from the sample result files (do not invent others).
-        self.assertIn("IA_QTF1=0.3655", md)
-        self.assertIn("omniinteract_aggregate_min_ia_qtf1=0.2000", md)
-        self.assertIn("throughput_qps=0.4194", md)
-        self.assertIn("request_throughput=0.0517", md)
-        self.assertIn(
+        self.assertIn("## Performance Summary", md)
+        self.assertIn("## Accuracy Summary", md)
+        self.assertNotIn("## Performance and Accuracy Summary", md)
+        # Buildkite has no metric payload — mention it, but do not tabulate job names.
+        self.assertIn("does not include metric values", md)
+        self.assertNotIn("e2e perf llama", md)
+        self.assertNotIn("| Job | State | Build | Link |", md)
+        # Values taken from the sample result files, as their own columns.
+        self.assertIn("| IA_QTF1 |", md)
+        self.assertIn("| Precision |", md)
+        self.assertIn("| Recall |", md)
+        self.assertIn("0.3655", md)
+        self.assertIn("0.2000", md)  # baseline threshold
+        self.assertIn("| throughput_qps |", md)
+        self.assertIn("| request_throughput |", md)
+        self.assertIn("| mean_ttft_ms |", md)
+        self.assertIn("| latency_mean |", md)
+        self.assertIn("0.4194", md)
+        self.assertIn("0.0517", md)
+        # Packed key=value cells and filename columns are gone.
+        self.assertNotIn("IA_QTF1=0.3655", md)
+        self.assertNotIn("throughput_qps=0.4194", md)
+        self.assertNotIn("request_throughput=0.0517", md)
+        self.assertNotIn(
             "result_acc_fb09628e98b1f55d8d5b863e0eccfcdd11bff499_omniinteract_aggregate_20261118_035611.json",
             md,
         )
+        self.assertNotIn("diffusion_result_test_hunyuan_image3_it2i", md)
+        self.assertNotIn("| Source |", md)
 
 
 class PreviewWiringTests(unittest.TestCase):
@@ -115,13 +133,14 @@ class PreviewWiringTests(unittest.TestCase):
         md = preview_report_markdown(
             SKILL_DIR, stats_from="2026-11-01", stats_to="2026-11-19"
         )
-        self.assertIn("## Performance and Accuracy Summary", md)
-        self.assertIn("*No Buildkite builds were fetched for this chapter.*", md)
+        self.assertIn("## Performance Summary", md)
+        self.assertIn("## Accuracy Summary", md)
         html = wrap_html_document(
             title="vLLM-Omni Test Report preview",
             body_inner=convert_release_report_markdown(md),
         )
-        self.assertIn("Performance and Accuracy Summary", html)
+        self.assertIn("Performance Summary", html)
+        self.assertIn("Accuracy Summary", html)
         self.assertIn("Paste a link or image as evidence", html)
         self.assertIn('id="release-export-pdf"', html)
         self.assertIn("Export PDF", html)

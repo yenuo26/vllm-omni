@@ -132,7 +132,11 @@ def _release_section_theme(title_plain: str) -> tuple[str, str]:
         return "version", _RELEASE_SVG_TAG
     if "test conclusion" in low:
         return "conclusion", _RELEASE_SVG_CHECK
-    if "performance and accuracy" in low:
+    if (
+        "performance and accuracy" in low
+        or "performance summary" in low
+        or "accuracy summary" in low
+    ):
         return "metrics", _RELEASE_SVG_CHART
     if "metrics" in low:
         return "metrics", _RELEASE_SVG_CHART

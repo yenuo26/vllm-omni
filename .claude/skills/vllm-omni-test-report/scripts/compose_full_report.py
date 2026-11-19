@@ -2938,9 +2938,9 @@ def preview_report_markdown(
 - **Version Info:** operator-supplied via `--release-version` / `--release-commit` (shown
   only when provided; drives the Open issues milestone filter and the default filename tag).
 - **Mode:** `compose_full_report.py --preview` (sample tables only)
-- **Performance and Accuracy Summary:** preview renders the chapter with no log dirs and
-  no Buildkite fetch (honest empty notes). The live report fills it from local result
-  files and fetched B200 / H100 scheduled-nightly jobs.
+- **Performance Summary** and **Accuracy Summary:** preview renders both chapters with
+  no log dirs and no Buildkite fetch (honest empty notes). The live report fills the
+  metric-value tables from local result files.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-*`; H100 is Buildkite block
 - **Failure Analysis:** Per-GPU failure detail. Interactive **Status** column
@@ -3745,11 +3745,14 @@ def main() -> None:
   `label:bug` + `label:critical`; (4) `UT coverage meets this iteration requirement
   (Guide), Performance regression < 10% (Guide)` is a manual user-selectable
   row that does **not** influence the final Go / Rejected verdict.
-- **Performance and Accuracy Summary:** same-day Buildkite job list (B200 scheduled
-  release + latest H100 scheduled nightly, fetched only for this chapter — the H100
-  Test Result roll-up stays omitted) plus local `result_test_*` / `diffusion_result_*`
-  / `benchmark_results_*` and `result_acc_*.json` from `--log-dir-h200` / `--log-dir-h800`
-  / `--log-dir-a100` / `--log-dir-a3`. Values are quoted only from those sources.
+- **Performance Summary** and **Accuracy Summary:** two chapters of metric-value
+  tables (one numeric column per metric, no filename column) from local
+  `result_test_*` / `diffusion_result_*` / `benchmark_results_*` and
+  `result_acc_*.json` under `--log-dir-h200` / `--log-dir-h800` /
+  `--log-dir-a100` / `--log-dir-a3`. Buildkite (B200 scheduled release + latest
+  H100 scheduled nightly, fetched only for these chapters — the H100 Test Result
+  roll-up stays omitted) is noted when jobs were found, but job payloads have no
+  metric values so they are not tabulated. Values are quoted only from those sources.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`; H100 chapter intentionally omitted
   (Buildkite scheduled nightly roll-up no longer rendered in the release report).
