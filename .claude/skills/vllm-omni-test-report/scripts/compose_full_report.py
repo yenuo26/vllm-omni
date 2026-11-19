@@ -200,14 +200,84 @@ def http_json(url: str, token: str | None = None) -> object:
     return http_get_json(url, headers=headers, timeout=120)
 
 
-def latest_scheduled_nightly_number(token: str) -> int:
-    url = f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}/builds?branch={BRANCH}&per_page=50"
-    builds = http_json(url, token)
-    assert isinstance(builds, list)
-    for b in builds:
-        if re.search(r"scheduled\s+nightly", (b.get("message") or ""), re.I):
-            return int(b["number"])
-    sys.exit("No scheduled nightly build found on main (per_page=50).")
+def release_ci_branch(version: str | None) -> str | None:
+    """Buildkite branch for a versioned release report.
+
+    ``0.34.0`` / ``v0.34.0`` / ``release/v0.34.0`` all map to
+    ``release/v0.34.0``. Returns ``None`` when no version is given so
+    callers fall back to :data:`BRANCH` (``main``).
+    """
+    if not version or not str(version).strip():
+        return None
+    # Inline the same stem rules as ``_normalize_release_version`` so this
+    # helper can live above that function without a forward-reference cycle.
+    v = str(version).strip().lower()
+    if v.startswith("release/"):
+        v = v[len("release/"):]
+    stem = v.lstrip("v")
+    if not stem:
+        return None
+    return f"release/v{stem}"
+
+
+def latest_build_number_matching(
+    token: str,
+    *,
+    branch: str,
+    pattern: str,
+    per_page: int = 50,
+    max_pages: int = 1,
+) -> int | None:
+    """Return the latest build number on ``branch`` whose message matches ``pattern``."""
+    rx = re.compile(pattern, re.I)
+    quoted = urllib.parse.quote(branch, safe="")
+    for page in range(1, max_pages + 1):
+        url = (
+            f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}"
+            f"/builds?branch={quoted}&per_page={per_page}&page={page}"
+        )
+        builds = http_json(url, token)
+        assert isinstance(builds, list)
+        if not builds:
+            break
+        for b in builds:
+            if rx.search(b.get("message") or ""):
+                return int(b["number"])
+    return None
+
+
+def latest_scheduled_nightly_number(
+    token: str,
+    *,
+    required: bool = True,
+    branch: str | None = None,
+) -> int | None:
+    """Return the latest ``Scheduled nightly`` build number on ``branch`` (default ``main``)."""
+    br = branch or BRANCH
+    no = latest_build_number_matching(
+        token,
+        branch=br,
+        pattern=r"scheduled\s+nightly",
+        per_page=50,
+        max_pages=3,
+    )
+    if no is not None:
+        return no
+    msg = f"No scheduled nightly build found on {br} (up to 3 pages of 50)."
+    if required:
+        sys.exit(msg)
+    return None
+
+
+def latest_scheduled_weekly_number(token: str, *, branch: str) -> int | None:
+    """Latest ``Scheduled weekly build`` on ``branch`` (excludes non-critical weekly)."""
+    return latest_build_number_matching(
+        token,
+        branch=branch,
+        pattern=r"^scheduled\s+weekly\s+build$",
+        per_page=50,
+        max_pages=3,
+    )
 
 
 def _issue_created_date_utc(issue: dict) -> str | None:
@@ -1620,6 +1690,42 @@ def render_performance_data_comparison_section(
     return intro + "\n".join(chunks)
 
 
+def _render_named_buildkite_failure_section(
+    *,
+    anchor: str,
+    heading: str,
+    empty_note: str,
+    intro_prefix: str,
+    build_no: int | None,
+    build_url: str | None,
+    failed_steps: list[tuple[str, str, str]],
+) -> str:
+    """Shared Failure Analysis block for a Buildkite scheduled build."""
+    if not failed_steps:
+        return f'<a id="{anchor}"></a>\n{heading}\n\n{empty_note}\n'
+    chunks: list[str] = [
+        f'<a id="{anchor}"></a>',
+        heading,
+        "",
+    ]
+    if build_no is not None and build_url:
+        chunks.append(f"- {intro_prefix}: build [{build_no}]({build_url}).")
+        chunks.append("")
+    chunks.append(f"{len(failed_steps)} failed step(s):")
+    chunks.append("")
+    rows: list[list[str]] = []
+    for name, state, link in failed_steps:
+        rows.append([name, state, f"[open]({link})" if link else "—", "—", "Filed / Not an issue"])
+    chunks.append(
+        render_markdown_table(
+            ["Step / Job", "State", "Step link", "Submit Issue", "Status"],
+            rows,
+        )
+    )
+    chunks.append("")
+    return "\n".join(chunks)
+
+
 def _render_buildkite_step_failure_section(
     *,
     build_no: int | None,
@@ -1635,33 +1741,15 @@ def _render_buildkite_step_failure_section(
     pipeline and intentionally omitted here to keep the Summary read-only against
     cached build metadata.
     """
-    if not failed_steps:
-        return (
-            '<a id="failure-analysis-h100"></a>\n'
-            "#### H100 (CI — Buildkite scheduled nightly) failures\n\n"
-            "*No failed Buildkite steps in the latest finished scheduled nightly.*\n"
-        )
-    chunks: list[str] = [
-        '<a id="failure-analysis-h100"></a>',
-        "#### H100 (CI — Buildkite scheduled nightly) failures",
-        "",
-    ]
-    if build_no is not None and build_url:
-        chunks.append(f"- Latest finished scheduled nightly: build [{build_no}]({build_url}).")
-        chunks.append("")
-    chunks.append(f"{len(failed_steps)} failed step(s):")
-    chunks.append("")
-    rows: list[list[str]] = []
-    for name, state, link in failed_steps:
-        rows.append([name, state, f"[open]({link})" if link else "—", "—", "Filed / Not an issue"])
-    chunks.append(
-        render_markdown_table(
-            ["Step / Job", "State", "Step link", "Submit Issue", "Status"],
-            rows,
-        )
+    return _render_named_buildkite_failure_section(
+        anchor="failure-analysis-h100",
+        heading="#### H100 (CI — Buildkite scheduled nightly) failures",
+        empty_note="*No failed Buildkite steps in the latest finished scheduled nightly.*",
+        intro_prefix="Latest finished scheduled nightly",
+        build_no=build_no,
+        build_url=build_url,
+        failed_steps=failed_steps,
     )
-    chunks.append("")
-    return "\n".join(chunks)
 
 
 def _render_b200_step_failure_section(
@@ -1708,6 +1796,24 @@ def _render_b200_step_failure_section(
     )
     chunks.append("")
     return "\n".join(chunks)
+
+
+def _render_weekly_step_failure_section(
+    *,
+    build_no: int | None,
+    build_url: str | None,
+    failed_steps: list[tuple[str, str, str]],
+) -> str:
+    """Failure Analysis block for the Buildkite scheduled weekly build."""
+    return _render_named_buildkite_failure_section(
+        anchor="failure-analysis-weekly",
+        heading="#### Weekly (CI — Buildkite scheduled weekly) failures",
+        empty_note="*No failed Buildkite steps in the latest scheduled weekly build.*",
+        intro_prefix="Latest scheduled weekly",
+        build_no=build_no,
+        build_url=build_url,
+        failed_steps=failed_steps,
+    )
 
 
 def render_failure_summary_md(
@@ -1766,6 +1872,10 @@ def _render_failure_summary_blocks(
     b200_build_url=None,
     b200_failed_steps=None,
     include_b200: bool = True,
+    weekly_build_no=None,
+    weekly_build_url=None,
+    weekly_failed_steps=None,
+    include_weekly: bool = False,
 ) -> str:
     """Per-GPU failure detail blocks (no top-level heading).
 
@@ -1803,6 +1913,14 @@ def _render_failure_summary_blocks(
                 build_no=b200_build_no,
                 build_url=b200_build_url,
                 failed_steps=b200_failed_steps or [],
+            )
+        )
+    if include_weekly:
+        gpu_blocks.append(
+            _render_weekly_step_failure_section(
+                build_no=weekly_build_no,
+                build_url=weekly_build_url,
+                failed_steps=weekly_failed_steps or [],
             )
         )
     return "\n".join(gpu_blocks)
@@ -1864,44 +1982,39 @@ def _b200_is_reportable_job(name: str) -> bool:
     return True
 
 
-def latest_scheduled_release_b200_number(token: str) -> int:
-    """Return the latest ``Scheduled Release B200 build`` number on ``main``.
+def latest_scheduled_release_b200_number(token: str, *, branch: str | None = None) -> int:
+    """Return the latest ``Scheduled Release B200 build`` number on ``branch``.
 
-    The B200 release build runs infrequently (~monthly), so a single
-    ``per_page=50`` page (as :func:`latest_scheduled_nightly_number` uses) is
-    not enough — page through up to :data:`_B200_MAX_PAGES` pages of 100 builds
+    Defaults to ``main``. The B200 release build runs infrequently (~monthly),
+    so page through up to :data:`_B200_MAX_PAGES` pages of 100 builds
     (~75-day window) and return the first build whose message matches
     ``scheduled release b200``.
     """
-    pattern = re.compile(r"scheduled\s+release\s+b200", re.I)
-    for page in range(1, _B200_MAX_PAGES + 1):
-        url = (
-            f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}"
-            f"/builds?branch={BRANCH}&per_page=100&page={page}"
-        )
-        builds = http_json(url, token)
-        assert isinstance(builds, list)
-        if not builds:
-            break
-        for b in builds:
-            if pattern.search((b.get("message") or "")):
-                return int(b["number"])
+    br = branch or BRANCH
+    no = latest_build_number_matching(
+        token,
+        branch=br,
+        pattern=r"scheduled\s+release\s+b200",
+        per_page=100,
+        max_pages=_B200_MAX_PAGES,
+    )
+    if no is not None:
+        return no
     raise RuntimeError(
-        "No 'Scheduled Release B200 build' found on main within "
+        f"No 'Scheduled Release B200 build' found on {br} within "
         f"{_B200_MAX_PAGES * 100} recent builds. Pin one explicitly with --b200-build."
     )
 
 
-def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
-    """Fetch the latest (or pinned) Scheduled Release B200 build + reportable-job summary.
+def fetch_build_job_summary(token: str, build_no: int, *, label: str) -> dict:
+    """Fetch one Buildkite build and summarize its reportable jobs.
 
-    Single Buildkite API call (``GET .../builds/{n}`` with jobs embedded).
-    Returns a dict: ``build_no``, ``branch``, ``commit``, ``state``,
-    ``created_at``, ``passed``, ``failed``, ``broken``, ``failed_steps``
-    (list of ``(name, state, link)``). ``broken`` is counted separately and
-    excluded from ``failed`` (matches the H100 rule at the dev-path walk).
+    Returns ``build_no``, ``branch``, ``commit``, ``state``, ``created_at``,
+    ``passed``, ``failed``, ``broken``, ``failed_steps`` (list of
+    ``(name, state, link)``), and ``jobs``. ``broken`` is counted separately
+    and excluded from ``failed``.
     """
-    no = build_no if build_no else latest_scheduled_release_b200_number(token)
+    no = int(build_no)
     url = f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}/builds/{no}"
     build = http_json(url, token)
     assert isinstance(build, dict)
@@ -1917,6 +2030,38 @@ def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
             jid = j.get("id") or ""
             link = f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{no}#{jid}"
             failed_steps.append((name, (j.get("state") or "").lower(), link))
+    return {
+        "build_no": int(no),
+        "branch": build.get("branch") or BRANCH,
+        "commit": build.get("commit") or "",
+        "state": (build.get("state") or "").lower(),
+        "created_at": build.get("created_at") or "",
+        "passed": passed,
+        "failed": failed,
+        "broken": broken,
+        "failed_steps": failed_steps,
+        "jobs": reportable_buildkite_jobs(
+            build, build_no=int(no), label=label, b200_filter=True
+        ),
+        "raw_build": build,
+    }
+
+
+def fetch_b200_build_summary(
+    token: str,
+    build_no: int | None = None,
+    *,
+    branch: str | None = None,
+) -> dict:
+    """Fetch the latest (or pinned) Scheduled Release B200 build + reportable-job summary.
+
+    When ``branch`` is set (a versioned release report uses
+    ``release/vX.Y.Z``), resolve the latest matching build on that branch
+    instead of ``main``. A pinned ``build_no`` skips the branch search.
+    """
+    no = build_no if build_no else latest_scheduled_release_b200_number(token, branch=branch)
+    return fetch_build_job_summary(token, int(no), label="B200 (scheduled release)")
+
 
 def reportable_buildkite_jobs(
     build: dict,
@@ -1946,22 +2091,6 @@ def reportable_buildkite_jobs(
             }
         )
     return jobs
-
-
-    return {
-        "build_no": int(no),
-        "branch": build.get("branch") or BRANCH,
-        "commit": build.get("commit") or "",
-        "state": (build.get("state") or "").lower(),
-        "created_at": build.get("created_at") or "",
-        "passed": passed,
-        "failed": failed,
-        "broken": broken,
-        "failed_steps": failed_steps,
-        "jobs": reportable_buildkite_jobs(
-            build, build_no=int(no), label="B200 (scheduled release)", b200_filter=True
-        ),
-    }
 
 
 def build_b200_ci_markdown_body(
@@ -2025,6 +2154,9 @@ def render_overall_test_execution_summary_table(
     b200_passed: int | None = None,
     b200_failed: int | None = None,
     b200_broken: int | None = None,
+    weekly_passed: int | None = None,
+    weekly_failed: int | None = None,
+    weekly_broken: int | None = None,
 ) -> str:
     """Emit the combined Total / Passed / Failed table at the top of Test Result.
 
@@ -2077,6 +2209,16 @@ def render_overall_test_execution_summary_table(
                 f"[{h100_failed or 0}](#failure-analysis-h100)",
             ]
         )
+    if weekly_passed is not None or weekly_failed is not None:
+        total = (weekly_passed or 0) + (weekly_failed or 0) + (weekly_broken or 0)
+        rows.append(
+            [
+                "Weekly",
+                str(total),
+                str(weekly_passed or 0),
+                f"[{weekly_failed or 0}](#failure-analysis-weekly)",
+            ]
+        )
     return render_markdown_table(
         ["GPU", "Total cases", "Passed", "Failed"],
         rows,
@@ -2098,6 +2240,10 @@ def render_test_result_section(
     b200_passed=None,
     b200_failed=None,
     b200_broken=None,
+    weekly_ci_markdown: str = "",
+    weekly_passed=None,
+    weekly_failed=None,
+    weekly_broken=None,
     dev_perf_h200=None,
     dev_perf_h800=None,
     dev_perf_a100=None,
@@ -2141,6 +2287,9 @@ def render_test_result_section(
             b200_passed=b200_passed,
             b200_failed=b200_failed,
             b200_broken=b200_broken,
+            weekly_passed=weekly_passed,
+            weekly_failed=weekly_failed,
+            weekly_broken=weekly_broken,
         )
 
     chunks: list[str] = [
@@ -2152,12 +2301,13 @@ def render_test_result_section(
         "(H200 / H800 / A100 / A3)"
         + (" **and the B200 Buildkite scheduled release build**" if b200_ci_markdown else "")
         + (" **and the H100 Buildkite scheduled nightly build**" if h100_ci_markdown else "")
+        + (" **and the Buildkite scheduled weekly build**" if weekly_ci_markdown else "")
         + (
             ". Buildkite-sourced counts exclude `Upload * Pipeline` and "
             "orchestration-only steps (e.g. `Nightly Collection&Email`) from "
             "both Total and Failed; the B200/H100 Failed cell links to the "
             "matching chapter below."
-            if (b200_ci_markdown or h100_ci_markdown)
+            if (b200_ci_markdown or h100_ci_markdown or weekly_ci_markdown)
             else ". The Failed cell links to the matching subsection under the next Failure Analysis section."
         ),
         "",
@@ -2211,6 +2361,10 @@ def render_test_result_section(
         chunks.extend(["", "### H100 (CI — Buildkite scheduled nightly)", ""])
         chunks.append(h100_ci_markdown.rstrip())
         chunks.append("")
+    if weekly_ci_markdown:
+        chunks.extend(["", "### Weekly (CI — Buildkite scheduled weekly)", ""])
+        chunks.append(weekly_ci_markdown.rstrip())
+        chunks.append("")
     return "\n".join(chunks)
 
 
@@ -2228,6 +2382,10 @@ def render_failure_analysis_section(
     b200_build_url=None,
     b200_failed_steps=None,
     include_b200: bool = True,
+    weekly_build_no=None,
+    weekly_build_url=None,
+    weekly_failed_steps=None,
+    include_weekly: bool = False,
 ) -> str:
     """Emit a top-level ## Failure Analysis section.
 
@@ -2261,6 +2419,10 @@ def render_failure_analysis_section(
         b200_build_url=b200_build_url,
         b200_failed_steps=b200_failed_steps,
         include_b200=include_b200,
+        weekly_build_no=weekly_build_no,
+        weekly_build_url=weekly_build_url,
+        weekly_failed_steps=weekly_failed_steps,
+        include_weekly=include_weekly,
     )
 
 
@@ -3512,18 +3674,14 @@ def main() -> None:
 
     critical_row_ok, critical_row_detail = no_open_critical_labeled_issues(gh_token)
 
-    # H100 (Buildkite scheduled nightly) data is intentionally NOT fetched or
-    # rendered in the release Test Result / Failure Analysis sections anymore.
-    # Operators requested removing Buildkite CI roll-up content from the report
-    # — only local-machine test execution (H200/H800/A100/A3) remains. The
-    # Buildkite API call + reportable-job walk (previously used to populate
-    # the H100 chapter + the H100 failed-step block) is therefore skipped.
-    #
-    # B200 (Buildkite scheduled release) is the one Buildkite CI chapter kept in
-    # the release Test Result. Fetch the latest "Scheduled Release B200 build"
-    # (or a pinned --b200-build), walk its reportable jobs, and build a
-    # lightweight metadata + summary + failed-step body. Failures degrade
-    # gracefully (empty body) so a Buildkite hiccup never aborts the report.
+    # With --release-version, Buildkite scheduled nightly, scheduled weekly,
+    # and scheduled release B200 are resolved on the matching release/vX.Y.Z
+    # branch (not main). Without a version, B200 still resolves on main and
+    # the nightly/weekly Test Result chapters stay omitted.
+    ci_branch = release_ci_branch(args.release_version)
+    if ci_branch:
+        print(f"Release Buildkite branch: {ci_branch}", file=sys.stderr)
+
     b200_body = ""
     b200_passed: int | None = None
     b200_failed: int | None = None
@@ -3533,7 +3691,9 @@ def main() -> None:
     b200_failed_steps: list[tuple[str, str, str]] | None = None
     b200_jobs: list[dict[str, str]] = []
     try:
-        b200 = fetch_b200_build_summary(token, build_no=args.b200_build)
+        b200 = fetch_b200_build_summary(
+            token, build_no=args.b200_build, branch=ci_branch
+        )
         b200_passed = b200["passed"]
         b200_failed = b200["failed"]
         b200_broken = b200["broken"]
@@ -3560,70 +3720,138 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001 — graceful degradation
         print(f"B200: fetch failed — {e}; chapter omitted", file=sys.stderr)
 
-    # Perf + accuracy summary: reuse the B200 jobs already fetched, and also
-    # pull the latest scheduled nightly *only* for this chapter (the H100 Test
-    # Result roll-up stays omitted). Failures degrade to an empty job list.
+    def _ci_body(summary: dict) -> str:
+        return build_b200_ci_markdown_body(
+            build_no=summary["build_no"],
+            branch=summary["branch"],
+            commit=summary["commit"],
+            state=summary["state"],
+            created_at=summary["created_at"],
+            passed=summary["passed"],
+            failed=summary["failed"],
+            broken=summary["broken"],
+        )
+
+    # Scheduled nightly (H100) on the release branch (or main when no version).
     nightly_jobs: list[dict[str, str]] = []
+    h100_body = ""
+    h100_passed: int | None = None
+    h100_failed: int | None = None
+    h100_skipped: int | None = None
+    h100_build_no: int | None = None
+    h100_build_url: str | None = None
+    h100_failed_steps: list[tuple[str, str, str]] | None = None
     try:
-        nno = latest_scheduled_nightly_number(token)
-        nurl = (
-            f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}"
-            f"/builds/{nno}"
-        )
-        nbuild = http_json(nurl, token)
-        assert isinstance(nbuild, dict)
-        nightly_jobs = reportable_buildkite_jobs(
-            nbuild, build_no=int(nno), label="H100 (scheduled nightly)"
-        )
-        print(
-            f"H100 nightly for perf/acc summary: build #{nno}, "
-            f"{len(nightly_jobs)} reportable job(s)",
-            file=sys.stderr,
-        )
+        n_branch = ci_branch or BRANCH
+        nno = latest_scheduled_nightly_number(token, required=False, branch=n_branch)
+        if nno is None:
+            print(
+                f"Scheduled nightly: none found on {n_branch}; skipped",
+                file=sys.stderr,
+            )
+        else:
+            nsum = fetch_build_job_summary(
+                token, int(nno), label="H100 (scheduled nightly)"
+            )
+            nightly_jobs = list(nsum.get("jobs") or [])
+            print(
+                f"Scheduled nightly: build #{nsum['build_no']} [{nsum['state']}] "
+                f"on {nsum['branch']} ({(nsum['created_at'] or '')[:10]}) — "
+                f"{nsum['passed']} passed / {nsum['failed']} failed / "
+                f"{nsum['broken']} broken",
+                file=sys.stderr,
+            )
+            if ci_branch:
+                h100_body = _ci_body(nsum)
+                h100_passed = nsum["passed"]
+                h100_failed = nsum["failed"]
+                h100_skipped = nsum["broken"]
+                h100_build_no = nsum["build_no"]
+                h100_build_url = (
+                    f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{h100_build_no}"
+                )
+                h100_failed_steps = nsum["failed_steps"]
     except Exception as e:  # noqa: BLE001 — graceful degradation
-        print(f"H100 nightly for perf/acc summary: fetch failed — {e}", file=sys.stderr)
+        print(f"Scheduled nightly: fetch failed — {e}", file=sys.stderr)
+
+    weekly_jobs: list[dict[str, str]] = []
+    weekly_body = ""
+    weekly_passed: int | None = None
+    weekly_failed: int | None = None
+    weekly_broken: int | None = None
+    weekly_build_no: int | None = None
+    weekly_build_url: str | None = None
+    weekly_failed_steps: list[tuple[str, str, str]] | None = None
+    if ci_branch:
+        try:
+            wno = latest_scheduled_weekly_number(token, branch=ci_branch)
+            if wno is None:
+                print(
+                    f"Scheduled weekly: none found on {ci_branch}; skipped",
+                    file=sys.stderr,
+                )
+            else:
+                wsum = fetch_build_job_summary(
+                    token, int(wno), label="Weekly (scheduled weekly)"
+                )
+                weekly_jobs = list(wsum.get("jobs") or [])
+                weekly_body = _ci_body(wsum)
+                weekly_passed = wsum["passed"]
+                weekly_failed = wsum["failed"]
+                weekly_broken = wsum["broken"]
+                weekly_build_no = wsum["build_no"]
+                weekly_build_url = (
+                    f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{weekly_build_no}"
+                )
+                weekly_failed_steps = wsum["failed_steps"]
+                print(
+                    f"Scheduled weekly: build #{wsum['build_no']} [{wsum['state']}] "
+                    f"on {wsum['branch']} ({(wsum['created_at'] or '')[:10]}) — "
+                    f"{wsum['passed']} passed / {wsum['failed']} failed / "
+                    f"{wsum['broken']} broken",
+                    file=sys.stderr,
+                )
+        except Exception as e:  # noqa: BLE001 — graceful degradation
+            print(f"Scheduled weekly: fetch failed — {e}", file=sys.stderr)
 
     conclusion = render_test_conclusion_section()
-    # H100 (Buildkite scheduled nightly) chapter is intentionally omitted from
-    # the release Test Result — the operator requested dropping that Buildkite
-    # CI roll-up; only local-machine execution (H200/H800/A100/A3) plus the
-    # **B200 Buildkite scheduled release** chapter remain. ``h100_ci_markdown=""``
-    # suppresses the H100 chapter and H100 row in the Overall summary table;
-    # ``b200_*`` carries the fetched B200 build's body + counts.
     test_result = render_test_result_section(
         skill_dir,
         log_h200=args.log_dir_h200,
         log_h800=args.log_dir_h800,
         log_a100=args.log_dir_a100,
         log_a3=args.log_dir_a3,
-        h100_ci_markdown="",
-        h100_passed=None,
-        h100_failed=None,
-        h100_skipped=None,
+        h100_ci_markdown=h100_body,
+        h100_passed=h100_passed,
+        h100_failed=h100_failed,
+        h100_skipped=h100_skipped,
         b200_ci_markdown=b200_body,
         b200_passed=b200_passed,
         b200_failed=b200_failed,
         b200_broken=b200_broken,
+        weekly_ci_markdown=weekly_body,
+        weekly_passed=weekly_passed,
+        weekly_failed=weekly_failed,
+        weekly_broken=weekly_broken,
     )
 
-    # Failure Analysis: top-level section, one collapsible subsection per
-    # local GPU (H200/H800/A100 from local logs). H100 (Buildkite) is
-    # intentionally omitted from the release report. B200 (Buildkite scheduled
-    # release) failed steps are rendered here (the Test Result B200 chapter
-    # carries only Build + Summary).
     failure_analysis = render_failure_analysis_section(
         log_h200=args.log_dir_h200,
         log_h800=args.log_dir_h800,
         log_a100=args.log_dir_a100,
         log_a3=args.log_dir_a3,
-        h100_build_no=None,
-        h100_build_url=None,
-        h100_failed_steps=None,
-        include_h100=False,
+        h100_build_no=h100_build_no,
+        h100_build_url=h100_build_url,
+        h100_failed_steps=h100_failed_steps,
+        include_h100=bool(h100_body),
         b200_build_no=b200_build_no,
         b200_build_url=b200_build_url,
         b200_failed_steps=b200_failed_steps,
-        include_b200=True,
+        include_b200=bool(b200_body),
+        weekly_build_no=weekly_build_no,
+        weekly_build_url=weekly_build_url,
+        weekly_failed_steps=weekly_failed_steps,
+        include_weekly=bool(weekly_body),
     )
 
     # Issue tracking section is intentionally omitted from the release
@@ -3688,6 +3916,7 @@ def main() -> None:
         buildkite_sources=[
             ("B200 (scheduled release)", b200_jobs),
             ("H100 (scheduled nightly)", nightly_jobs),
+            ("Weekly (scheduled weekly)", weekly_jobs),
         ],
     )
     if args.release_version:
@@ -3749,14 +3978,17 @@ def main() -> None:
   tables (one numeric column per metric, no filename column) from local
   `result_test_*` / `diffusion_result_*` / `benchmark_results_*` and
   `result_acc_*.json` under `--log-dir-h200` / `--log-dir-h800` /
-  `--log-dir-a100` / `--log-dir-a3`. Buildkite (B200 scheduled release + latest
-  H100 scheduled nightly, fetched only for these chapters — the H100 Test Result
-  roll-up stays omitted) is noted when jobs were found, but job payloads have no
-  metric values so they are not tabulated. Values are quoted only from those sources.
+  `--log-dir-a100` / `--log-dir-a3`. With `--release-version`, Buildkite
+  scheduled nightly, scheduled weekly, and scheduled release B200 are
+  resolved on `release/vX.Y.Z` (not `main`) and noted when jobs were found,
+  but job payloads have no metric values so they are not tabulated. Values
+  are quoted only from those sources.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
-  `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`; H100 chapter intentionally omitted
-  (Buildkite scheduled nightly roll-up no longer rendered in the release report).
-- **Failure Analysis:** Per-GPU failure detail (H200/H800/A100 from local nightly logs; H100 from
+  `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`. With `--release-version`,
+  also the latest scheduled nightly, scheduled weekly, and scheduled release B200
+  builds on `release/vX.Y.Z`.
+- **Failure Analysis:** Per-GPU failure detail (H200/H800/A100/A3 from local nightly
+  logs; H100 scheduled nightly, B200 scheduled release, and scheduled weekly from
   Buildkite `failed` steps — `broken` is treated as a transient state, not a failure).
   Interactive **Status** column (Filed / Not an issue) backed by `localStorage`.
 - **Version Info:** operator-supplied via `--release-version` / `--release-commit`
