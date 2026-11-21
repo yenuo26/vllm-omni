@@ -787,7 +787,7 @@ def _wrap_release_report_h2_sections(html_fragment: str) -> str:
 
 
 def _test_result_h3_is_gpu_card(h3_block: str) -> bool:
-    """True if the block opens with an ``h3`` for H100 / H200 / H800 / A100 / A3 / B200 (not Common stack)."""
+    """True if the block opens with an ``h3`` for H100/L4 / H200 / H800 / A100 / A3/A2 / B200 (not Common stack)."""
     m = re.match(r"\s*<h3>([\s\S]*?)</h3>", h3_block.strip())
     if not m:
         return False
@@ -801,16 +801,13 @@ def _test_result_h3_is_gpu_card(h3_block: str) -> bool:
         return True
     if re.fullmatch(r"A100", inner_text, re.IGNORECASE):
         return True
-    if re.fullmatch(r"A3", inner_text, re.IGNORECASE):
+    # ``### A3``, ``### A3/A2``, ``### A3/A2 (CI ...)``
+    if re.match(r"A3(?:/A2)?(?:\s*[（(/]|\Z)", inner_text, re.IGNORECASE):
         return True
-    # ``### H100``, ``### H100 (CI ...)``, ``### H100（CI ...）`` — reject ``H1000``-style labels.
-    # Allow optional whitespace between ``H100`` and the opening paren so that the
-    # Buildkite-side heading ``H100 (CI — Buildkite scheduled nightly)`` is still
-    # treated as a GPU card and folded.
-    if re.match(r"H100(?:\s*[（(]|\Z)", inner_text, re.IGNORECASE):
+    # ``### H100``, ``### H100/L4``, ``### H100/L4 (CI ...)`` — reject ``H1000``.
+    if re.match(r"H100(?:/L4)?(?:\s*[（(/]|\Z)", inner_text, re.IGNORECASE):
         return True
-    # ``### B200``, ``### B200 (CI — Buildkite scheduled release)`` — same paren-suffix rule
-    # as H100 so the B200 Buildkite-side chapter folds into a collapsible card too.
+    # ``### B200``, ``### B200 (CI — Buildkite scheduled release)``
     return bool(re.match(r"B200(?:\s*[（(]|\Z)", inner_text, re.IGNORECASE))
 
 
@@ -3622,9 +3619,9 @@ def _gpu_details_extra_classes(title: str) -> str:
         return " release-gpu-details--h800"
     if re.fullmatch(r"A100", t, re.IGNORECASE):
         return " release-gpu-details--a100"
-    if re.fullmatch(r"A3", t, re.IGNORECASE):
+    if re.match(r"A3(?:/A2)?\b", t, re.IGNORECASE):
         return " release-gpu-details--a3"
-    if re.match(r"H100", t, re.IGNORECASE):
+    if re.match(r"H100(?:/L4)?\b", t, re.IGNORECASE):
         return " release-gpu-details--h100"
     if re.match(r"B200", t, re.IGNORECASE):
         return " release-gpu-details--b200"
@@ -3633,27 +3630,52 @@ def _gpu_details_extra_classes(title: str) -> str:
 
 def _gpu_summary_icon_markup(title: str) -> str:
     t = (title or "").strip()
-    # Buildkite-side CI chapters (H100 scheduled nightly, B200 scheduled release)
-    # use the cloud icon; local-GPU chapters use the server icon.
-    if re.match(r"H100", t, re.IGNORECASE) or re.match(r"B200", t, re.IGNORECASE):
-        paths = _RELEASE_SVG_CLOUD
+    # Buildkite-side CI chapters (H100/L4, A3/A2 NPU, B200) use the cloud icon;
+    # local-GPU chapters use the server icon.
+    if (
+        re.match(r"H100(?:/L4)?\b", t, re.IGNORECASE)
+        or re.match(r"A3(?:/A2)?\b", t, re.IGNORECASE)
+        or re.match(r"B200", t, re.IGNORECASE)
+    ):
+        # A3/A2 may be local OR CI; CI headings include "(CI" / "Buildkite".
+        if re.match(r"A3(?:/A2)?\b", t, re.IGNORECASE) and "CI" not in t and "Buildkite" not in t:
+            paths = _RELEASE_SVG_SERVER
+        else:
+            paths = _RELEASE_SVG_CLOUD
     else:
         paths = _RELEASE_SVG_SERVER
     return _release_inline_svg(paths, size=20, extra_class="release-gpu-summary-ico")
 
 
 def _gpu_short_title(title: str) -> str:
-    """Reduce GPU h3 title to its short token (H100 / H200 / H800 / A100 / A3 / B200).
+    """Reduce GPU h3 title to its short token (H100/L4 / H200 / H800 / A100 / A3/A2 / B200).
 
-    ``### H100 (CI — Buildkite scheduled nightly)`` and ``### B200 (CI — Buildkite
-    scheduled release)`` should still display as ``H100`` / ``B200`` in the
+    ``### H100/L4 (CI — …)`` and ``### A3/A2 (CI — …)`` keep the slash form in the
     collapsible summary. Falls back to the original title when no token is found.
     """
     t = (title or "").strip()
     if not t:
         return t
-    m = re.match(r"\s*(H100|H200|H800|A100|A3|B200)\b", t, re.IGNORECASE)
-    return m.group(1).upper() if m else t
+    m = re.match(
+        r"\s*(H100/L4|H100|H200|H800|A100|A3/A2|A3|B200)\b",
+        t,
+        re.IGNORECASE,
+    )
+    if not m:
+        return t
+    token = m.group(1)
+    # Preserve canonical casing for slash forms.
+    aliases = {
+        "h100/l4": "H100/L4",
+        "a3/a2": "A3/A2",
+        "h100": "H100",
+        "h200": "H200",
+        "h800": "H800",
+        "a100": "A100",
+        "a3": "A3",
+        "b200": "B200",
+    }
+    return aliases.get(token.lower(), token.upper())
 
 
 def _convert_gpu_section_to_collapsible_details(full_section: str) -> str:
