@@ -37,7 +37,8 @@ RELEASE_CONCLUSION_ITEMS: tuple[str, ...] = (
     #     the same way as the Development report). Threshold rule: DI ≤ 30 → Pass,
     #     DI > 30 → Fail.
     "Remaining DI < 30",
-    # 6 — auto: compose checks for open issues labeled ``critical``
+    # 6 — manual (user-selectable): operator fills Pass/Fail; release compose
+    # does not scan GitHub for this row (Open issues chapter stays separate).
     "No remaining critical issues",
 )
 
@@ -52,7 +53,7 @@ CONCLUSION_L2_L3_ROW_INDEX = 2
 CONCLUSION_NPU_ROW_INDEX = 3
 # "Remaining DI < 30": auto-computed cumulative Outstanding DI; threshold ≤ 30 ⇒ Pass.
 CONCLUSION_DI_ROW_INDEX = 5
-# "No remaining critical issues": compose checks for open issues labeled ``critical``
+# "No remaining critical issues": manual Pass/Fail (operator-filled; no GitHub scan).
 CONCLUSION_CRITICAL_ROW_INDEX = 6
 
 
@@ -173,16 +174,16 @@ def release_conclusion_widget_html(
     """Interactive table + verdict (Go / Rejected) for ``.release-doc`` HTML.
 
     Automatic rows (non-clickable when ``*_row_ok`` is not ``None``):
-    **Latest GPU CI(L1-L5)**, **critical issues**.
-    The **Latest NPU CI(L1-L4)** row is **manual** (always user-selectable,
-    per the "用例自己选择结果" rule). The **Remaining DI < 30** row is also
-    **manual** in the release variant (the release ``main()`` passes
-    ``di_row_ok=None`` so the operator judges DI against the open-bug list
-    rather than having an auto-judgement override the selection); the
-    development/preview paths still pass a demo ``di_row_ok`` value.
-    Rows whose index is in :data:`RELEASE_CONCLUSION_GUIDE_ROW_INDICES` render
-    in the table and stay user-selectable, but the final Go / Rejected verdict
-    ignores them.
+    any row whose ``*_row_ok`` is provided (preview/demo paths may still pass
+    values). In the release variant, **Latest GPU CI(L1-L5)**, **Remaining DI
+    < 30**, and **No remaining critical issues** are all **manual**
+    (``*_row_ok=None``): the operator picks Pass/Fail. The critical row starts
+    with neither button selected (unfilled) so the report does not invent a
+    scan result; other manual rows still default to Pass lit until clicked.
+    The **Latest NPU CI(L1-L4)** row is likewise **manual**. Preview paths may
+    still pass demo ``*_row_ok`` values. Rows whose index is in
+    :data:`RELEASE_CONCLUSION_GUIDE_ROW_INDICES` render in the table and stay
+    user-selectable, but the final Go / Rejected verdict ignores them.
 
     Every row has an **Evidence** editor: the operator can paste a URL or an
     image (clipboard or file picker) as supporting evidence. Evidence is
@@ -204,11 +205,21 @@ def release_conclusion_widget_html(
             auto_ok = critical_row_ok
             row_detail = critical_row_detail
         is_auto = auto_ok is not None
-        pass_on = bool(auto_ok) if is_auto else True
+        if is_auto:
+            pass_on = bool(auto_ok)
+            fail_on = not pass_on
+        elif i == CONCLUSION_CRITICAL_ROW_INDEX:
+            # Manual critical row: leave Pass/Fail unfilled until the operator picks.
+            # Do not invent a Yes/No from a GitHub scan.
+            pass_on = False
+            fail_on = False
+        else:
+            pass_on = True
+            fail_on = False
         pass_cls = "is-on" if pass_on else ""
-        fail_cls = "" if pass_on else "is-on"
+        fail_cls = "is-on" if fail_on else ""
         pass_pressed = "true" if pass_on else "false"
-        fail_pressed = "false" if pass_on else "true"
+        fail_pressed = "true" if fail_on else "false"
         auto_cls = " conc-auto" if is_auto else ""
         guide_attr = "1" if i in RELEASE_CONCLUSION_GUIDE_ROW_INDICES else "0"
         hint = ""

@@ -7,11 +7,10 @@ Agents and users should **emit HTML by default**.
 Two report kinds (``--kind``):
 
   - ``release`` (default): full release layout.
-      - Test conclusion: interactive checklist (HTML) / static MD; auto rows: "Latest GPU CI(L1-L5)…" = latest
-        finished **ready** + **merge** (same buckets as metrics) have no failed/broken jobs;
-        "critical issues…" = no open ``critical``;
-        "Remaining DI…" = open ``bug`` in stats window weighted by priority labels < 30;
-        "bug assignees…" = open ``bug`` all have assignee
+      - Test conclusion: interactive checklist (HTML) / static MD; release rows for
+        "Latest GPU CI(L1-L5)…", "Remaining DI < 30", and "No remaining critical issues"
+        are **manual** operator Pass/Fail (critical starts unfilled; no GitHub auto-scan
+        for that item). Preview/demo paths may still pass auto values.
       - Metrics overview: ``buildkite_build_stats.py --markdown``; only the **bugs (first
         response)** row is rendered — the CI-category buckets (``ready`` / `merge` /
         ``nightly`` / ``weekly``) and the ``ut`` / ``ut (exclude models)`` rows are dropped
@@ -3862,7 +3861,16 @@ def main() -> None:
     l2_l3_row_ok = None
     l2_l3_row_detail = ""
 
-    critical_row_ok, critical_row_detail = no_open_critical_labeled_issues(gh_token)
+    # "No remaining critical issues" is a **manual** user-selectable Pass/Fail
+    # row (like Remaining DI / NPU). Do **not** call
+    # ``no_open_critical_labeled_issues`` here — that scan filled Pass/Fail from
+    # open ``bug``+``critical`` issues and is no longer used for this conclusion
+    # item. The Open issues chapter still lists critical/high-priority bugs for
+    # the operator to judge against; only this conclusion-row auto-judgement is
+    # detached. Passing ``critical_row_ok=None`` leaves the widget unfilled
+    # (neither Pass nor Fail selected) until the operator picks.
+    critical_row_ok = None
+    critical_row_detail = ""
 
     # With --release-version, Buildkite scheduled nightly, scheduled weekly,
     # and scheduled release B200 are resolved on the matching release/vX.Y.Z
@@ -4190,10 +4198,10 @@ def main() -> None:
     # `created_at` ≤ stats_to; threshold ≤ 30). Passing ``di_row_ok=None``
     # renders the row as a clickable toggle (see ``release_conclusion_widget_html``:
     # ``is_auto = auto_ok is not None``) and never overrides the operator's
-    # selection with an auto-judgement. The Open issues section below still
-    # lists the bugs the operator would judge against
-    # (``render_open_issues_section`` is unchanged) — only the conclusion-row
-    # auto-judgement is dropped.
+    # selection with an auto-judgement. "No remaining critical issues" is the
+    # same pattern (``critical_row_ok=None``, unfilled until clicked) — the
+    # Open issues section below still lists critical/high-priority bugs for
+    # reference; only the conclusion-row auto-judgement for that item is dropped.
 
     md = f"""# vLLM-Omni Test Report - Scheduled Nightly
 
@@ -4222,8 +4230,10 @@ def main() -> None:
   `label:bug` whose `created_at` ≤ `{stats_to}` (start date unbounded; issues created
   after the stats window are excluded); threshold ≤ 30 (Pass when total ≤ 30,
   Fail when > 30). No longer auto-calculated — the operator's selection is authoritative;
-  (3) no open
-  `label:bug` + `label:critical`; (4) `UT coverage meets this iteration requirement
+  (3) **No remaining critical issues** is a **manual** user-selectable Pass/Fail
+  row (unfilled until the operator picks) — not auto-scanned from open
+  `label:bug` + `label:critical` (the Open issues chapter still lists
+  critical/high-priority bugs separately for reference); (4) `UT coverage meets this iteration requirement
   (Guide), Performance regression < 10% (Guide)` is a manual user-selectable
   row that does **not** influence the final Go / Rejected verdict.
 - **Performance Summary** and **Accuracy Summary:** two chapters of metric-value
@@ -4269,8 +4279,10 @@ def main() -> None:
             # manual Pass/Fail toggle (operator-selectable), not an auto-judgement.
             di_row_ok=None,
             di_row_detail="",
-            critical_row_ok=critical_row_ok,
-            critical_row_detail=critical_row_detail,
+            # critical_row_ok=None ⇒ "No remaining critical issues" is a manual
+            # Pass/Fail toggle left unfilled (operator fills; no GitHub scan).
+            critical_row_ok=None,
+            critical_row_detail="",
         ),
         encoding="utf-8",
     )

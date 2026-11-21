@@ -28,6 +28,32 @@ SAMPLE_LOG_DIR = Path("/workspace/nightly_jobs")
 
 
 class EvidenceEditorsTests(unittest.TestCase):
+    def test_critical_row_is_manual_and_unfilled_when_not_scanned(self) -> None:
+        html = release_conclusion_widget_html(
+            l2_l3_row_ok=None,
+            di_row_ok=None,
+            critical_row_ok=None,
+        )
+        # Locate the "No remaining critical issues" row.
+        marker = "No remaining critical issues"
+        idx = html.index(marker)
+        # Walk back to the opening <tr ...> for this row.
+        tr_start = html.rfind("<tr ", 0, idx)
+        tr_end = html.index("</tr>", idx) + len("</tr>")
+        row = html[tr_start:tr_end]
+        self.assertIn('data-conc-auto="0"', row)
+        self.assertNotIn("conc-auto-hint", row)
+        self.assertIn('class="conc-btns"', row)  # no "conc-auto" class on the button group
+        self.assertNotIn('class="conc-btns conc-auto"', row)
+        # Neither Pass nor Fail lit — unfilled until the operator picks.
+        import re
+        pass_btn = re.search(r'class="conc-btn conc-pass ([^"]*)"', row)
+        fail_btn = re.search(r'class="conc-btn conc-fail ([^"]*)"', row)
+        self.assertIsNotNone(pass_btn)
+        self.assertIsNotNone(fail_btn)
+        self.assertNotIn("is-on", pass_btn.group(1))
+        self.assertNotIn("is-on", fail_btn.group(1))
+
     def test_widget_emits_an_evidence_column_and_paste_box(self) -> None:
         html = release_conclusion_widget_html()
         self.assertIn("Evidence", html)
