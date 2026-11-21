@@ -1092,7 +1092,7 @@ OPEN_ISSUE_ACTION_CELLS: list[str] = ["\u2014", "\u2014"]
 #: unlabelled-priority bugs \u2014 are dropped by
 #: :func:`github_open_bug_rows_in_range` when ``priority_filter=`` is set.
 OPEN_ISSUES_RELEASE_PRIORITIES: frozenset[str] = frozenset(
-    {"critical", "high priority", "medium priority"}
+    {"critical", "high priority"}
 )
 
 
@@ -1119,8 +1119,8 @@ def github_open_bug_rows_in_range(
     (via :func:`_bug_di_priority_label`) is not in the set are dropped after
     the ``created_at`` window filter and before sorting/rendering. The
     release variant passes :data:`OPEN_ISSUES_RELEASE_PRIORITIES` to
-    narrow the table to ``critical`` / ``high priority`` /
-    ``medium priority`` issues; the conclusion-row total (computed by
+    narrow the table to ``critical`` / ``high priority`` issues;
+    the conclusion-row total (computed by
     :func:`slo_open_bug_di_total`) is intentionally **not** narrowed.
 
     When ``milestone_filter`` is supplied (release variant with
@@ -1301,8 +1301,8 @@ def render_open_issues_section_with_di(
         body_intro = (
             f"Open issues labeled **bug**, state **open**, excluding PRs, with GitHub "
             f"milestone **{milestone_filter}** (release version), filtered to issues whose "
-            f"highest-priority label is `critical` / `high priority` / `medium priority` "
-            f"(drops `low priority`, `invalid`, and unlabelled-priority bugs): "
+            f"highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs): "
             f"**{open_range_n}** (total open `bug` issues when fetched: "
             f"**{open_total}**). DI uses priority labels: `critical` = 10, `high priority` = 3, "
             f"`medium priority` = 1, `low priority` = 0.1, `invalid` = 0.{github_open_note}"
@@ -1643,7 +1643,7 @@ def render_execution_results_section(
     chunks.extend(
         [
             "",
-            "### H100 (CI — Buildkite scheduled nightly)",
+            "### H100/L4 (CI — Buildkite scheduled nightly + weekly)",
             "",
         ]
     )
@@ -1748,9 +1748,9 @@ def _render_buildkite_step_failure_section(
     """
     return _render_named_buildkite_failure_section(
         anchor="failure-analysis-h100",
-        heading="#### H100 (CI — Buildkite scheduled nightly) failures",
-        empty_note="*No failed Buildkite steps in the latest finished scheduled nightly.*",
-        intro_prefix="Latest finished scheduled nightly",
+        heading="#### H100/L4 (CI — Buildkite scheduled nightly + weekly) failures",
+        empty_note="*No failed Buildkite steps in the latest H100/L4 scheduled nightly/weekly builds.*",
+        intro_prefix="Latest H100/L4 scheduled nightly",
         build_no=build_no,
         build_url=build_url,
         failed_steps=failed_steps,
@@ -1905,27 +1905,30 @@ def _render_failure_summary_blocks(
         else:
             gpu_blocks.append(_render_local_gpu_failure_placeholder(gpu))
     if include_h100:
+        # Weekly failures belong to the H100/L4 pool — merge into one FA block.
+        merged_steps: list[tuple[str, str, str]] = list(h100_failed_steps or [])
+        if include_weekly:
+            for name, state, link in weekly_failed_steps or []:
+                merged_steps.append((f"[weekly] {name}", state, link))
         gpu_blocks.append(
             _render_buildkite_step_failure_section(
                 build_no=h100_build_no,
                 build_url=h100_build_url,
-                failed_steps=h100_failed_steps or [],
+                failed_steps=merged_steps,
             )
         )
+        if include_weekly and weekly_build_no is not None and weekly_build_url:
+            # Keep a pointer to the weekly build under the same H100/L4 section.
+            gpu_blocks.append(
+                f"- Latest H100/L4 scheduled weekly: "
+                f"build [{weekly_build_no}]({weekly_build_url}).\n"
+            )
     if include_b200:
         gpu_blocks.append(
             _render_b200_step_failure_section(
                 build_no=b200_build_no,
                 build_url=b200_build_url,
                 failed_steps=b200_failed_steps or [],
-            )
-        )
-    if include_weekly:
-        gpu_blocks.append(
-            _render_weekly_step_failure_section(
-                build_no=weekly_build_no,
-                build_url=weekly_build_url,
-                failed_steps=weekly_failed_steps or [],
             )
         )
     return "\n".join(gpu_blocks)
@@ -2167,11 +2170,11 @@ def render_overall_test_execution_summary_table(
 
     Includes one row per local GPU (H200, H800, A100, A3) plus a B200 row when
     ``b200_passed`` / ``b200_failed`` are supplied (Buildkite scheduled release
-    counts) and an H100 row when ``h100_passed`` / ``h100_failed`` are supplied
-    (Buildkite scheduled nightly counts; ``broken`` steps are excluded so the
-    totals stay aligned with the per-GPU failure detail). H100 totals stay
-    blank in the development variant — see ``buildkite_build_stats.py`` for the
-    same rule.
+    counts) and an **H100/L4** row when scheduled-nightly and/or scheduled-weekly
+    counts are supplied (weekly belongs to the H100/L4 pool and is folded into
+    that single row; ``broken`` / ``skipped`` still count toward Total). H100/L4
+    totals stay blank in the development variant — see ``buildkite_build_stats.py``
+    for the same rule.
 
     The *Failed* column links to ``#failure-analysis-hXXX`` (the matching
     subsection inside the top-level Failure Analysis section).
@@ -2204,24 +2207,29 @@ def render_overall_test_execution_summary_table(
                 f"[{b200_failed or 0}](#failure-analysis-b200)",
             ]
         )
-    if h100_passed is not None or h100_failed is not None:
-        total = (h100_passed or 0) + (h100_failed or 0) + (h100_skipped or 0)
-        rows.append(
-            [
-                "H100",
-                str(total),
-                str(h100_passed or 0),
-                f"[{h100_failed or 0}](#failure-analysis-h100)",
-            ]
+    if (
+        h100_passed is not None
+        or h100_failed is not None
+        or weekly_passed is not None
+        or weekly_failed is not None
+    ):
+        # Weekly scheduled CI runs on the same H100/L4 pool — fold into one row.
+        total = (
+            (h100_passed or 0)
+            + (h100_failed or 0)
+            + (h100_skipped or 0)
+            + (weekly_passed or 0)
+            + (weekly_failed or 0)
+            + (weekly_broken or 0)
         )
-    if weekly_passed is not None or weekly_failed is not None:
-        total = (weekly_passed or 0) + (weekly_failed or 0) + (weekly_broken or 0)
+        passed = (h100_passed or 0) + (weekly_passed or 0)
+        failed = (h100_failed or 0) + (weekly_failed or 0)
         rows.append(
             [
-                "Weekly",
+                "H100/L4",
                 str(total),
-                str(weekly_passed or 0),
-                f"[{weekly_failed or 0}](#failure-analysis-weekly)",
+                str(passed),
+                f"[{failed}](#failure-analysis-h100)",
             ]
         )
     return render_markdown_table(
@@ -2305,12 +2313,17 @@ def render_test_result_section(
         "Combined Total / Passed / Failed across the local machine types "
         "(H200 / H800 / A100 / A3)"
         + (" **and the B200 Buildkite scheduled release build**" if b200_ci_markdown else "")
-        + (" **and the H100 Buildkite scheduled nightly build**" if h100_ci_markdown else "")
-        + (" **and the Buildkite scheduled weekly build**" if weekly_ci_markdown else "")
+        + (
+            " **and the H100/L4 Buildkite scheduled nightly"
+            + (" + weekly" if weekly_ci_markdown else "")
+            + " build(s)**"
+            if h100_ci_markdown or weekly_ci_markdown
+            else ""
+        )
         + (
             ". Buildkite-sourced counts exclude `Upload * Pipeline` and "
             "orchestration-only steps (e.g. `Nightly Collection&Email`) from "
-            "both Total and Failed; the B200/H100 Failed cell links to the "
+            "both Total and Failed; the B200/H100/L4 Failed cell links to the "
             "matching chapter below."
             if (b200_ci_markdown or h100_ci_markdown or weekly_ci_markdown)
             else ". The Failed cell links to the matching subsection under the next Failure Analysis section."
@@ -2362,14 +2375,24 @@ def render_test_result_section(
     # actually passes a non-empty `h100_ci_markdown` body (release path). The
     # development path passes ``""`` so the entire H100 chapter is dropped from
     # the development Test Result section.
-    if h100_ci_markdown:
-        chunks.extend(["", "### H100 (CI — Buildkite scheduled nightly)", ""])
-        chunks.append(h100_ci_markdown.rstrip())
-        chunks.append("")
-    if weekly_ci_markdown:
-        chunks.extend(["", "### Weekly (CI — Buildkite scheduled weekly)", ""])
-        chunks.append(weekly_ci_markdown.rstrip())
-        chunks.append("")
+    if h100_ci_markdown or weekly_ci_markdown:
+        chunks.extend(
+            [
+                "",
+                "### H100/L4 (CI — Buildkite scheduled nightly + weekly)",
+                "",
+            ]
+        )
+        if h100_ci_markdown:
+            chunks.append("#### Scheduled nightly")
+            chunks.append("")
+            chunks.append(h100_ci_markdown.rstrip())
+            chunks.append("")
+        if weekly_ci_markdown:
+            chunks.append("#### Scheduled weekly")
+            chunks.append("")
+            chunks.append(weekly_ci_markdown.rstrip())
+            chunks.append("")
     return "\n".join(chunks)
 
 
@@ -2514,23 +2537,20 @@ def _resolve_perf_assets_dir(
 
 
 def collect_release_perf_acc_log_dirs(args, *, update_repo: bool = True) -> tuple[list[tuple[str, Path | None]], list[str]]:
-    """Assemble Performance / Accuracy log dirs (operator --log-dir-h* plus omni-reviewbot archives)."""
+    """Assemble Performance / Accuracy log dirs (Buildkite archives only).
+
+    Operator ``--log-dir-h*`` trees still feed **Test Result** / Failure Analysis;
+    they are intentionally **not** mixed into the Performance / Accuracy chapters.
+    Local ``manual_*`` archives are also omitted — those chapters are Buildkite-only.
+    """
     log_dirs: list[tuple[str, Path | None]] = []
     source_notes: list[str] = []
-    for label, path in (
-        ("H200", args.log_dir_h200),
-        ("H800", args.log_dir_h800),
-        ("A100", args.log_dir_a100),
-        ("A3", args.log_dir_a3),
-    ):
-        if path is not None:
-            log_dirs.append((label, path))
     if not getattr(args, "no_omni_review_results", False):
         repo = resolve_omni_review_repo(getattr(args, "omni_review_repo", None))
         if repo is None:
             print(
                 "omni-reviewbot checkout not found; Performance / Accuracy "
-                "will not include archived Buildkite or Local results",
+                "will not include archived Buildkite results",
                 file=sys.stderr,
             )
         else:
@@ -2539,11 +2559,13 @@ def collect_release_perf_acc_log_dirs(args, *, update_repo: bool = True) -> tupl
             archive_dirs = perf_acc_log_dirs_from_omni_review(repo)
             if not archive_dirs:
                 print(
-                    f"omni-reviewbot at {repo} has no vllm-omni Buildkite/Local "
+                    f"omni-reviewbot at {repo} has no vllm-omni Buildkite "
                     "result archives",
                     file=sys.stderr,
                 )
             for label, path in archive_dirs:
+                if label != "Buildkite":
+                    continue
                 log_dirs.append((label, path))
                 rel = path
                 try:
@@ -2556,12 +2578,7 @@ def collect_release_perf_acc_log_dirs(args, *, update_repo: bool = True) -> tupl
                     file=sys.stderr,
                 )
     if not log_dirs:
-        log_dirs = [
-            ("H200", args.log_dir_h200),
-            ("H800", args.log_dir_h800),
-            ("A100", args.log_dir_a100),
-            ("A3", args.log_dir_a3),
-        ]
+        log_dirs = [("Buildkite", None)]
     return log_dirs, source_notes
 
 
@@ -3063,8 +3080,8 @@ def preview_report_markdown(
             f"## Open issues (milestone: {release_version})\n\n"
             f"Open issues labeled **bug**, state **open**, excluding PRs, with GitHub "
             f"milestone **{release_version}** (release version), filtered to issues whose "
-            f"highest-priority label is `critical` / `high priority` / `medium priority` "
-            f"(drops `low priority`, `invalid`, and unlabelled-priority bugs). "
+            f"highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs). "
             "*Preview placeholder data; live report uses paginated GitHub results.*\n\n"
         )
     else:
@@ -3072,7 +3089,7 @@ def preview_report_markdown(
             "## Open issues (stats window)\n\n"
             f"Open issues labeled **bug**, state **open**, excluding PRs, with `created_at` "
             f"(UTC date) in **{stats_from}** … **{stats_to}**, filtered to issues whose highest-priority "
-            f"label is `critical` / `high priority` / `medium priority` (drops `low priority`, `invalid`, "
+            f"label is `critical` / `high priority` (drops `medium priority`, `low priority`, `invalid`, "
             f"and unlabelled-priority bugs). "
             "*Preview placeholder data; live report uses paginated GitHub results.*\n\n"
         )
@@ -3091,20 +3108,8 @@ def preview_report_markdown(
                     "@alice-preview",
                     *OPEN_ISSUE_ACTION_CELLS,
                 ],
-                [
-                    "[#10042](https://github.com/vllm-project/vllm-omni/issues/10042)",
-                    "Intermittent timeout on L2 diffusion accuracy",
-                    stats_to,
-                    "medium priority",
-                    "1",
-                    "open",
-                    "@bob-preview",
-                    *OPEN_ISSUE_ACTION_CELLS,
-                ],
-                # Note: a `low priority` row was previously hardcoded here to demonstrate
-                # the full priority range; it is intentionally omitted now that the release
-                # Open issues table is narrowed to ``critical`` / ``high priority`` /
-                # ``medium priority`` via ``OPEN_ISSUES_RELEASE_PRIORITIES``.
+                # Note: medium/low priority preview rows are omitted — release Open issues
+                # keeps only ``critical`` / ``high priority`` (OPEN_ISSUES_RELEASE_PRIORITIES).
                 [
                     "[#10061](https://github.com/vllm-project/vllm-omni/issues/10061)",
                     "Tokenizer hangs on multi-byte UTF-8 input",
@@ -3165,8 +3170,8 @@ def preview_report_markdown(
   `--log-dir-*`; H100 is Buildkite block
 - **Failure Analysis:** Per-GPU failure detail. Interactive **Status** column
   (Filed / Not an issue) backed by `localStorage`.
-- **Open issues:** Preview narrows the table to `critical` / `high priority` / `medium priority`
-  (matches live report via ``OPEN_ISSUES_RELEASE_PRIORITIES``); `low priority` / `invalid` / unlabelled
+- **Open issues:** Preview narrows the table to `critical` / `high priority`
+  (matches live report via ``OPEN_ISSUES_RELEASE_PRIORITIES``); `medium priority` / `low priority` / `invalid` / unlabelled
   rows are dropped.
 - **Next Steps (Outstanding Items):** manual-entry action table — see H2 between Open issues and Data
   source. HTML upgrade adds **Add Item** button and `localStorage`-backed editing (same as Development).
@@ -3232,7 +3237,7 @@ def main() -> None:
             "each release-report generation. Renders the "
             "``## Version Info`` chapter (with --release-commit), retargets the Open "
             "issues section to the milestone whose title matches this version "
-            "(open + label:bug + critical/high/medium priority + milestone == version, "
+            "(open + label:bug + critical/high priority + milestone == version, "
             "replacing the created_at stats-window filter), and tags the default "
             "--out filename (vllm-omni-release-test-report-v<version>-<commit>-<date>.html). "
             "Ignored by --kind development."
@@ -3955,7 +3960,7 @@ def main() -> None:
         priority_filter=OPEN_ISSUES_RELEASE_PRIORITIES,
         # With --release-version the Open issues section retargets from the
         # created_at stats window to the milestone matching the release version
-        # (open + label:bug + critical/high/medium priority + milestone == version).
+        # (open + label:bug + critical/high priority + milestone == version).
         milestone_filter=args.release_version,
     )
     version_info_block = render_version_info_section(
@@ -4006,14 +4011,14 @@ def main() -> None:
         open_issues_source_note = (
             f"REST `label:bug`, state `open`, milestone matching release version "
             f"`{args.release_version}` (created_at stats window **not** applied), "
-            f"filtered to issues whose highest-priority label is `critical` / `high priority` / "
-            f"`medium priority` (drops `low priority`, `invalid`, and unlabelled-priority bugs)."
+            f"filtered to issues whose highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs)."
         )
     else:
         open_issues_source_note = (
             f"REST `label:bug`, `created_at` UTC date in `{stats_from}`..`{stats_to}`, "
-            f"filtered to issues whose highest-priority label is `critical` / `high priority` / "
-            f"`medium priority` (drops `low priority`, `invalid`, and unlabelled-priority bugs)."
+            f"filtered to issues whose highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs)."
         )
     # "Remaining DI < 30" is a **manual** user-selectable Pass/Fail row (like
     # the NPU row) — the operator judges it against the SLO-escalating

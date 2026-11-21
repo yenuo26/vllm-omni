@@ -131,11 +131,12 @@ def latest_vllm_omni_result_dirs(repo: Path) -> dict[str, Path | str | None]:
 
 
 def perf_acc_log_dirs_from_omni_review(repo: Path) -> list[tuple[str, Path]]:
-    """``(Host label, directory)`` pairs for the Performance / Accuracy chapters."""
+    """``(Host label, directory)`` pairs for the Performance / Accuracy chapters.
+
+    Release reports show **Buildkite archives only** (no Local ``manual_*``).
+    """
     found = latest_vllm_omni_result_dirs(repo)
     rows: list[tuple[str, Path]] = []
     if isinstance(found["buildkite"], Path):
         rows.append(("Buildkite", found["buildkite"]))
-    if isinstance(found["local"], Path):
-        rows.append(("Local", found["local"]))
     return rows

@@ -167,7 +167,7 @@ class OmniReviewResultsTests(unittest.TestCase):
             self.assertEqual(found["buildkite_date"], "20261119")
             self.assertEqual(found["local_date"], "20261118")
             labels = [label for label, _ in perf_acc_log_dirs_from_omni_review(root)]
-            self.assertEqual(labels, ["Buildkite", "Local"])
+            self.assertEqual(labels, ["Buildkite"])
 
     def test_archive_json_is_tabulated_under_buildkite_and_local_hosts(self) -> None:
         import json

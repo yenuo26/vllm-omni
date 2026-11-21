@@ -4,7 +4,7 @@
 Renders two H2 chapters — Performance Summary and Accuracy Summary — as
 metric-value tables (one numeric column per metric). Filenames are not table
 content. Values are quoted only from result JSON files (typically the latest
-omni-reviewbot vllm-omni Buildkite and Local archives, plus any --log-dir-h*
+omni-reviewbot vllm-omni Buildkite archives by default (Local / --log-dir-h* only when callers pass them)
 trees). Missing sources get an honest empty note. Buildkite *API job*
 payloads do not carry metric scores, so those are mentioned only as a note
 when no archived Buildkite JSON was supplied.
@@ -417,10 +417,17 @@ def render_perf_accuracy_summary_section(
         metric_cols: tuple[str, ...],
         empty: str,
     ) -> list[str]:
+        host_labels = {label for label, _ in log_dirs if label}
+        if host_labels <= {"Buildkite"}:
+            archive_phrase = "**Buildkite archives**"
+        elif host_labels <= {"Local"}:
+            archive_phrase = "**Local archives**"
+        else:
+            archive_phrase = "**Buildkite and Local archives**"
         lines = [
             title,
             "",
-            f"Same-day {kind} results from **Buildkite and Local archives** {intro_tail}",
+            f"Same-day {kind} results from {archive_phrase} {intro_tail}",
             "",
         ]
         bk_note = _buildkite_metric_note(kind=kind, buildkite_sources=buildkite_sources)
