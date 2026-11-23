@@ -187,8 +187,8 @@ def release_conclusion_widget_html(
 
     Every row has an **Evidence** editor: the operator can paste a URL or an
     image (clipboard or file picker) as supporting evidence. Evidence is
-    mirrored to a ``data-evidence`` attribute (Save-As / print / PDF) and to
-    ``localStorage`` (same-origin reloads), with an in-memory fallback for
+    mirrored to a ``data-evidence`` attribute (so Save-As keeps the chips) and
+    to ``localStorage`` (same-origin reloads), with an in-memory fallback for
     ``file://`` where Chrome may deny ``localStorage``.
     """
     rows: list[str] = []
@@ -3914,39 +3914,6 @@ except Exception:  # pragma: no cover
 
 
 
-_RELEASE_EXPORT_PDF_SCRIPT = """<script>
-(function () {
-  var btn = document.getElementById("release-export-pdf");
-  if (!btn) return;
-  var snapshot = [];
-  function expandAll() {
-    snapshot = [];
-    document.querySelectorAll(".release-doc details").forEach(function (d) {
-      snapshot.push(d.open);
-      d.open = true;
-    });
-  }
-  function restore() {
-    var nodes = document.querySelectorAll(".release-doc details");
-    for (var i = 0; i < nodes.length; i++) {
-      if (i < snapshot.length) nodes[i].open = snapshot[i];
-    }
-    snapshot = [];
-  }
-  btn.addEventListener("click", function () {
-    expandAll();
-    document.body.classList.add("release-printing");
-    window.addEventListener("afterprint", function onAfter() {
-      window.removeEventListener("afterprint", onAfter);
-      document.body.classList.remove("release-printing");
-      restore();
-    });
-    window.print();
-  });
-})();
-</script>"""
-
-
 def wrap_html_document(
     *,
     title: str,
@@ -3968,10 +3935,6 @@ def wrap_html_document(
         f"<h1>{t}</h1>"
         f'<p class="tagline">{tl}</p>'
         "</div></div>"
-        '<div class="brand-actions">'
-        '<button type="button" class="release-export-pdf-btn" id="release-export-pdf">'
-        "Export PDF</button>"
-        "</div>"
         "</div></div>"
     )
     shell = f'<div class="shell"><div class="release-doc">{meta}\n{body_inner}</div></div>'
@@ -4003,7 +3966,6 @@ def wrap_html_document(
 {_RESOURCE_USAGE_SCRIPT}
 {_DEVICE_HOURS_BUILD_SCRIPT}
 {_METRIC_ANALYSIS_SCRIPT}
-{_RELEASE_EXPORT_PDF_SCRIPT}
 </body>
 </html>
 """

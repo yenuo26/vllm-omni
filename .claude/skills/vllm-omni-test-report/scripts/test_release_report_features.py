@@ -1,4 +1,4 @@
-"""Smoke tests for release-report evidence editors, PDF export, and the
+"""Smoke tests for release-report evidence editors and the
 performance/accuracy summary chapter.
 
 Run from this directory:
@@ -68,15 +68,19 @@ class EvidenceEditorsTests(unittest.TestCase):
         self.assertIn('accept="image/*"', html)
 
 
-class ExportPdfTests(unittest.TestCase):
-    def test_wrapped_html_has_export_pdf_button_and_print_hook(self) -> None:
+class NoExportControlTests(unittest.TestCase):
+    def test_wrapped_html_has_no_export_or_print_control(self) -> None:
         html = wrap_html_document(title="Release preview", body_inner="<p>body</p>")
-        self.assertIn('id="release-export-pdf"', html)
-        self.assertIn("Export PDF", html)
-        self.assertIn("window.print()", html)
-        self.assertIn("release-printing", html)
-        self.assertIn("@media print", html)
-        self.assertIn("release-export-pdf-btn", html)
+        lowered = html.lower()
+        self.assertNotIn('id="release-export-pdf"', html)
+        self.assertNotIn("Export PDF", html)
+        self.assertNotIn("window.print()", html)
+        self.assertNotIn("release-printing", html)
+        self.assertNotIn("release-export-pdf-btn", html)
+        self.assertNotIn("@media print", html)
+        self.assertNotIn("brand-actions", html)
+        self.assertNotIn(">print<", lowered)
+        self.assertNotIn(">export<", lowered)
 
 
 class PerfAccuracySummaryTests(unittest.TestCase):
@@ -155,7 +159,7 @@ class PerfAccuracySummaryTests(unittest.TestCase):
 
 
 class PreviewWiringTests(unittest.TestCase):
-    def test_preview_html_includes_chapter_evidence_and_export_pdf(self) -> None:
+    def test_preview_html_includes_chapter_and_evidence(self) -> None:
         md = preview_report_markdown(
             SKILL_DIR, stats_from="2026-11-01", stats_to="2026-11-19"
         )
@@ -168,8 +172,9 @@ class PreviewWiringTests(unittest.TestCase):
         self.assertIn("Performance Summary", html)
         self.assertIn("Accuracy Summary", html)
         self.assertIn("Paste a link or image as evidence", html)
-        self.assertIn('id="release-export-pdf"', html)
-        self.assertIn("Export PDF", html)
+        self.assertNotIn('id="release-export-pdf"', html)
+        self.assertNotIn("Export PDF", html)
+        self.assertNotIn("window.print()", html)
 
 
 class OmniReviewResultsTests(unittest.TestCase):

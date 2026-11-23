@@ -2173,28 +2173,6 @@ RELEASE_MARKDOWN_DOC_CSS = """
   font-weight: 800;
   letter-spacing: 0.02em;
 }
-.brand-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-.release-export-pdf-btn {
-  font: inherit;
-  font-size: 0.88rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  cursor: pointer;
-  border: 1px solid var(--dashboard-border);
-  background: var(--dashboard-badge-bg);
-  color: var(--dashboard-text);
-}
-.release-export-pdf-btn:hover {
-  border-color: var(--accent-soft);
-  color: var(--accent);
-}
 .release-conclusion-table th:last-child,
 .release-conclusion-table td.conc-evidence-cell {
   min-width: 14rem;
@@ -2267,30 +2245,6 @@ RELEASE_MARKDOWN_DOC_CSS = """
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
 }
-@media print {
-  .release-export-pdf-btn,
-  .brand-actions,
-  .conc-evidence-edit,
-  .conc-evidence-remove {
-    display: none !important;
-  }
-  .release-doc details,
-  .release-doc details[open] {
-    break-inside: avoid;
-  }
-  .release-doc details > *:not(summary) {
-    display: block !important;
-  }
-  .conc-evidence-thumb {
-    max-width: 8cm;
-    max-height: 6cm;
-  }
-  .top-bar {
-    box-shadow: none;
-    border-bottom-width: 2px;
-  }
-}
-
 
 /* UT coverage editable cell — sits inline inside the Result column of the
    Development Metrics overview. The cell renders **only the value** (no
