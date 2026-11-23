@@ -1074,7 +1074,27 @@ _ISSUE_SECTION_CSS = """
   box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.28);
   z-index: 1;
 }
-.issue-table .issue-copy { max-height: 9rem; overflow: auto; margin: 0; }
+/* Issue and Analysis share one visible height so their scrollports line up. */
+.issue-cell-scroll {
+  height: 9rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  box-sizing: border-box;
+  background: var(--dashboard-card-tint, #f6f8fa);
+  border-radius: 8px;
+}
+.issue-table .issue-cell-scroll .issue-copy {
+  margin: 0;
+  padding: 0;
+  max-height: none;
+  height: auto;
+  overflow: visible;
+  background: transparent;
+  border-radius: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .issue-builds { margin: 0; padding-left: 1.1rem; }
 .issue-table-empty td { color: var(--dashboard-soft-text, #64748b); font-style: italic; }
 .issue-confirm { white-space: nowrap; }
@@ -1101,16 +1121,25 @@ def _links_html(links: list[tuple[str, str]]) -> str:
     return '<ul class="issue-builds">' + "".join(items) + "</ul>"
 
 
+def _scroll_cell(inner: str) -> str:
+    return f'<div class="issue-cell-scroll">{inner}</div>'
+
+
 def _identity_html(item: IssueItem) -> str:
     if item.bucket == "file":
         title = item.issue_title or (item.description.splitlines() or ["(no title)"])[0]
         rest = "\n".join(item.description.splitlines()[1:]).strip()
         extra = _pre_block(rest, "issue-copy") if rest else ""
-        return f'<div class="issue-identity"><strong>{html.escape(title)}</strong>{extra}</div>'
-    title = item.issue_title or "(no title)"
-    number = f"#{item.issue_number}" if item.issue_number is not None else "issue"
-    href = html.escape(item.issue_url or item.action_url, quote=True)
-    return f'<div class="issue-identity"><a href="{href}">{html.escape(number)}</a> {html.escape(title)}</div>'
+        body = f'<div class="issue-identity"><strong>{html.escape(title)}</strong>{extra}</div>'
+    else:
+        title = item.issue_title or "(no title)"
+        number = f"#{item.issue_number}" if item.issue_number is not None else "issue"
+        href = html.escape(item.issue_url or item.action_url, quote=True)
+        body = (
+            f'<div class="issue-identity"><a href="{href}">{html.escape(number)}</a> '
+            f"{html.escape(title)}</div>"
+        )
+    return _scroll_cell(body)
 
 
 def _confirm_html(item: IssueItem, ready_id: str) -> str:
@@ -1154,8 +1183,8 @@ def _table_html(items: list[IssueItem], empty: str, *, id_prefix: str) -> str:
     for index, item in enumerate(items, start=1):
         rows.append(
             "<tr data-issue-row=\"1\">"
-            f"<td>{_identity_html(item)}</td>"
-            f"<td>{_pre_block(item.analysis, 'issue-copy')}</td>"
+            f'<td class="issue-col-issue">{_identity_html(item)}</td>'
+            f'<td class="issue-col-analysis">{_scroll_cell(_pre_block(item.analysis, "issue-copy"))}</td>'
             f"<td>{_links_html(item.links)}</td>"
             f'<td class="issue-confirm">{_confirm_html(item, f"{id_prefix}-{index}")}</td>'
             "</tr>"

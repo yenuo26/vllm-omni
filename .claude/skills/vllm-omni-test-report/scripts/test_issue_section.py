@@ -347,6 +347,17 @@ class BucketTests(unittest.TestCase):
         self.assertIn('class="issue-col-builds"', html)
         self.assertIn('class="issue-col-confirm"', html)
         self.assertIn('class="issue-table-scroll"', html)
+        import re
+
+        from issue_section import issue_section_stylesheet
+
+        rows = re.findall(r'<tr data-issue-row="1">.*?</tr>', html, re.DOTALL)
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertEqual(row.count("issue-cell-scroll"), 2)
+        css = issue_section_stylesheet()
+        self.assertIn(".issue-cell-scroll {\n  height: 9rem;", css)
+        self.assertNotIn(".issue-table .issue-copy { max-height:", css)
         self.assertNotIn('id="issue-bulk-apply" disabled', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-file"', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-close"', html)
