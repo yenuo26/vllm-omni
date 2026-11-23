@@ -4,16 +4,20 @@
 Buckets come from today's run (Buildkite nightly, weekly, and local jobs)
 plus already-open issues. Closable rows use ``issue_close_confirm`` and are
 listed only with positive evidence. Confirm buttons do not call the GitHub
-API: 提单确认 opens the same prefilled new-issue form the failure tables used
-to open, and 关闭确认 / 更新评论 open the existing issue with a ready-to-paste
-comment. A static archived page cannot close or comment by itself.
+Row buttons stay per-item: 开单确认 opens the prefilled new-issue form, and
+关闭确认 / 更新评论 open the existing issue with a ready-to-paste comment.
+一键操作 sends the whole set to a local executor (or a one-line command)
+that uses GITHUB_TOKEN / GH_TOKEN from the environment. The HTML never
+embeds a token.
 """
 
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from issue_close_confirm import (
@@ -111,6 +115,7 @@ class IssueItem:
     issue_url: str = ""
     issue_number: int | None = None
     issue_title: str = ""
+    labels: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -518,7 +523,9 @@ def _file_item_from_group(group: Any) -> IssueItem:
         analysis=analysis,
         links=links,
         action_url=url,
-        button_label="提单确认",
+        button_label="开单确认",
+        issue_title=description.splitlines()[0] if description else "",
+        labels=list(_LABELS_CI if env == "ci" else _LABELS_LOCAL),
     )
 
 
@@ -567,7 +574,9 @@ def _file_item_from_bare(job: BareJobFailure) -> IssueItem:
         analysis=analysis,
         links=_dedupe_links(links),
         action_url=url,
-        button_label="提单确认",
+        button_label="开单确认",
+        issue_title=title,
+        labels=list(_LABELS_CI),
     )
 
 
@@ -595,7 +604,7 @@ def _streak_sentence(row: IssueConfirmation) -> str:
 
 def _close_comment(analysis: str, links: list[tuple[str, str]]) -> str:
     lines = [
-        "Nightly report close confirmation. The previously failing job is green on the relevant pipeline(s) in this report.",
+        "Nightly report: the previously failing job is green on the relevant pipeline(s) in this report.",
         "",
         analysis.strip(),
         "",
@@ -605,13 +614,6 @@ def _close_comment(analysis: str, links: list[tuple[str, str]]) -> str:
         lines.extend(f"- {label}: {url}" for label, url in links)
     else:
         lines.append("- (no build URL was recorded)")
-    lines.extend(
-        [
-            "",
-            "Prepared by the nightly HTML report. This static page does not close the issue. "
-            "Paste this note if you want it on the issue, then close the issue on GitHub.",
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -627,13 +629,6 @@ def _update_comment(analysis: str, links: list[tuple[str, str]]) -> str:
         lines.extend(f"- {label}: {url}" for label, url in links)
     else:
         lines.append("- (no build URL was recorded)")
-    lines.extend(
-        [
-            "",
-            "Prepared by the nightly HTML report. This static page does not post the comment. "
-            "Paste it on the issue after you confirm.",
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -872,6 +867,70 @@ def assemble_issue_section(
     return IssueSection(summary=summary, to_file=to_file, to_close=to_close, to_update=to_update)
 
 
+ISSUE_BULK_PORT = 8931
+_APPLY_SCRIPT = Path(__file__).resolve().parent / "apply_nightly_issue_actions.py"
+
+
+def _api_body(item: IssueItem) -> str:
+    lines = [item.description.strip(), "", "Analysis:", item.analysis.strip() or "(none)", "", "Builds:"]
+    if item.links:
+        lines.extend(f"- {label}: {url}" for label, url in item.links)
+    else:
+        lines.append("- (no build URL was recorded)")
+    lines.extend(["", "Filed from the nightly report 一键操作 action."])
+    return "\n".join(lines)
+
+
+def bulk_payload(section: IssueSection) -> dict[str, Any]:
+    """JSON the local executor applies. No tokens."""
+    actions: list[dict[str, Any]] = []
+    for index, item in enumerate(section.to_file):
+        actions.append(
+            {
+                "id": f"file-{index}",
+                "op": "create",
+                "title": item.issue_title or (item.description.splitlines() or ["Nightly failure"])[0],
+                "body": _api_body(item),
+                "labels": list(item.labels),
+            }
+        )
+    for item in section.to_close:
+        actions.append(
+            {
+                "id": f"close-{item.issue_number}",
+                "op": "close",
+                "issue_number": item.issue_number,
+                "comment": item.ready_comment,
+            }
+        )
+    for item in section.to_update:
+        actions.append(
+            {
+                "id": f"update-{item.issue_number}",
+                "op": "comment",
+                "issue_number": item.issue_number,
+                "comment": item.ready_comment,
+            }
+        )
+    return {"repo": ISSUE_REPO, "actions": actions}
+
+
+def write_issue_actions(path: Path, section: IssueSection) -> dict[str, Any]:
+    payload = bulk_payload(section)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def issue_apply_commands(payload_path: Path | None) -> tuple[str, str]:
+    """(one-shot apply command, localhost executor command). Neither includes a token."""
+    script = str(_APPLY_SCRIPT)
+    serve = f"python3 {script} --serve"
+    target = str(payload_path) if payload_path is not None else "<report>.issue-actions.json"
+    apply = f"python3 {script} --payload {target} --apply"
+    return apply, serve
+
+
 _ISSUE_SECTION_CSS = """
 .issue-section-root { margin: 0; }
 .issue-section-intro, .issue-action-note, .issue-bucket-empty {
@@ -879,29 +938,54 @@ _ISSUE_SECTION_CSS = """
   font-size: 0.92rem;
   line-height: 1.45;
 }
-.issue-bucket { margin: 0 0 1.25rem; }
-.issue-bucket > h3 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.issue-summary { margin: 0 0 1rem; }
+.issue-summary h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
 .issue-summary-prose { margin: 0; }
-.issue-item {
-  border: 1px solid var(--omni-divider, #e5e7eb);
-  border-radius: 10px;
+.issue-bulk {
+  margin: 0 0 1rem;
   padding: 0.75rem 1rem;
-  margin: 0 0 0.75rem;
+  border: 1px solid var(--omni-divider, #e5e7eb);
+  border-radius: 12px;
+  background: var(--dashboard-card-tint, #f6f8fa);
 }
-.issue-item h4 { margin: 0.65rem 0 0.3rem; font-size: 0.82rem; }
-.issue-item h4:first-child { margin-top: 0; }
-.issue-copy, .issue-ready-comment {
+.issue-bulk-command, .issue-copy, .issue-ready-comment {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.82rem;
-  margin: 0;
+  margin: 0.45rem 0 0;
   padding: 0.55rem 0.7rem;
-  background: var(--dashboard-card-tint, #f6f8fa);
+  background: var(--dashboard-panel-bg, #fff);
   border-radius: 8px;
 }
-.issue-builds { margin: 0.2rem 0 0.4rem; padding-left: 1.1rem; }
-.issue-action { margin: 0.75rem 0 0; }
-a.btn-github-issue { text-decoration: none; }
+.issue-bucket-card {
+  border: 1px solid var(--omni-divider, #e5e7eb);
+  border-radius: 12px;
+  background: var(--dashboard-panel-bg, #fff);
+  margin: 0 0 0.75rem;
+  overflow: hidden;
+}
+.issue-bucket-card-summary {
+  cursor: pointer;
+  padding: 0.8rem 1rem;
+  font-weight: 750;
+  font-size: 1.02rem;
+}
+.issue-bucket-card-body { padding: 0 1rem 1rem; }
+.issue-table { width: 100%; border-collapse: collapse; }
+.issue-table th, .issue-table td {
+  border-bottom: 1px solid var(--omni-divider, #e5e7eb);
+  text-align: left;
+  vertical-align: top;
+  padding: 0.55rem 0.6rem;
+}
+.issue-table th { font-size: 0.78rem; color: var(--dashboard-soft-text, #475569); }
+.issue-table .issue-copy { max-height: 9rem; overflow: auto; margin: 0; }
+.issue-builds { margin: 0; padding-left: 1.1rem; }
+.issue-table-empty td { color: var(--dashboard-soft-text, #64748b); font-style: italic; }
+.issue-confirm { white-space: nowrap; }
+a.btn-github-issue, button.btn-issue-bulk { text-decoration: none; }
+button.btn-issue-bulk { margin: 0 0 0.35rem; }
+button.btn-issue-bulk:disabled { opacity: 0.55; cursor: not-allowed; }
 .issue-action-status { min-height: 1.1em; margin: 0.35rem 0 0; font-size: 0.8rem; }
 """
 
@@ -922,93 +1006,188 @@ def _links_html(links: list[tuple[str, str]]) -> str:
     return '<ul class="issue-builds">' + "".join(items) + "</ul>"
 
 
-def _action_html(item: IssueItem, ready_id: str) -> str:
+def _identity_html(item: IssueItem) -> str:
+    if item.bucket == "file":
+        title = item.issue_title or (item.description.splitlines() or ["(no title)"])[0]
+        rest = "\n".join(item.description.splitlines()[1:]).strip()
+        extra = _pre_block(rest, "issue-copy") if rest else ""
+        return f'<div class="issue-identity"><strong>{html.escape(title)}</strong>{extra}</div>'
+    title = item.issue_title or "(no title)"
+    number = f"#{item.issue_number}" if item.issue_number is not None else "issue"
+    href = html.escape(item.issue_url or item.action_url, quote=True)
+    return f'<div class="issue-identity"><a href="{href}">{html.escape(number)}</a> {html.escape(title)}</div>'
+
+
+def _confirm_html(item: IssueItem, ready_id: str) -> str:
     href = html.escape(item.action_url, quote=True)
     label = html.escape(item.button_label)
     if item.bucket == "file":
         css = "btn-github-issue btn-issue-confirm-file"
         return (
-            f'<p class="issue-action"><a class="{css}" href="{href}" target="_blank" '
-            f'rel="noopener noreferrer">{label}</a></p>'
+            f'<a class="{css}" href="{href}" target="_blank" rel="noopener noreferrer">{label}</a>'
         )
-    css = "btn-github-issue btn-issue-confirm-close" if item.bucket == "close" else "btn-github-issue btn-issue-confirm-update"
+    css = (
+        "btn-github-issue btn-issue-confirm-close"
+        if item.bucket == "close"
+        else "btn-github-issue btn-issue-confirm-update"
+    )
     comment = html.escape(item.ready_comment or "")
     return (
-        "<h4>Ready to paste</h4>"
-        f'<pre id="{ready_id}" class="issue-ready-comment">{comment}</pre>'
-        f'<p class="issue-action"><a class="{css}" href="{href}" target="_blank" '
-        f'rel="noopener noreferrer" data-ready-comment-id="{ready_id}">{label}</a></p>'
+        f'<pre id="{ready_id}" class="issue-ready-comment" hidden>{comment}</pre>'
+        f'<a class="{css}" href="{href}" target="_blank" rel="noopener noreferrer" '
+        f'data-ready-comment-id="{ready_id}">{label}</a>'
         f'<p id="{ready_id}-status" class="issue-action-status"></p>'
     )
 
 
-def _item_html(item: IssueItem, ready_id: str) -> str:
-    if item.bucket == "file":
-        subject = "<h4>Issue to file</h4>" + _pre_block(item.description, "issue-copy")
-    else:
-        title = item.issue_title or "(no title)"
-        number = f"#{item.issue_number}" if item.issue_number is not None else "issue"
-        href = html.escape(item.issue_url or item.action_url, quote=True)
-        subject = (
-            "<h4>Issue</h4>"
-            f'<p><a href="{href}">{html.escape(number)}</a> {html.escape(title)}</p>'
+def _table_html(items: list[IssueItem], empty: str, *, id_prefix: str) -> str:
+    head = (
+        '<table class="issue-table"><thead><tr>'
+        "<th>Issue</th><th>Analysis</th><th>Builds</th><th>Confirm</th>"
+        "</tr></thead><tbody>"
+    )
+    if not items:
+        return (
+            head
+            + f'<tr class="issue-table-empty"><td colspan="4">{html.escape(empty)}</td></tr>'
+            + "</tbody></table>"
         )
-    return (
-        f'<article class="issue-item" data-issue-bucket="{html.escape(item.bucket, quote=True)}">'
-        f"{subject}"
-        "<h4>Analysis</h4>"
-        f'{_pre_block(item.analysis, "issue-copy")}'
-        "<h4>Builds</h4>"
-        f"{_links_html(item.links)}"
-        f"{_action_html(item, ready_id)}"
-        "</article>"
-    )
+    rows: list[str] = []
+    for index, item in enumerate(items, start=1):
+        rows.append(
+            "<tr data-issue-row=\"1\">"
+            f"<td>{_identity_html(item)}</td>"
+            f"<td>{_pre_block(item.analysis, 'issue-copy')}</td>"
+            f"<td>{_links_html(item.links)}</td>"
+            f'<td class="issue-confirm">{_confirm_html(item, f"{id_prefix}-{index}")}</td>'
+            "</tr>"
+        )
+    return head + "".join(rows) + "</tbody></table>"
 
 
-def _bucket_html(title: str, items: list[IssueItem], empty: str, note: str, *, id_prefix: str) -> str:
-    body = (
-        "\n".join(_item_html(item, f"{id_prefix}-{index}") for index, item in enumerate(items, start=1))
-        if items
-        else f'<p class="issue-bucket-empty">{html.escape(empty)}</p>'
-    )
+def _card_html(title: str, items: list[IssueItem], empty: str, note: str, *, id_prefix: str) -> str:
     return (
-        f'<section class="issue-bucket" id="{html.escape(id_prefix, quote=True)}">'
-        f"<h3>{html.escape(title)}</h3>"
+        f'<details class="issue-bucket-card" id="{html.escape(id_prefix, quote=True)}">'
+        f'<summary class="issue-bucket-card-summary">{html.escape(title)}</summary>'
+        '<div class="issue-bucket-card-body">'
         f'<p class="issue-action-note">{html.escape(note)}</p>'
-        f"{body}"
-        "</section>"
+        f"{_table_html(items, empty, id_prefix=id_prefix)}"
+        "</div></details>"
     )
 
 
-def render_issue_section_body(section: IssueSection) -> str:
-    """Inner HTML for the Issue part. Headings use the required titles."""
+def _payload_script(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    raw = raw.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return f'<script type="application/json" id="issue-bulk-payload">{raw}</script>'
+
+
+def _bulk_client_script() -> str:
+    return f"""
+<script>
+(function () {{
+  var btn = document.getElementById("issue-bulk-apply");
+  var payloadEl = document.getElementById("issue-bulk-payload");
+  var statusEl = document.getElementById("issue-bulk-status");
+  var commandEl = document.getElementById("issue-bulk-command");
+  if (!btn || !payloadEl) return;
+  var endpoint = "http://127.0.0.1:{ISSUE_BULK_PORT}/apply";
+  function setStatus(text) {{ if (statusEl) statusEl.textContent = text; }}
+  function copyCommand() {{
+    var text = commandEl ? commandEl.textContent || "" : "";
+    if (!text || !navigator.clipboard || !window.isSecureContext) return;
+    navigator.clipboard.writeText(text).catch(function () {{}});
+  }}
+  btn.addEventListener("click", function (ev) {{
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (btn.disabled) return;
+    setStatus("正在把待新增、待关闭、待更新一次提交…");
+    var body = payloadEl.textContent || "";
+    fetch(endpoint, {{
+      method: "POST",
+      mode: "cors",
+      headers: {{"Content-Type": "text/plain;charset=UTF-8"}},
+      body: body
+    }}).then(function (resp) {{
+      return resp.text().then(function (text) {{
+        var data = null;
+        try {{ data = JSON.parse(text); }} catch (e) {{ data = null; }}
+        if (!resp.ok || !data || data.ok === false) {{
+          var err = (data && data.error) ? data.error : ("HTTP " + resp.status);
+          throw new Error(err);
+        }}
+        setStatus(
+          "一键操作已执行：提单 " + (data.created || 0)
+          + "，关闭 " + (data.closed || 0)
+          + "，评论 " + (data.commented || 0)
+          + "，跳过 " + (data.skipped || 0)
+          + "，失败 " + (data.failed || 0) + "。"
+        );
+      }});
+    }}).catch(function (err) {{
+      copyCommand();
+      var why = (err && err.message) ? err.message : "未连上本机执行器";
+      setStatus(
+        "一键操作没有改 GitHub（" + why + "）。静态页不能保存 token。"
+        + "请在终端执行下方命令（GITHUB_TOKEN 或 GH_TOKEN 只放在环境变量里）。"
+        + "先运行 --serve 后再点一次，或直接运行 --payload … --apply，两条都会处理全部三张表。"
+      );
+    }});
+  }});
+}})();
+</script>
+"""
+
+
+def render_issue_section_body(
+    section: IssueSection,
+    *,
+    apply_command: str | None = None,
+    serve_command: str | None = None,
+) -> str:
+    """Inner HTML for the Issue part. Bucket titles are collapsed cards around tables."""
+    apply_cmd, serve_cmd = issue_apply_commands(None)
+    apply_command = apply_command or apply_cmd
+    serve_command = serve_command or serve_cmd
+    payload = bulk_payload(section)
+    disabled = "" if payload["actions"] else " disabled"
     summary = (
-        '<section class="issue-bucket" id="issue-summary">'
+        '<section class="issue-summary" id="issue-summary">'
         "<h3>Summary</h3>"
         f'<p class="issue-summary-prose">{html.escape(section.summary)}</p>'
         "</section>"
     )
-    to_file = _bucket_html(
+    bulk = (
+        '<div class="issue-bulk" id="issue-bulk">'
+        f'<button type="button" class="btn-github-issue btn-issue-bulk" id="issue-bulk-apply"{disabled}>一键操作</button>'
+        '<p class="issue-action-note">一键操作一次处理三张表里的全部待处理项：为待新增开 issue，'
+        "关闭待关闭，并给待更新发准备好的评论。打开页面时不会自动执行。"
+        "本机执行器在跑时，这一下会直接调用 GitHub；否则使用下面这条命令，token 只从环境变量读取。</p>"
+        f'<p class="issue-action-note">本机执行器：<code>{html.escape(serve_command)}</code></p>'
+        f'<pre id="issue-bulk-command" class="issue-bulk-command">{html.escape(apply_command)}</pre>'
+        '<p id="issue-bulk-status" class="issue-action-status"></p>'
+        "</div>"
+    )
+    to_file = _card_html(
         "待新增",
         section.to_file,
         "No failures need a new issue.",
-        "提单确认 opens a prefilled GitHub issue form. The issue is not created until you submit it on GitHub.",
+        "每行一个待开 issue，行内只有开单确认。它只打开这一条的预填表单。",
         id_prefix="issue-to-file",
     )
-    to_close = _bucket_html(
+    to_close = _card_html(
         "待关闭",
         section.to_close,
         "No open issue is closable from this report.",
-        "关闭确认 opens the issue and copies the prepared comment when the browser allows it. "
-        "This archived page cannot close a GitHub issue; paste the comment if you want it, then close the issue there.",
+        "每行一个可关闭 issue，行内只有关闭确认。它打开该 issue 并复制关闭说明，不会直接关闭。",
         id_prefix="issue-to-close",
     )
-    to_update = _bucket_html(
+    to_update = _card_html(
         "待更新",
         section.to_update,
         "No open issue needs an update from this report.",
-        "更新评论 opens the issue and copies the prepared comment when the browser allows it. "
-        "This archived page cannot post a GitHub comment; paste the comment and submit it there.",
+        "每行一个待更新 issue，行内只有更新评论。它打开该 issue 并复制评论，不会直接发表。",
         id_prefix="issue-to-update",
     )
     return (
@@ -1017,7 +1196,9 @@ def render_issue_section_body(section: IssueSection) -> str:
         "An issue is listed under 待关闭 only when the previously failing job is fully green "
         "on every relevant pipeline and any tracked test is absent from the current failures. "
         "Missing data, a skipped or not-run job, a weak match, or a CUDA vs NPU mismatch is not closable.</p>"
-        f"{summary}{to_file}{to_close}{to_update}"
+        f"{summary}{bulk}{to_file}{to_close}{to_update}"
+        f"{_payload_script(payload)}"
+        f"{_bulk_client_script()}"
         "</div>"
     )
 

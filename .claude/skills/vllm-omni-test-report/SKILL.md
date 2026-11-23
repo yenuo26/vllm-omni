@@ -241,7 +241,22 @@ Classification (unchanged thresholds):
 
 Closable (**待关闭**) only when the previously failing job is fully green on every relevant pipeline and any tracked test node is absent from the current failure set. Missing data, a skipped or not-run job, a weak job name, or a CUDA vs NPU mismatch is not closable and is not used to inflate 待关闭. Still-failing open issues go to **待更新**.
 
-**Confirm buttons do not write to GitHub from the archived page.** **提单确认** opens the same prefilled `400-bug-report.yml` new-issue URL the old Local/Buildkite Submit issue button built; the issue is created only when the operator submits the GitHub form. **关闭确认** and **更新评论** open the existing issue and copy a ready-to-paste comment when the clipboard works (the comment is also on the card). The static page cannot close an issue or POST a comment. `--no-issue-alert` skips the issue search used for node-level 待新增; the Issue section and the open `ci-failure` close/update pass still render.
+**待新增 / 待关闭 / 待更新** are collapsed cards. The title is the fold control; opening a card shows one table (one issue or to-be-filed item per row). Columns: Issue, Analysis, Builds, Confirm. Each data row has exactly one button: **开单确认**, **关闭确认**, or **更新评论**. Empty cards still show the header and an empty table with no row button. **Summary** stays prose above the cards.
+
+**一键操作** sits above the cards (no need to expand them) and does not run on page load. One click applies every pending row: create each 待新增 issue, comment-and-close each 待关闭 issue, and comment on each 待更新 issue. The HTML has no token. The click POSTs the embedded payload to `http://127.0.0.1:8931/apply`. Start the executor first (token only in the environment):
+
+```bash
+export GITHUB_TOKEN=...   # or GH_TOKEN; never put the value in the command line or the HTML
+python3 scripts/apply_nightly_issue_actions.py --serve
+```
+
+Then click **一键操作**. If that listener is not running, the button does not pretend success: it tells you to run the one-shot command printed under the button (also written next to the HTML as `<report>.issue-actions.json`):
+
+```bash
+python3 scripts/apply_nightly_issue_actions.py --payload <report>.issue-actions.json --apply
+```
+
+Row buttons stay single-item: **开单确认** opens that row's prefilled `400-bug-report.yml` form; **关闭确认** / **更新评论** open that issue and copy the prepared text. They do not write to GitHub by themselves. `--no-issue-alert` skips the issue search used for node-level 待新增; the Issue section and the open `ci-failure` close/update pass still render.
 
 From **this** skill directory (after [fetch](../vllm-omni-local-test/references/nightly-local-log-fetch.md) and [kanban prep](references/kanban-pre-report-prep.md) into **`$REPO_ROOT`** / **`$KANBAN_REPO_ROOT`**):
 

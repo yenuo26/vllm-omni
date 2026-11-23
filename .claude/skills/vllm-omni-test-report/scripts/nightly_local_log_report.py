@@ -60,8 +60,10 @@ from issue_section import (  # noqa: E402
     IssueContext,
     assemble_issue_section,
     collect_bare_job_failures,
+    issue_apply_commands,
     issue_section_stylesheet,
     render_issue_section_body,
+    write_issue_actions,
 )
 from report_naming import (  # noqa: E402
     default_nightly_html_path,
@@ -2240,9 +2242,10 @@ def _github_issue_submit_script() -> str:
   document.addEventListener("click", function (ev) {{
     var b = ev.target.closest && ev.target.closest(".btn-github-issue");
     if (!b) return;
-    // Issue-section confirms are real links. 提单确认 opens the prefilled
-    // new-issue form. 关闭确认 / 更新评论 open the issue and copy a comment.
-    // Do not preventDefault — a static page cannot file, close, or comment.
+    // Row confirms stay per-item links. 一键操作 is handled by its own listener.
+    if (b.classList.contains("btn-issue-bulk")) return;
+    // 开单确认 opens the prefilled new-issue form. 关闭确认 / 更新评论 open
+    // the issue and copy a comment. Do not preventDefault for those links.
     if (b.classList.contains("btn-issue-confirm-close") || b.classList.contains("btn-issue-confirm-update")) {{
       copyReadyComment(b);
       return;
@@ -4467,6 +4470,7 @@ def emit_report_html(
     weekly_results: dict[str, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]] | None = None,
     issue_alert: bool = True,
     issue_context: IssueContext | None = None,
+    issue_actions_path: Path | None = None,
 ) -> None:
     # Manifest-driven job list: ``timing_summary.log`` is the source of truth
     # for the job list + status; ``.log`` files are only parsed for FAILED
@@ -4613,6 +4617,9 @@ def emit_report_html(
         ),
         search_ran=search_ran,
     )
+    if issue_actions_path is not None:
+        write_issue_actions(issue_actions_path, issue_model)
+    apply_command, serve_command = issue_apply_commands(issue_actions_path)
     body_parts.append(
         '<details class="bk-section panel nightly-root nightly-root--issue" open>'
         '<summary class="bk-section-summary">'
@@ -4620,11 +4627,15 @@ def emit_report_html(
             "h2",
             _SVG_ALERT,
             html.escape("Issue"),
-            sub=html.escape("File, close, or update — confirm before anything is written to GitHub"),
+            sub=html.escape("File, close, or update — 一键操作 runs only after you click it"),
         )
         + "</summary>"
         '<div class="bk-section-body">'
-        + render_issue_section_body(issue_model)
+        + render_issue_section_body(
+            issue_model,
+            apply_command=apply_command,
+            serve_command=serve_command,
+        )
         + "</div></details>"
     )
     body_parts.append(
@@ -5041,6 +5052,7 @@ def main() -> None:
     if args.html_report:
         out = args.html_report
         out.parent.mkdir(parents=True, exist_ok=True)
+        actions_path = out.with_name(out.stem + ".issue-actions.json")
         with out.open("w", encoding="utf-8") as fp:
             emit_report_html(
                 title=title,
@@ -5050,8 +5062,15 @@ def main() -> None:
                 bk_results=bk_results,
                 weekly_results=weekly_results,
                 issue_alert=not args.no_issue_alert,
+                issue_actions_path=actions_path,
             )
         print(f"Wrote {out}")
+        print(f"Wrote {actions_path}")
+        print(
+            "一键操作: python3 "
+            f"{Path(__file__).resolve().parent / 'apply_nightly_issue_actions.py'} --serve"
+        )
+        print(f"or: python3 {Path(__file__).resolve().parent / 'apply_nightly_issue_actions.py'} --payload {actions_path} --apply")
     else:
         emit_report_html(
             title=title,

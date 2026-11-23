@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 import urllib.parse
@@ -73,7 +74,7 @@ class BucketTests(unittest.TestCase):
         self.assertIn("tests/e2e/test_wan.py::test_ssim", item.description)
         self.assertIn("heuristic: assertion failed", item.analysis)
         self.assertEqual(item.links[0][1], "https://buildkite.com/vllm/vllm-omni/builds/20013")
-        self.assertEqual(item.button_label, "提单确认")
+        self.assertEqual(item.button_label, "开单确认")
         self.assertIn("/issues/new?", item.action_url)
         query = urllib.parse.parse_qs(urllib.parse.urlparse(item.action_url).query)
         self.assertEqual(query["template"], ["400-bug-report.yml"])
@@ -294,20 +295,29 @@ class BucketTests(unittest.TestCase):
             search_ran=True,
         )
         html = render_issue_section_body(section)
-        positions = [html.index(f"<h3>{title}</h3>") for title in ("Summary", "待新增", "待关闭", "待更新")]
-        self.assertEqual(positions, sorted(positions))
-        self.assertIn(">提单确认</a>", html)
-        self.assertIn(">关闭确认</a>", html)
-        self.assertIn(">更新评论</a>", html)
+        self.assertIn("<h3>Summary</h3>", html)
+        file_at = html.index('<summary class="issue-bucket-card-summary">待新增</summary>')
+        close_at = html.index('<summary class="issue-bucket-card-summary">待关闭</summary>')
+        update_at = html.index('<summary class="issue-bucket-card-summary">待更新</summary>')
+        self.assertLess(html.index("一键操作"), file_at)
+        self.assertLess(file_at, close_at)
+        self.assertLess(close_at, update_at)
+        self.assertNotIn('class="issue-bucket-card" open', html)
+        self.assertEqual(html.count('data-issue-row="1"'), 3)
+        self.assertEqual(html.count(">开单确认</a>"), 1)
+        self.assertEqual(html.count(">关闭确认</a>"), 1)
+        self.assertEqual(html.count(">更新评论</a>"), 1)
+        self.assertIn("<th>Issue</th><th>Analysis</th><th>Builds</th><th>Confirm</th>", html)
+        self.assertNotIn('id="issue-bulk-apply" disabled', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-file"', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-close"', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-update"', html)
         self.assertNotIn("api.github.com", html)
-        self.assertNotIn("fetch(", html)
+        self.assertIn("127.0.0.1:8931/apply", html)
+        self.assertNotIn("GITHUB_TOKEN=", html)
         self.assertNotIn("Issue Alert", html)
         self.assertNotIn("Issue close confirmation", html)
-        self.assertIn("Issue to file", html)
-        self.assertIn("Ready to paste", html)
+        self.assertNotIn(">Ready to paste<", html)
         file_href = unescape(html.split('btn-issue-confirm-file" href="', 1)[1].split('"', 1)[0])
         self.assertTrue(file_href.startswith("https://github.com/vllm-project/vllm-omni/issues/new?"))
         close_href = unescape(html.split('btn-issue-confirm-close" href="', 1)[1].split('"', 1)[0])
@@ -355,6 +365,7 @@ class NightlyLayoutTests(unittest.TestCase):
         self.assertIn("View full log", table)
         self.assertNotIn("Submit issue", table)
         self.assertNotIn("提单确认", table)
+        self.assertNotIn("开单确认", table)
         self.assertNotIn("btn-github-issue", table)
         self.assertNotIn("GitHub Issue", table)
 
@@ -374,6 +385,7 @@ class NightlyLayoutTests(unittest.TestCase):
         self.assertNotIn("Failure analysis", bk_html)
         self.assertNotIn("View full log", bk_html)
         self.assertNotIn("提单确认", bk_html)
+        self.assertNotIn("开单确认", bk_html)
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -427,9 +439,20 @@ class NightlyLayoutTests(unittest.TestCase):
         self.assertLess(bk_at, local_at)
         issue_chunk = html[issue_at:bk_at]
         bk_chunk = html[bk_at:local_at]
-        local_chunk = html[local_at:html.index("<script>")]
-        for title in ("Summary", "待新增", "待关闭", "待更新"):
-            self.assertIn(f"<h3>{title}</h3>", issue_chunk)
+        script_at = html.find("<script>", local_at)
+        self.assertGreater(script_at, local_at)
+        local_chunk = html[local_at:script_at]
+        self.assertIn("<h3>Summary</h3>", issue_chunk)
+        self.assertLess(
+            issue_chunk.index(">一键操作</button>"),
+            issue_chunk.index('<summary class="issue-bucket-card-summary">待新增</summary>'),
+        )
+        self.assertIn('<summary class="issue-bucket-card-summary">待关闭</summary>', issue_chunk)
+        self.assertIn('<summary class="issue-bucket-card-summary">待更新</summary>', issue_chunk)
+        self.assertNotIn('class="issue-bucket-card" open', issue_chunk)
+        self.assertEqual(issue_chunk.count("issue-table-empty"), 3)
+        self.assertNotIn('data-issue-row="1"', issue_chunk)
+        self.assertIn('id="issue-bulk-apply" disabled', issue_chunk)
         self.assertNotIn("Issue Alert", html)
         self.assertNotIn("Issue close confirmation", html)
         self.assertNotIn("Failure analysis", bk_chunk)
@@ -437,9 +460,153 @@ class NightlyLayoutTests(unittest.TestCase):
         self.assertIn("View full log", local_chunk)
         self.assertNotIn("Submit issue", local_chunk)
         self.assertNotIn("提单确认", local_chunk)
+        self.assertNotIn("开单确认", local_chunk)
+        self.assertNotIn("一键操作", local_chunk)
         self.assertNotIn("btn-github-issue", local_chunk)
         self.assertNotIn("关闭确认", local_chunk)
         self.assertNotIn("更新评论", local_chunk)
+
+
+class BulkApplyTests(unittest.TestCase):
+    def _section(self):
+        issue = _issue(10, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")
+        failing = _issue(11, "Omni Function Test Extra Long Name failed on H100")
+        pipelines = {
+            "CUDA": _snap(
+                "CUDA",
+                [
+                    _job("Diffusion X2V Wan2.2 Accuracy Test"),
+                    _job("Omni Function Test Extra Long Name", state="failed", failed=["a.py::t"]),
+                ],
+                number=20013,
+            )
+        }
+        rows = [evaluate_issue(issue, pipelines), evaluate_issue(failing, pipelines)]
+        return assemble_issue_section(
+            groups=[_group(verdict="new")],
+            bare_jobs=[],
+            context=_ctx([issue, failing], pipelines, rows),
+            search_ran=True,
+        )
+
+    def test_payload_covers_three_ops_and_has_no_token(self):
+        from issue_section import bulk_payload
+
+        payload = bulk_payload(self._section())
+        ops = [action["op"] for action in payload["actions"]]
+        self.assertEqual(ops, ["create", "close", "comment"])
+        self.assertEqual(payload["actions"][1]["issue_number"], 10)
+        self.assertEqual(payload["actions"][2]["issue_number"], 11)
+        keys = set()
+
+        def _walk(obj):
+            if isinstance(obj, dict):
+                keys.update(str(key).lower() for key in obj)
+                for value in obj.values():
+                    _walk(value)
+            elif isinstance(obj, list):
+                for value in obj:
+                    _walk(value)
+
+        _walk(payload)
+        self.assertFalse(keys & {"token", "github_token", "authorization", "gh_token"})
+        self.assertNotIn("ghp_", json.dumps(payload))
+
+    def test_dry_run_does_not_call_github_or_print_token(self):
+        import os
+        from apply_nightly_issue_actions import apply_payload, main
+
+        token = "ghp_SHOULD_NOT_LEAK_9911"
+        payload = bulk_payload_safe(self._section())
+        calls: list[str] = []
+
+        def opener(*_args, **_kwargs):
+            calls.append("called")
+            raise AssertionError("dry run must not call GitHub")
+
+        result = apply_payload(payload, write=False, token=token, opener=opener)
+        self.assertEqual(calls, [])
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(len(result["results"]), 3)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "actions.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            old_token = os.environ.get("GITHUB_TOKEN")
+            os.environ["GITHUB_TOKEN"] = token
+            stdout, stderr = io.StringIO(), io.StringIO()
+            try:
+                from contextlib import redirect_stderr, redirect_stdout
+
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = main(["--payload", str(path)])
+            finally:
+                if old_token is None:
+                    os.environ.pop("GITHUB_TOKEN", None)
+                else:
+                    os.environ["GITHUB_TOKEN"] = old_token
+        text = stdout.getvalue() + stderr.getvalue()
+        self.assertEqual(code, 0)
+        self.assertNotIn(token, text)
+        self.assertIn("create", text)
+        self.assertIn("Dry run only", text)
+
+    def test_apply_files_closes_and_comments(self):
+        from apply_nightly_issue_actions import apply_payload
+
+        token = "ghp_SHOULD_NOT_LEAK_9911"
+        payload = bulk_payload_safe(self._section())
+        calls: list[tuple[str, str]] = []
+
+        class _Resp:
+            def __init__(self, body: dict):
+                self._raw = json.dumps(body).encode()
+
+            def read(self):
+                return self._raw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def opener(req, timeout=60):
+            self.assertEqual(req.get_header("Authorization"), f"Bearer {token}")
+            calls.append((req.get_method(), req.full_url))
+            if req.full_url.endswith("/comments"):
+                return _Resp({"id": 1})
+            if req.get_method() == "PATCH":
+                return _Resp({"state": "closed"})
+            return _Resp({"number": 50, "html_url": "https://github.com/vllm-project/vllm-omni/issues/50"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp) / "results.json"
+            outcome = apply_payload(
+                payload, write=True, token=token, opener=opener, results_path=results
+            )
+            again = apply_payload(
+                payload, write=True, token=token, opener=opener, results_path=results
+            )
+        self.assertEqual(outcome["created"], 1)
+        self.assertEqual(outcome["closed"], 1)
+        self.assertEqual(outcome["commented"], 1)
+        self.assertEqual(outcome["failed"], 0)
+        self.assertEqual(calls[0][0], "POST")
+        self.assertTrue(calls[0][1].endswith("/issues"))
+        self.assertTrue(any(url.endswith("/issues/10/comments") for _method, url in calls))
+        self.assertTrue(any(method == "PATCH" and url.endswith("/issues/10") for method, url in calls))
+        self.assertTrue(any(url.endswith("/issues/11/comments") for _method, url in calls))
+        self.assertEqual(again["skipped"], 3)
+        self.assertEqual(len(calls), 4)
+        blob = json.dumps(outcome)
+        self.assertNotIn(token, blob)
+
+
+def bulk_payload_safe(section):
+    from issue_section import bulk_payload
+
+    return bulk_payload(section)
 
 
 if __name__ == "__main__":
