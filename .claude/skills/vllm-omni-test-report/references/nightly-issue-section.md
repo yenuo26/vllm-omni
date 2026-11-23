@@ -18,7 +18,7 @@ Nothing is invented. A missing token, a failed fetch, a skipped or not-run job, 
 | Summary | Short prose above the cards: how many items are in the three buckets, plus what was withheld and why. | — |
 | 待新增 | Collapsed card. The table has one to-be-filed item per row (proposed title, analysis, build URLs). | **开单确认** |
 | 待关闭 | Collapsed card. One closable issue per row. | **关闭确认** |
-| 待更新 | Collapsed card. One still-relevant open issue per row. | **更新评论** |
+| 待更新 | Collapsed card. One already-open issue per row, and only when its test or job still failed in this run. The comment is today's failure. | **更新评论** |
 
 Empty cards still show the title. Opening one shows the table headers and an empty row, with no confirm button.
 

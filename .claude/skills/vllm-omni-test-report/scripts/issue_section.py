@@ -27,8 +27,11 @@ from issue_close_confirm import (
     ISSUE_REPO,
     IssueConfirmation,
     PipelineSnapshot,
+    infer_sides,
+    job_kind,
     job_name_is_distinctive,
     match_jobs,
+    node_still_failing,
 )
 
 # Keep in sync with nightly_local_log_report.py and
@@ -642,6 +645,7 @@ def _summary_text(
     env_local: int,
     weak_jobs: int,
     withheld_jobs: int,
+    job_name_only: int,
     search_ran: bool,
     group_count: int,
     issues_loaded: bool,
@@ -658,8 +662,8 @@ def _summary_text(
             "absent from the current failure set."
         ),
         (
-            f"待更新 has {len(to_update)} item(s): open issues that are still failing or have new "
-            "evidence from this report and are not ready to close."
+            f"待更新 has {len(to_update)} item(s): already-open issues whose corresponding "
+            "test or job still failed in this run, so they need a comment with today's failure."
         ),
     ]
     if insufficient:
@@ -688,6 +692,11 @@ def _summary_text(
             f"{withheld_jobs} failed job(s) without a pytest node were not listed under 待新增 "
             "because the open-issue list was unavailable and a duplicate could not be ruled out."
         )
+    if job_name_only:
+        parts.append(
+            f"{job_name_only} failed job(s) matched an open issue only by job name, so they were "
+            "not given a 待更新 comment and were not filed again."
+        )
     if not issues_loaded:
         parts.append(
             "The open ci-failure issue list was not loaded, so nothing was marked closable "
@@ -696,6 +705,83 @@ def _summary_text(
     if note:
         parts.append(note.strip())
     return " ".join(parts)
+
+
+_NOT_FAILURE_STATES = frozenset(
+    {
+        "skipped",
+        "broken",
+        "canceled",
+        "cancelled",
+        "waiting",
+        "pending",
+        "blocked",
+        "unblocked",
+    }
+)
+
+
+def _group_platforms(group: Any) -> set[str]:
+    """CUDA / NPU sides implicated by a failure group's sources."""
+    sides: set[str] = set()
+    for source in getattr(group, "sources", []) or []:
+        low = str(source).lower()
+        if "npu" in low:
+            sides.add("NPU")
+        if "cuda" in low or low.startswith("local"):
+            sides.add("CUDA")
+    return sides
+
+
+def _platform_matches(issue: dict[str, Any], group: Any) -> bool:
+    """Reject a CUDA failure as evidence for an NPU-only issue, and the reverse."""
+    required = infer_sides(issue)
+    if not required:
+        return True
+    have = _group_platforms(group)
+    if not have:
+        return False
+    return not required.isdisjoint(have)
+
+
+def _real_still_failing(row: IssueConfirmation, pipelines: dict[str, PipelineSnapshot]) -> bool:
+    """True only when the latest relevant run actually failed.
+
+    Skipped, broken, canceled, and other not-run states are not a failure
+    comment. A weak or missing job identity never reaches ``STATUS_FAILING``.
+    """
+    if row.status != STATUS_FAILING:
+        return False
+    for side in row.sides:
+        snap = pipelines.get(side)
+        if snap is None or not snap.available:
+            continue
+        failed: list[str] = []
+        index: dict[str, dict[str, Any]] = {}
+        for rec in snap.jobs:
+            name = str(rec.get("name") or "")
+            if name:
+                index[name] = rec
+            info = rec.get("info") or {}
+            failed.extend(info.get("failed_nodes") or [])
+            failed.extend(info.get("error_nodes") or [])
+        if any(node_still_failing(node, failed) for node in row.tests):
+            return True
+        for name in row.jobs_by_side.get(side) or []:
+            rec = index.get(name)
+            if rec is None:
+                continue
+            state = (rec.get("state") or "").strip().lower()
+            if state in _NOT_FAILURE_STATES:
+                continue
+            info = rec.get("info") or {}
+            if state in {"failed", "timed_out"}:
+                return True
+            if info.get("failed_nodes") or info.get("error_nodes"):
+                return True
+            if job_kind(rec) == "fail":
+                return True
+    return False
 
 
 def assemble_issue_section(
@@ -714,10 +800,12 @@ def assemble_issue_section(
     env_local = 0
     weak_jobs = 0
     withheld_jobs = 0
+    job_name_only = 0
+    tracked_hits: list[tuple[dict[str, Any], str, list[tuple[str, str]]]] = []
 
     def _add_update(issue: dict[str, Any], analysis: str, links: list[tuple[str, str]]) -> None:
         number = issue.get("number")
-        if number is None:
+        if number is None or (issue.get("state") or "open") != "open":
             return
         number = int(number)
         acc = updates.get(number)
@@ -734,35 +822,25 @@ def assemble_issue_section(
         if verdict == "env-local":
             env_local += 1
             continue
-        if not search_ran or verdict == "unknown":
-            # Search did not confidently classify this group. A distinctive
-            # job-name hit on an open issue is still enough to update that
-            # issue; it is not enough to file a new one.
-            if context.issues_loaded:
-                matched: list[dict[str, Any]] = []
-                for step in getattr(group, "steps", []) or []:
-                    for issue in _matching_open_issues(step, open_issues):
-                        if all(issue.get("number") != prev.get("number") for prev in matched):
-                            matched.append(issue)
-                if matched:
-                    analysis = group_analysis(group)
-                    links = _group_links(group)
-                    for issue in matched:
-                        _add_update(issue, analysis, links)
+        if verdict == "tracked" and search_ran:
+            best = getattr(group, "best_issue", None)
+            if (
+                best
+                and best.get("state") == "open"
+                and best.get("number") is not None
+                and _platform_matches(best, group)
+            ):
+                issue = issues_by_number.get(int(best["number"]), best)
+                if _platform_matches(issue, group):
+                    tracked_hits.append((issue, group_analysis(group), _group_links(group)))
                     continue
             unclassified_groups += 1
             continue
-        if verdict == "tracked":
-            best = getattr(group, "best_issue", None)
-            if best and best.get("state") == "open" and best.get("number") is not None:
-                issue = issues_by_number.get(int(best["number"]), best)
-                _add_update(issue, group_analysis(group), _group_links(group))
-            else:
-                unclassified_groups += 1
-            continue
-        if verdict in {"new", "recurred"}:
+        if verdict in {"new", "recurred"} and search_ran:
             to_file.append(_file_item_from_group(group))
             continue
+        # Unknown, or search did not run. A job-name hit is not enough to
+        # comment on an existing issue or to file a new one.
         unclassified_groups += 1
 
     covered_steps = {step for group in groups for step in (getattr(group, "steps", []) or [])}
@@ -770,20 +848,9 @@ def assemble_issue_section(
         if job.job_name in covered_steps:
             continue
         hits = _matching_open_issues(job.job_name, open_issues) if context.issues_loaded else []
-        links = _dedupe_links(
-            [
-                *( [(f"Build · {job.source}", job.build_url)] if job.build_url else [] ),
-                *( [(f"Step {job.job_name}", job.step_url)] if job.step_url else [] ),
-            ]
-        )
-        analysis = (
-            f"{job.source}: job {job.job_name} finished {job.state} with no pytest node extracted."
-        )
-        if job.log_error:
-            analysis += f" Log fetch error: {job.log_error[:500]}"
         if hits:
-            for issue in hits:
-                _add_update(issue, analysis, links)
+            # Job-name-only, and this job has no pytest node. Not a 待更新 comment.
+            job_name_only += 1
             continue
         if not context.issues_loaded:
             withheld_jobs += 1
@@ -793,7 +860,11 @@ def assemble_issue_section(
             continue
         to_file.append(_file_item_from_bare(job))
 
-    blocked = set(updates)
+    closable_numbers = {
+        int(row.issue["number"])
+        for row in context.confirmations
+        if row.status == STATUS_CLOSABLE and row.issue.get("number") is not None
+    }
     to_close: list[IssueItem] = []
     insufficient = 0
     for row in context.confirmations:
@@ -802,7 +873,7 @@ def assemble_issue_section(
         if row.status == STATUS_INSUFFICIENT:
             insufficient += 1
             continue
-        if row.status == STATUS_CLOSABLE and number not in blocked:
+        if row.status == STATUS_CLOSABLE:
             streak = _streak_sentence(row)
             analysis = row.reason if not streak else f"{row.reason}\n\n{streak}"
             to_close.append(
@@ -820,15 +891,14 @@ def assemble_issue_section(
                 )
             )
             continue
-        if row.status == STATUS_CLOSABLE and number in blocked:
-            note = (
-                f"Not closable despite a green nightly reading ({row.reason}) "
-                "because a failure in this report still matches the issue."
-            )
-            _add_update(row.issue, note, links)
-            continue
-        if row.status == STATUS_FAILING:
+        if _real_still_failing(row, context.pipelines):
             _add_update(row.issue, row.reason, links)
+
+    for issue, analysis, links in tracked_hits:
+        number = issue.get("number")
+        if number is None or int(number) in closable_numbers:
+            continue
+        _add_update(issue, analysis, links)
 
     to_update: list[IssueItem] = []
     for number in sorted(updates):
@@ -859,6 +929,7 @@ def assemble_issue_section(
         env_local=env_local,
         weak_jobs=weak_jobs,
         withheld_jobs=withheld_jobs,
+        job_name_only=job_name_only,
         search_ran=search_ran,
         group_count=len(groups),
         issues_loaded=context.issues_loaded,
@@ -971,14 +1042,38 @@ _ISSUE_SECTION_CSS = """
   font-size: 1.02rem;
 }
 .issue-bucket-card-body { padding: 0 1rem 1rem; }
-.issue-table { width: 100%; border-collapse: collapse; }
+.issue-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+.issue-table {
+  width: 100%;
+  min-width: 46rem;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
 .issue-table th, .issue-table td {
   border-bottom: 1px solid var(--omni-divider, #e5e7eb);
   text-align: left;
   vertical-align: top;
   padding: 0.55rem 0.6rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .issue-table th { font-size: 0.78rem; color: var(--dashboard-soft-text, #475569); }
+.issue-col-issue { width: 18%; }
+.issue-col-analysis { width: 42%; }
+.issue-col-builds { width: 22%; }
+.issue-col-confirm, .issue-confirm {
+  width: 9.5rem;
+  min-width: 9.5rem;
+  position: sticky;
+  right: 0;
+  background: var(--dashboard-panel-bg, #fff);
+  box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.28);
+  z-index: 1;
+}
 .issue-table .issue-copy { max-height: 9rem; overflow: auto; margin: 0; }
 .issue-builds { margin: 0; padding-left: 1.1rem; }
 .issue-table-empty td { color: var(--dashboard-soft-text, #64748b); font-style: italic; }
@@ -1042,15 +1137,18 @@ def _confirm_html(item: IssueItem, ready_id: str) -> str:
 
 def _table_html(items: list[IssueItem], empty: str, *, id_prefix: str) -> str:
     head = (
-        '<table class="issue-table"><thead><tr>'
-        "<th>Issue</th><th>Analysis</th><th>Builds</th><th>Confirm</th>"
+        '<div class="issue-table-scroll"><table class="issue-table"><thead><tr>'
+        '<th class="issue-col-issue">Issue</th>'
+        '<th class="issue-col-analysis">Analysis</th>'
+        '<th class="issue-col-builds">Builds</th>'
+        '<th class="issue-col-confirm">Confirm</th>'
         "</tr></thead><tbody>"
     )
     if not items:
         return (
             head
             + f'<tr class="issue-table-empty"><td colspan="4">{html.escape(empty)}</td></tr>'
-            + "</tbody></table>"
+            + "</tbody></table></div>"
         )
     rows: list[str] = []
     for index, item in enumerate(items, start=1):
@@ -1062,7 +1160,7 @@ def _table_html(items: list[IssueItem], empty: str, *, id_prefix: str) -> str:
             f'<td class="issue-confirm">{_confirm_html(item, f"{id_prefix}-{index}")}</td>'
             "</tr>"
         )
-    return head + "".join(rows) + "</tbody></table>"
+    return head + "".join(rows) + "</tbody></table></div>"
 
 
 def _card_html(title: str, items: list[IssueItem], empty: str, note: str, *, id_prefix: str) -> str:
@@ -1187,7 +1285,7 @@ def render_issue_section_body(
         "待更新",
         section.to_update,
         "No open issue needs an update from this report.",
-        "每行一个待更新 issue，行内只有更新评论。它打开该 issue 并复制评论，不会直接发表。",
+        "每行一个已有 issue，且它对应的测试或 job 在这次结果里仍然失败。行内只有更新评论，评论内容是这次失败。",
         id_prefix="issue-to-update",
     )
     return (

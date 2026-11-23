@@ -233,15 +233,17 @@ By default the script also pulls **main** latest **scheduled nightly** from Buil
 
 Classification (unchanged thresholds):
 
-- **Tracked** — an open issue matches: test-key agreement **and** error-signature agreement (exception class in title, or ≥2 distinctive signature tokens — URLs, URL path segments like `omni-assets/sana-video/manifest.json`, identifiers — in the issue title/body). A key that only appears in the issue **body** needs a **stronger** signature. A keyless match needs a **title-driven** signature ≥5: exception class in the title, or ≥3 signature tokens in the title. Tracked groups go to **待更新**, not 待新增.
+- **Tracked** — an open issue matches: test-key agreement **and** error-signature agreement (exception class in title, or ≥2 distinctive signature tokens — URLs, URL path segments like `omni-assets/sana-video/manifest.json`, identifiers — in the issue title/body). A key that only appears in the issue **body** needs a **stronger** signature. A keyless match needs a **title-driven** signature ≥5: exception class in the title, or ≥3 signature tokens in the title. A tracked group is **待更新** only when that open issue is not closable and the failure's CUDA/NPU side matches the issue. A job-name-only hit is not 待更新.
 - **Recurred** — the same match against a **closed** issue. Listed under **待新增** (the card names the closed issue). A bare node-id match with a **different error** stays a new filing, not a recurred one.
 - **New** — nothing passes the dup gate. Listed under **待新增**, with near misses called out in the analysis and not treated as the same issue.
 - **Local env** — HF `.locks` PermissionError matched against the **full local job log**. Omitted from 待新增.
 - **No match / search skipped** — search failed, or `GITHUB_TOKEN` / `GH_TOKEN` is missing, or `--no-issue-alert` was passed. Those groups are **not** listed as new issues.
 
-Closable (**待关闭**) only when the previously failing job is fully green on every relevant pipeline and any tracked test node is absent from the current failure set. Missing data, a skipped or not-run job, a weak job name, or a CUDA vs NPU mismatch is not closable and is not used to inflate 待关闭. Still-failing open issues go to **待更新**.
+Closable (**待关闭**) only when the previously failing job is fully green on every relevant pipeline and any tracked test node is absent from the current failure set. Missing data, a skipped or not-run job, a weak job name, or a CUDA vs NPU mismatch is not closable and is not used to inflate 待关闭.
 
-**待新增 / 待关闭 / 待更新** are collapsed cards. The title is the fold control; opening a card shows one table (one issue or to-be-filed item per row). Columns: Issue, Analysis, Builds, Confirm. Each data row has exactly one button: **开单确认**, **关闭确认**, or **更新评论**. Empty cards still show the header and an empty table with no row button. **Summary** stays prose above the cards.
+**待更新** is only an already-open issue whose corresponding test or job **still failed** in this run, so the update comment is today's failure. It does not include closable issues, new-to-file items, job-name-only matches, CUDA/NPU mismatches, or skipped / broken / not-run jobs.
+
+**待新增 / 待关闭 / 待更新** are collapsed cards. The title is the fold control; opening a card shows one table (one issue or to-be-filed item per row). Columns: Issue (narrow), Analysis, Builds, Confirm. The table scrolls horizontally if needed, and the Confirm column stays sticky so **开单确认** / **关闭确认** / **更新评论** stay reachable. Each data row has exactly one of those buttons. Empty cards still show the header and an empty table with no row button. **Summary** stays prose above the cards.
 
 **一键操作** sits above the cards (no need to expand them) and does not run on page load. One click applies every pending row: create each 待新增 issue, comment-and-close each 待关闭 issue, and comment on each 待更新 issue. The HTML has no token. The click POSTs the embedded payload to `http://127.0.0.1:8931/apply`. Start the executor first (token only in the environment):
 

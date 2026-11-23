@@ -181,6 +181,7 @@ class BucketTests(unittest.TestCase):
         )
         self.assertEqual(section.to_close, [])
         self.assertEqual([item.issue_number for item in section.to_update], [11])
+        self.assertIn("not green", section.to_update[0].ready_comment)
         self.assertIn("1 open ci-failure issue", section.summary)
 
     def test_npu_failure_is_not_closed_because_cuda_is_green(self):
@@ -214,9 +215,43 @@ class BucketTests(unittest.TestCase):
             context=_ctx([issue], pipelines, [row]),
             search_ran=True,
         )
+        self.assertEqual(section.to_close[0].issue_number, 10)
+        self.assertEqual(section.to_update, [])
+
+    def test_broken_job_is_not_an_update_comment(self):
+        issue = _issue(41, "Omni Function Test failed on H100")
+        pipelines = {"CUDA": _snap("CUDA", [_job("Omni Function Test", state="broken", summary="")])}
+        row = evaluate_issue(issue, pipelines)
+        section = assemble_issue_section(
+            groups=[],
+            bare_jobs=[],
+            context=_ctx([issue], pipelines, [row]),
+            search_ran=True,
+        )
+        self.assertEqual(section.to_update, [])
         self.assertEqual(section.to_close, [])
-        self.assertEqual(section.to_update[0].issue_number, 10)
-        self.assertIn("Not closable", section.to_update[0].analysis)
+
+    def test_cuda_failure_does_not_update_npu_issue(self):
+        issue = _issue(40, "Omni Function Test NPU failed")
+        section = assemble_issue_section(
+            groups=[_group(verdict="tracked", best_issue=issue)],
+            bare_jobs=[],
+            context=_ctx([issue], {}, []),
+            search_ran=True,
+        )
+        self.assertEqual(section.to_update, [])
+        self.assertEqual(section.to_file, [])
+
+    def test_job_name_only_match_is_not_an_update(self):
+        issue = _issue(42, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")
+        section = assemble_issue_section(
+            groups=[_group(verdict="unknown")],
+            bare_jobs=[],
+            context=_ctx([issue], {}, []),
+            search_ran=True,
+        )
+        self.assertEqual(section.to_update, [])
+        self.assertEqual(section.to_file, [])
 
     def test_bare_job_rules(self):
         distinctive = BareJobFailure(
@@ -269,8 +304,8 @@ class BucketTests(unittest.TestCase):
             search_ran=True,
         )
         self.assertEqual(section.to_file, [])
-        self.assertEqual(section.to_update[0].issue_number, 30)
-        self.assertIn("builds/4", section.to_update[0].ready_comment)
+        self.assertEqual(section.to_update, [])
+        self.assertIn("only by job name", section.summary)
 
     def test_render_has_four_subsections_and_confirm_links(self):
         issue = _issue(10, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")
@@ -307,7 +342,11 @@ class BucketTests(unittest.TestCase):
         self.assertEqual(html.count(">开单确认</a>"), 1)
         self.assertEqual(html.count(">关闭确认</a>"), 1)
         self.assertEqual(html.count(">更新评论</a>"), 1)
-        self.assertIn("<th>Issue</th><th>Analysis</th><th>Builds</th><th>Confirm</th>", html)
+        self.assertIn('class="issue-col-issue"', html)
+        self.assertIn('class="issue-col-analysis"', html)
+        self.assertIn('class="issue-col-builds"', html)
+        self.assertIn('class="issue-col-confirm"', html)
+        self.assertIn('class="issue-table-scroll"', html)
         self.assertNotIn('id="issue-bulk-apply" disabled', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-file"', html)
         self.assertIn('class="btn-github-issue btn-issue-confirm-close"', html)
