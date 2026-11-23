@@ -1,6 +1,6 @@
 ---
 name: buildkite-ci-daily-analysis
-description: "Fetch yesterday's Buildkite builds (in **Beijing Time, CST, UTC+8**) for vllm-omni, vllm-omni-npu-ci, and vllm-omni-amd-ci pipelines (the default date window is the previous full CST calendar day, 00:00 — 23:59 CST) and analyze per-job and per-build success/failure and duration (with default infra-job filtering for `:pipeline: init`, `:docker: Build image`, `:buildkit: Build and Push`, `:github: Resolve skip-ci`, `Upload … Pipeline`, `Collect results`), then emit an HTML report with interactive **Pipeline**, **Branch**, **CI**, **State**, and **Job Name** filter dropdowns plus a **CI Aggregate** panel broken down by `ready` / `merge` / `nightly` / `weekly` buckets × pipeline (each card has both job-level and build-level stats). **Default output is always an HTML file** unless the user explicitly asks for Markdown or JSON. When the user explicitly says '归档报告' (or 'archive' / '提交报告' / 'push report'), archive the report ONLY to omni-reviewbot kanban/data/vllm_omni/ci_monitor/ via the shared ../vllm-omni-test-report/scripts/archive_to_omni_review.sh (sole target since 2026-10-21 — kanban pushes stopped). Use when the user says 'daily CI analysis', 'today's CI jobs', 'nightly status', 'CI health check', '今日 CI 分析', '今日 job 分析', '今日 build 分析', 'Buildkite 当日分析', or '归档报告'."
+description: "Fetch yesterday's Buildkite builds (in **Beijing Time, CST, UTC+8**) for vllm-omni, vllm-omni-npu-ci, and vllm-omni-amd-ci pipelines (default), or a single pipeline such as `router` via `--pipeline` (the default date window is the previous full CST calendar day, 00:00 — 23:59 CST) and analyze per-job and per-build success/failure and duration (with default infra-job filtering for `:pipeline: init`, `:docker: Build image`, `:buildkit: Build and Push`, `:github: Resolve skip-ci`, `Upload … Pipeline`, `Collect results`), then emit an HTML report with interactive **Pipeline**, **Branch**, **CI**, **State**, and **Job Name** filter dropdowns plus a **CI Aggregate** panel broken down by `ready` / `merge` / `nightly` / `weekly` buckets × pipeline (each card has both job-level and build-level stats). **Default output is always an HTML file** unless the user explicitly asks for Markdown or JSON. When the user explicitly says '归档报告' (or 'archive' / '提交报告' / 'push report'), archive the report to omni-reviewbot `kanban/data/vllm_omni/ci_monitor/` (default omni) or `kanban/data/vllm_router/ci_monitor/` when the run is for `router`, via the shared ../vllm-omni-test-report/scripts/archive_to_omni_review.sh (sole target since 2026-10-21 — kanban pushes stopped). Use when the user says 'daily CI analysis', 'today's CI jobs', 'nightly status', 'CI health check', '今日 CI 分析', '今日 job 分析', '今日 build 分析', 'Buildkite 当日分析', or '归档报告'."
 ---
 
 # Buildkite Daily CI Analysis
@@ -283,6 +283,24 @@ and in-flight jobs from dragging the success rate down.
 - `归档报告`, `归档`, `archive`, `commit report`, `push report`
 - `提交报告`, `推送到 kanban`
 
+
+### Router pipeline only (`vllm/router`)
+
+Router has **one** Buildkite pipeline (`router`), with **no** weekly CI and **no** dedicated NPU/AMD pipelines. Do not invent empty weekly/NPU/AMD chapters.
+
+```bash
+python scripts/ci_daily_analysis.py --date 2026-11-22 --pipeline router \
+  --output /workspace/ci-daily-router-2026-11-22.html
+```
+
+Archive dest for router (explicit project root):
+
+```bash
+../vllm-omni-test-report/scripts/archive_to_omni_review.sh \
+  /workspace/ci-daily-router-2026-11-22.html \
+  data/vllm_router/ci_monitor/ci-daily-2026-11-22.html
+```
+
 ## Report archival (`归档报告`)
 
 Only activate this behavior when the user explicitly says **`归档报告`**
@@ -297,8 +315,13 @@ Only activate this behavior when the user explicitly says **`归档报告`**
 2. On the bridge box run:
 
    ```bash
+   # omni (default):
    ../vllm-omni-test-report/scripts/archive_to_omni_review.sh \
      ./ci-daily-YYYY-MM-DD.html data/ci_monitor/ci-daily-YYYY-MM-DD.html
+   # router:
+   ../vllm-omni-test-report/scripts/archive_to_omni_review.sh \
+     ./ci-daily-router-YYYY-MM-DD.html \
+     data/vllm_router/ci_monitor/ci-daily-YYYY-MM-DD.html
    ```
 
    The shared archive script lives in the sibling **vllm-omni-test-report**

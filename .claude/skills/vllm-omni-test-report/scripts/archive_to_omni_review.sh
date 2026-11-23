@@ -17,8 +17,14 @@
 #            /home/wy/vllm-omni-kanban/data/local_nightly_raw/manual_20261021 \
 #            data/local_nightly_raw/manual_20261021
 #
-# Mapping:  dest `data/<X>`  ->  omni-reviewbot `kanban/data/vllm_omni/<X>`
-#           (same subdir names as the old kanban layout)
+# Mapping:
+#   dest `data/<X>`                       -> kanban/data/vllm_omni/<X>   (default / omni)
+#   dest `data/vllm_omni/<X>`             -> kanban/data/vllm_omni/<X>
+#   dest `data/vllm_router/<X>`           -> kanban/data/vllm_router/<X>
+#   dest `data/agent_infer/<X>`           -> kanban/data/agent_infer/<X>
+#   dest `data/vllm_gr/<X>`               -> kanban/data/vllm_gr/<X>
+# Known project roots under kanban/data/ are accepted as an explicit prefix;
+# bare `data/<X>` stays backward-compatible and still means vllm_omni.
 # Sources:  any local file or directory (report HTML, manual_* payload dirs).
 #           Nothing is read from or written to the vllm-omni-kanban repo.
 # Repo:     clone root = $OMNI_REVIEW_REPO_ROOT, else /home/wy/omni-reviewbot,
@@ -57,7 +63,21 @@ while [ $# -ge 2 ]; do
   # resolve to an absolute path BEFORE the later `cd $REVIEW` — otherwise a
   # relative src (e.g. ./report.html) would be looked up inside the repo
   src="$(readlink -f "$src")"
-  SRCS+=("$src"); DESTS+=("kanban/data/vllm_omni/${dest#data/}"); RELS+=("${dest#data/}")
+  # Explicit project roots (vllm_router, …) keep their prefix; bare data/<X>
+  # still maps under vllm_omni for backward compatibility with omni skills.
+  case "$dest" in
+    data/vllm_omni/*|data/vllm_router/*|data/agent_infer/*|data/vllm_gr/*)
+      rel="${dest#data/}"
+      DESTS+=("kanban/data/${rel}")
+      RELS+=("$rel")
+      ;;
+    data/*)
+      rel="${dest#data/}"
+      DESTS+=("kanban/data/vllm_omni/${rel}")
+      RELS+=("$rel")
+      ;;
+  esac
+  SRCS+=("$src")
 done
 
 # ---- prepare omni-reviewbot working tree -------------------------------------
