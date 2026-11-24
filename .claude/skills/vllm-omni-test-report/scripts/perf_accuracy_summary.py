@@ -2,8 +2,9 @@
 """Buildkite + local performance and accuracy chapters for the release report.
 
 Renders two H2 chapters — Performance Summary and Accuracy Summary — as
-metric-value tables (one numeric column per metric). Accuracy is one table
-per metric schema so scenarios that share scores stay together. Filenames are
+metric-value tables (one numeric column per metric). Each chapter is one
+table per metric schema so scenarios that share scores stay together.
+Filenames are
 not table content. Values are quoted only from result JSON files (typically
 the latest omni-reviewbot vllm-omni Buildkite archives by default (Local /
 --log-dir-h* only when callers pass them) trees). Missing sources get an
@@ -43,37 +44,235 @@ _ACC_ID_COLS = (
     "Duration",
 )
 
-# Metric columns in display order. A column is emitted only when at least one
-# row has a real value. Modality-specific throughputs that are all zero are
-# dropped so an audio run does not sprout empty image/video columns.
-_PERF_METRIC_COLS = (
+# A zero modality throughput/latency means "this run did not measure that
+# modality", not a real score. Those zeros are not copied onto a row.
+_ZERO_SKIP_PERF_COLS = frozenset(
+    {
+        "image_throughput",
+        "video_throughput",
+        "audio_throughput",
+        "mean_denoise_step_latency_ms",
+        "mean_video_rtf",
+        "mean_video_generation_ms",
+        "mean_peak_memory_mb",
+    }
+)
+# Shared percentile shape: mean, median, p95, p99. p50 is omitted because
+# these archives store it as a duplicate of median.
+_TEXT_PERF_METRICS = (
+    "request_throughput",
+    "output_throughput",
+    "total_token_throughput",
+    "mean_ttft_ms",
+    "median_ttft_ms",
+    "p95_ttft_ms",
+    "p99_ttft_ms",
+    "mean_tpot_ms",
+    "median_tpot_ms",
+    "p95_tpot_ms",
+    "p99_tpot_ms",
+    "mean_itl_ms",
+    "median_itl_ms",
+    "p95_itl_ms",
+    "p99_itl_ms",
+    "mean_e2el_ms",
+    "median_e2el_ms",
+    "p95_e2el_ms",
+    "p99_e2el_ms",
+    "duration",
+)
+_AUDIO_PERF_METRICS = (
     "request_throughput",
     "output_throughput",
     "total_token_throughput",
     "audio_throughput",
-    "image_throughput",
-    "video_throughput",
-    "throughput_qps",
     "mean_ttft_ms",
     "median_ttft_ms",
     "p95_ttft_ms",
+    "p99_ttft_ms",
     "mean_e2el_ms",
     "median_e2el_ms",
     "p95_e2el_ms",
+    "p99_e2el_ms",
     "mean_audio_ttfp_ms",
+    "median_audio_ttfp_ms",
+    "p95_audio_ttfp_ms",
+    "p99_audio_ttfp_ms",
     "mean_audio_rtf",
+    "median_audio_rtf",
+    "p95_audio_rtf",
+    "p99_audio_rtf",
+    "mean_audio_duration_s",
+    "median_audio_duration_s",
+    "p99_audio_duration_s",
+    "duration",
+)
+_OMNI_TEXT_AUDIO_METRICS = tuple(dict.fromkeys((*_TEXT_PERF_METRICS, *_AUDIO_PERF_METRICS)))
+_IMAGE_PERF_METRICS = (
+    "request_throughput",
+    "image_throughput",
+    "mean_denoise_step_latency_ms",
+    "mean_peak_memory_mb",
+    "median_peak_memory_mb",
+    "mean_e2el_ms",
+    "median_e2el_ms",
+    "p95_e2el_ms",
+    "p99_e2el_ms",
+    "duration",
+)
+_VIDEO_PERF_METRICS = (
+    "request_throughput",
+    "video_throughput",
+    "mean_video_rtf",
+    "median_video_rtf",
+    "p95_video_rtf",
+    "p99_video_rtf",
+    "mean_video_generation_ms",
+    "median_video_generation_ms",
+    "p95_video_generation_ms",
+    "p99_video_generation_ms",
+    "mean_denoise_step_latency_ms",
+    "mean_peak_memory_mb",
+    "median_peak_memory_mb",
+    "mean_e2el_ms",
+    "median_e2el_ms",
+    "p95_e2el_ms",
+    "p99_e2el_ms",
+    "duration",
+)
+_REALTIME_PERF_METRICS = (
+    "request_throughput",
+    "mean_e2el_ms",
+    "median_e2el_ms",
+    "p95_e2el_ms",
+    "p99_e2el_ms",
+    "mean_video_ttfc_ms",
+    "median_video_ttfc_ms",
+    "p95_video_ttfc_ms",
+    "p99_video_ttfc_ms",
+    "mean_video_fps",
+    "median_video_fps",
+    "p95_video_fps",
+    "p99_video_fps",
+    "min_video_fps",
+    "mean_video_rtf",
+    "median_video_rtf",
+    "p95_video_rtf",
+    "p99_video_rtf",
+    "mean_video_steady_interval_ms",
+    "median_video_steady_interval_ms",
+    "p95_video_steady_interval_ms",
+    "p99_video_steady_interval_ms",
+    "duration",
+)
+_DUPLEX_PERF_METRICS = (
+    "request_throughput",
+    "output_throughput",
+    "audio_throughput",
+    "mean_ttft_ms",
+    "median_ttft_ms",
+    "p95_ttft_ms",
+    "p99_ttft_ms",
+    "mean_e2el_ms",
+    "median_e2el_ms",
+    "p95_e2el_ms",
+    "p99_e2el_ms",
+    "mean_audio_ttfp_ms",
+    "median_audio_ttfp_ms",
+    "p95_audio_ttfp_ms",
+    "p99_audio_ttfp_ms",
+    "mean_audio_rtf",
+    "median_audio_rtf",
+    "p95_audio_rtf",
+    "p99_audio_rtf",
+    "mean_duplex_response_ttft_ms",
+    "median_duplex_response_ttft_ms",
+    "p99_duplex_response_ttft_ms",
+    "mean_duplex_response_ttfp_ms",
+    "p99_duplex_response_ttfp_ms",
+    "mean_duplex_client_ttft_ms",
+    "p99_duplex_client_ttft_ms",
+    "mean_duplex_client_ttfp_ms",
+    "p99_duplex_client_ttfp_ms",
+    "mean_duplex_client_rtf",
+    "p99_duplex_client_rtf",
+    "mean_duplex_busy_rtf",
+    "p99_duplex_busy_rtf",
+    "mean_duplex_stall_ratio",
+    "p99_duplex_stall_ratio",
+    "duration",
+)
+_DIFFUSION_PERF_METRICS = (
+    "throughput_qps",
     "latency_mean",
     "latency_median",
     "latency_p50",
     "latency_p95",
     "latency_p99",
+    "peak_memory_mb_max",
+    "peak_memory_mb_mean",
+    "peak_memory_mb_median",
     "duration",
-    "baseline_throughput_qps",
-    "baseline_latency_mean",
-    "baseline_latency_p99",
 )
-_ZERO_SKIP_PERF_COLS = frozenset(
-    {"image_throughput", "video_throughput", "audio_throughput"}
+_PERF_SCHEMA_ORDER = (
+    "text_serving",
+    "omni_text_audio",
+    "audio_tts",
+    "image_generation",
+    "video_generation",
+    "lingbot_realtime",
+    "omni_duplex_perf",
+    "diffusion",
+)
+_AUDIO_PERF_SIG = (
+    "audio_throughput",
+    "mean_audio_ttfp_ms",
+    "mean_audio_rtf",
+    "median_audio_rtf",
+)
+_TOKEN_PERF_SIG = ("mean_tpot_ms", "median_tpot_ms", "mean_itl_ms", "median_itl_ms")
+_REALTIME_PERF_SIG = (
+    "mean_video_ttfc_ms",
+    "mean_video_fps",
+    "min_video_fps",
+    "mean_video_steady_interval_ms",
+)
+_DUPLEX_PERF_SIG = (
+    "mean_duplex_response_ttft_ms",
+    "mean_duplex_response_ttfp_ms",
+    "mean_duplex_client_ttfp_ms",
+    "mean_duplex_client_rtf",
+    "mean_duplex_busy_rtf",
+    "mean_duplex_stall_ratio",
+)
+_PERF_KEY_RE = re.compile(
+    r"(throughput|_latency|latency_|_ms$|rtf|fps|qps|ttft|tpot|itl|e2el|peak_memory|ttfc|ttfp)",
+    re.I,
+)
+_PERF_SKIP_KEYS = frozenset(
+    {
+        "num_prompts",
+        "max_concurrency",
+        "burstiness",
+        "request_rate",
+        "random_input_len",
+        "random_output_len",
+        "random_prefix_len",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_audio_frames",
+        "total_video_frames",
+        "total_images",
+        "total_audio_duration_s",
+        "total_video_duration_s",
+        "average_pixels_per_image",
+        "max_output_tokens_per_s",
+        "max_concurrent_requests",
+        "completed",
+        "failed",
+        "completed_requests",
+        "failed_requests",
+    }
 )
 _ACC_METRIC_COLS = (
     "IA_QTF1",
@@ -257,60 +456,185 @@ def local_acc_result_files(result_dir: Path) -> list[Path]:
     return sorted(path for path in result_dir.rglob("result_acc_*.json") if path.is_file())
 
 
-def _baseline_perf_metrics(record: dict[str, Any]) -> dict[str, Any]:
-    baseline = record.get("baseline")
-    if not isinstance(baseline, dict) or not baseline:
-        return {}
-    hardware = str(record.get("Hardware") or record.get("hardware") or "").strip()
-    # diffusion: {"H200": {"throughput_qps": 0.39, ...}}
-    nested: dict[str, Any] | None = None
-    if hardware:
-        for key, value in baseline.items():
-            if isinstance(value, dict) and key.lower() == hardware.lower():
-                nested = value
-                break
-    if nested is None:
-        dict_values = [v for v in baseline.values() if isinstance(v, dict)]
-        if len(dict_values) == 1:
-            nested = dict_values[0]
-    src = nested if nested is not None else baseline
+def _perf_number(value: Any) -> int | float | None:
+    """A measured performance figure. Zero means the modality was not run."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value == 0:
+        return None
+    return value
+
+
+def _metric_map(record: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key in ("throughput_qps", "latency_mean", "latency_p99"):
-        if key in src and src[key] not in (None, ""):
-            out[f"baseline_{key}"] = src[key]
+    for key in keys:
+        number = _perf_number(_lookup(record, key))
+        if number is not None:
+            out[key] = number
     return out
 
 
-def collect_local_perf_rows(log_dir: Path, *, host: str = "") -> list[dict[str, Any]]:
+def _baseline_profile(record: dict[str, Any]) -> dict[str, Any]:
+    baseline = record.get("baseline")
+    if not isinstance(baseline, dict) or not baseline:
+        nested = record.get("result")
+        if isinstance(nested, dict) and isinstance(nested.get("baseline"), dict):
+            baseline = nested["baseline"]
+        else:
+            return {}
+    hardware = str(_lookup(record, "Hardware", "hardware") or "").strip()
+    chosen: dict[str, Any] | None = None
+    if hardware:
+        for key, value in baseline.items():
+            if isinstance(value, dict) and str(key).lower() == hardware.lower():
+                chosen = value
+                break
+    if chosen is None and not hardware:
+        dict_values = [value for value in baseline.values() if isinstance(value, dict)]
+        if len(dict_values) == 1:
+            chosen = dict_values[0]
+    if chosen is not None:
+        return chosen
+    if any(isinstance(value, dict) for value in baseline.values()):
+        return {}
+    return baseline
+
+
+def _attach_perf_baseline(
+    record: dict[str, Any], metrics: dict[str, Any], order: list[str]
+) -> None:
+    profile = _baseline_profile(record)
+    for key in list(order):
+        if key.startswith("baseline_"):
+            continue
+        number = _perf_number(profile.get(key))
+        if number is None:
+            continue
+        baseline_key = f"baseline_{key}"
+        if baseline_key in metrics:
+            continue
+        metrics[baseline_key] = number
+        order.append(baseline_key)
+
+
+def _classify_perf_record(
+    record: dict[str, Any],
+) -> tuple[str, str, tuple[str, ...]] | None:
+    """Return ``(schema, title, allowlist)`` for one performance result."""
+    if _metric_map(record, _REALTIME_PERF_SIG):
+        return "lingbot_realtime", "Lingbot-World realtime", _REALTIME_PERF_METRICS
+    if _metric_map(record, _DUPLEX_PERF_SIG):
+        return "omni_duplex_perf", "Omni duplex eval", _DUPLEX_PERF_METRICS
+    if _metric_map(record, ("video_throughput", "mean_video_generation_ms")):
+        return "video_generation", "Video generation", _VIDEO_PERF_METRICS
+    if _metric_map(record, ("image_throughput", "mean_denoise_step_latency_ms")):
+        return "image_generation", "Image generation", _IMAGE_PERF_METRICS
+    audio = bool(_metric_map(record, _AUDIO_PERF_SIG))
+    tokens = bool(_metric_map(record, _TOKEN_PERF_SIG))
+    if audio and tokens:
+        return "omni_text_audio", "Omni text and audio", _OMNI_TEXT_AUDIO_METRICS
+    if audio:
+        return "audio_tts", "Audio / TTS", _AUDIO_PERF_METRICS
+    if _metric_map(
+        record,
+        (
+            "request_throughput",
+            "output_throughput",
+            "total_token_throughput",
+            "mean_ttft_ms",
+            "mean_tpot_ms",
+            "mean_e2el_ms",
+        ),
+    ):
+        return "text_serving", "Text serving", _TEXT_PERF_METRICS
+    if _metric_map(record, ("throughput_qps", "latency_mean", "latency_median", "latency_p99")):
+        return "diffusion", "Diffusion", _DIFFUSION_PERF_METRICS
+    return None
+
+
+def _fallback_perf_metrics(record: dict[str, Any]) -> dict[str, Any]:
+    """Nonzero perf-like scalars that did not match a known family."""
+    sources = [record]
+    nested = record.get("result")
+    if isinstance(nested, dict):
+        sources.append(nested)
+    found: dict[str, Any] = {}
+    for source in sources:
+        for key, value in source.items():
+            if not isinstance(key, str) or key in _PERF_SKIP_KEYS or key.startswith("num_"):
+                continue
+            if key.startswith(("baseline", "stage_durations", "percentiles_", "random_")):
+                continue
+            if not _PERF_KEY_RE.search(key):
+                continue
+            number = _perf_number(value)
+            if number is not None:
+                found.setdefault(key, number)
+    return found
+
+
+def _perf_row_from_record(record: dict[str, Any], *, host: str) -> dict[str, Any] | None:
+    classified = _classify_perf_record(record)
+    if classified is None:
+        metrics = _fallback_perf_metrics(record)
+        if not metrics:
+            return None
+        order = sorted(metrics)
+        schema = "other:" + "|".join(order)
+        title = "Performance (" + ", ".join(order) + ")"
+    else:
+        schema, title, allowlist = classified
+        metrics = _metric_map(record, allowlist)
+        if not metrics:
+            return None
+        order = [key for key in allowlist if key in metrics]
+    _attach_perf_baseline(record, metrics, order)
+    model = _lookup(record, "model_id", "model")
+    if model is None and isinstance(record.get("server_params"), dict):
+        model = record["server_params"].get("model")
+    when = _lookup(record, "date", "timestamp", "benchmark_end_time") or "—"
+    test_name = _lookup(record, "test_name", "name")
+    row: dict[str, Any] = {
+        "Host": host or "—",
+        "Test": str(test_name or "—"),
+        "Model": _short_model(model) if model else "—",
+        "Hardware": str(_lookup(record, "Hardware", "hardware") or "—"),
+        "Date": str(when),
+        "Completed": _lookup(record, "completed", "completed_requests"),
+        "Failed": _lookup(record, "failed", "failed_requests"),
+    }
+    row.update(metrics)
+    row["_schema"] = schema
+    row["_title"] = title
+    row["_metric_order"] = tuple(order)
+    return row
+
+
+def _scan_perf_dir(log_dir: Path, *, host: str) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
-    for path in local_perf_result_files(log_dir):
+    notes: list[str] = []
+    files = local_perf_result_files(log_dir)
+    if not files:
+        return rows, notes
+    for path in files:
         payload = _load_json(path)
         if payload is None:
+            notes.append(f"*Could not read `{path.name}` — performance rows skipped.*")
             continue
+        file_rows: list[dict[str, Any]] = []
         for rec in _iter_records(payload):
-            model = _lookup(rec, "model_id", "model")
-            if model is None and isinstance(rec.get("server_params"), dict):
-                model = rec["server_params"].get("model")
-            when = _lookup(rec, "date", "timestamp", "benchmark_end_time") or "—"
-            completed = _lookup(rec, "completed", "completed_requests")
-            failed = _lookup(rec, "failed", "failed_requests")
-            row: dict[str, Any] = {
-                "Host": host or "—",
-                "Test": str(_lookup(rec, "test_name", "name") or path.stem),
-                "Model": _short_model(model) if model else "—",
-                "Hardware": str(_lookup(rec, "Hardware", "hardware") or "—"),
-                "Date": str(when),
-                "Completed": completed,
-                "Failed": failed,
-            }
-            for key in _PERF_METRIC_COLS:
-                if key.startswith("baseline_"):
-                    continue
-                value = _lookup(rec, key)
-                if value is not None:
-                    row[key] = value
-            row.update(_baseline_perf_metrics(rec))
-            rows.append(row)
+            row = _perf_row_from_record(rec, host=host)
+            if row is not None:
+                file_rows.append(row)
+        if file_rows:
+            rows.extend(file_rows)
+        else:
+            notes.append(f"*No performance metrics in `{path.name}`.*")
+    return rows, notes
+
+
+def collect_local_perf_rows(log_dir: Path, *, host: str = "") -> list[dict[str, Any]]:
+    rows, _notes = _scan_perf_dir(log_dir, host=host)
     return rows
 
 
@@ -1061,14 +1385,14 @@ def _collect_all(
             notes.append(f"*Log dir `{path}` does not exist — {kind} rows for {label} skipped.*")
             continue
         if kind == "performance":
-            collected = collect_local_perf_rows(path, host=label)
-            unmapped: list[str] = []
+            collected, unmapped = _scan_perf_dir(path, host=label)
+            notes.extend(unmapped)
         else:
             collected, unmapped = _scan_acc_dir(path, host=label)
             notes.extend(unmapped)
         if not collected:
-            # Accuracy files that exist but have no scores already added a note.
-            if kind == "accuracy" and unmapped:
+            # Files that exist but have no scores already added a note.
+            if unmapped:
                 continue
             if kind == "performance":
                 notes.append(
@@ -1083,38 +1407,30 @@ def _collect_all(
 
 
 
-_DIFFUSION_METRIC_HINTS = ("throughput_qps", "latency_mean", "latency_p99")
-_SERVING_METRIC_HINTS = ("request_throughput", "output_throughput", "mean_ttft_ms")
-
-
-def _row_has_any(row: dict[str, Any], keys: tuple[str, ...]) -> bool:
-    return any(row.get(key) not in (None, "", "—") for key in keys)
-
-
 def _partition_perf_rows(
     rows: list[dict[str, Any]],
-) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Split serving vs diffusion rows so each table only shows relevant metrics."""
-    serving: list[dict[str, Any]] = []
-    diffusion: list[dict[str, Any]] = []
-    other: list[dict[str, Any]] = []
+) -> list[tuple[str, list[dict[str, Any]], tuple[str, ...]]]:
+    """Group performance rows that share a metric schema."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    titles: dict[str, str] = {}
+    metric_orders: dict[str, list[str]] = {}
+    seen: list[str] = []
     for row in rows:
-        is_diff = _row_has_any(row, _DIFFUSION_METRIC_HINTS)
-        is_svc = _row_has_any(row, _SERVING_METRIC_HINTS)
-        if is_diff and not is_svc:
-            diffusion.append(row)
-        elif is_svc and not is_diff:
-            serving.append(row)
-        else:
-            other.append(row)
-    groups: list[tuple[str, list[dict[str, Any]]]] = []
-    if serving:
-        groups.append(("Serving / omni", serving))
-    if diffusion:
-        groups.append(("Diffusion", diffusion))
-    if other:
-        groups.append(("Other", other))
-    return groups
+        schema = str(row.get("_schema") or "other")
+        if schema not in buckets:
+            buckets[schema] = []
+            seen.append(schema)
+            titles[schema] = str(row.get("_title") or schema)
+            metric_orders[schema] = []
+        buckets[schema].append(row)
+        for key in row.get("_metric_order") or ():
+            if key not in metric_orders[schema]:
+                metric_orders[schema].append(key)
+    rank = {schema: index for index, schema in enumerate(_PERF_SCHEMA_ORDER)}
+    seen.sort(key=lambda schema: (rank.get(schema, len(_PERF_SCHEMA_ORDER)), schema))
+    return [
+        (titles[schema], buckets[schema], tuple(metric_orders[schema])) for schema in seen
+    ]
 
 
 def render_perf_accuracy_summary_section(
@@ -1171,14 +1487,14 @@ def render_perf_accuracy_summary_section(
             lines.append(bk_note)
             lines.append("")
         if rows and kind == "performance":
-            for label, group in _partition_perf_rows(rows):
+            for label, group, group_metrics in _partition_perf_rows(rows):
                 lines.append(f"### {label}")
                 lines.append("")
                 lines.append(
                     _render_metric_table(
                         group,
                         id_cols=id_cols,
-                        metric_cols=metric_cols,
+                        metric_cols=group_metrics,
                     )
                 )
         elif rows and kind == "accuracy":
@@ -1221,7 +1537,7 @@ def render_perf_accuracy_summary_section(
             perf_rows,
             perf_notes,
             _PERF_ID_COLS,
-            _PERF_METRIC_COLS,
+            (),
             "*No local performance result files were found.*",
         )
     )

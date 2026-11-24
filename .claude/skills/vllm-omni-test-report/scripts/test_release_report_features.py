@@ -158,6 +158,288 @@ class PerfAccuracySummaryTests(unittest.TestCase):
         self.assertNotIn("| Source |", md)
 
 
+class PerformanceSchemaTests(unittest.TestCase):
+    def test_performance_schemas_render_as_separate_tables(self) -> None:
+        import json
+        import tempfile
+
+        fixtures = {
+            "result_test_text.json": {
+                "test_name": "text_serving_case",
+                "model_id": "Qwen/Qwen3-4B",
+                "Hardware": "H100",
+                "date": "20261121-120000",
+                "completed": 8,
+                "failed": 0,
+                "request_throughput": 1.25,
+                "output_throughput": 40.0,
+                "mean_ttft_ms": 120.5,
+                "mean_tpot_ms": 6.5,
+                "mean_itl_ms": 6.25,
+                "mean_e2el_ms": 800.0,
+                "p99_ttft_ms": 200.0,
+                "duration": 12.0,
+                "audio_throughput": 0,
+                "image_throughput": 0,
+                "video_throughput": 0,
+                "random_input_len": 100,
+            },
+            "result_test_omni_audio.json": {
+                "test_name": "omni_chunk_case",
+                "model_id": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+                "Hardware": "H100",
+                "date": "20261121-115826",
+                "completed": 100,
+                "failed": 0,
+                "request_throughput": 0.9671681213117175,
+                "mean_ttft_ms": 409.21592249069363,
+                "mean_tpot_ms": 5.971110715681329,
+                "mean_itl_ms": 5.97111071568133,
+                "audio_throughput": 26.06564027420841,
+                "mean_audio_ttfp_ms": 524.8251610761508,
+                "p99_audio_ttfp_ms": 822.0186460111292,
+                "mean_audio_rtf": 0.1317546776212871,
+                "duration": 103.39464028691873,
+                "baseline": {
+                    "H100": {"request_throughput": 0.9562, "mean_ttft_ms": 460.0396},
+                    "A3": {"request_throughput": 0.5098},
+                },
+            },
+            "result_test_tts.json": {
+                "test_name": "seed_tts_case",
+                "model_id": "openbmb/MiniCPM-o-4_5",
+                "Hardware": "910",
+                "date": "20261121-110604",
+                "completed": 256,
+                "failed": 0,
+                "request_throughput": 5.307059388166985,
+                "audio_throughput": 22.38749833777067,
+                "mean_ttft_ms": 174.96904570975857,
+                "p99_ttft_ms": 488.2261612365253,
+                "mean_audio_ttfp_ms": 1716.163834147892,
+                "p99_audio_ttfp_ms": 2564.477450452978,
+                "mean_audio_rtf": 0.7298888217948072,
+                "p99_audio_rtf": 1.2008500398326454,
+                "mean_tpot_ms": 0,
+                "image_throughput": 0,
+                "duration": 48.237636189034674,
+            },
+            "result_test_image.json": {
+                "test_name": "image_case",
+                "model_id": "tencent/HunyuanImage-3.0-Instruct-Distil",
+                "Hardware": "H100",
+                "date": "20261121-111228",
+                "completed": 96,
+                "failed": 0,
+                "request_throughput": 0.2537612332556933,
+                "image_throughput": 0.2537612332556933,
+                "mean_denoise_step_latency_ms": 489.79824452665827,
+                "mean_peak_memory_mb": 55502.333333333336,
+                "mean_e2el_ms": 58353.102476180844,
+                "video_throughput": 0,
+                "audio_throughput": 0,
+                "mean_ttft_ms": 0,
+                "duration": 378.30837582377717,
+                "baseline": {"H100": {"mean_e2el_ms": 58151.52815403417}},
+            },
+            "result_test_video.json": {
+                "test_name": "video_case",
+                "model_id": "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v",
+                "Hardware": "H100",
+                "date": "20261121-110754",
+                "completed": 10,
+                "failed": 0,
+                "request_throughput": 0.20646337642470264,
+                "video_throughput": 0.28388714258396613,
+                "mean_video_rtf": 2.835084208846092,
+                "mean_video_generation_ms": 3898.240787163377,
+                "mean_peak_memory_mb": 43325.8,
+                "mean_e2el_ms": 4842.333703674376,
+                "image_throughput": 0,
+                "mean_denoise_step_latency_ms": 0,
+                "duration": 48.434740209952,
+            },
+            "result_test_lingbot_video.json": {
+                "test_name": "lingbot_video_case",
+                "model_id": "robbyant/lingbot-video-dense-1.3b",
+                "Hardware": "H100",
+                "date": "20261121-105423",
+                "completed": 3,
+                "failed": 0,
+                "video_throughput": 0.1869749021583839,
+                "mean_video_rtf": 0.5563927193482716,
+                "mean_video_generation_ms": 208.64726975560188,
+                "mean_e2el_ms": 2005.1397066563368,
+                "duration": 6.016850320622325,
+            },
+            "result_test_realtime.json": {
+                "test_name": "lingbot_realtime_case",
+                "model_id": "robbyant/lingbot-world-v2-14b-causal-fast-diffusers",
+                "Hardware": "910B",
+                "date": "20261121-110710",
+                "completed": 3,
+                "failed": 0,
+                "request_throughput": 0.008241,
+                "mean_e2el_ms": 121338.58955775698,
+                "mean_video_ttfc_ms": 4012.9338813324766,
+                "mean_video_fps": 3.9312533627855495,
+                "mean_video_rtf": 3.0524618088324367,
+                "mean_video_steady_interval_ms": 3021.8125894816235,
+                "min_video_fps": 3.93045403578819,
+                "duration": 364.0168080367148,
+                "baseline": {"A2": {"mean_video_ttfc_ms": 6332.3904, "request_throughput": 0.0071}},
+            },
+            "result_test_duplex.json": {
+                "test_name": "duplex_case",
+                "model_id": "openbmb/MiniCPM-o-4_5",
+                "Hardware": "H100",
+                "date": "20261121-110036",
+                "completed": 66,
+                "failed": 0,
+                "request_throughput": 0.16086710984868532,
+                "audio_throughput": 1.8726881490748775,
+                "mean_ttft_ms": 565.9387038975227,
+                "mean_audio_rtf": 0.8660640406504065,
+                "mean_duplex_response_ttft_ms": 565.939,
+                "mean_duplex_stall_ratio": 0.341108,
+                "p99_duplex_stall_ratio": 4.602397,
+                "duration": 410.27653236314654,
+                "input_lens": [1, 2, 3],
+                "ttfts": [1.0, 2.0],
+            },
+            "diffusion_result_test_hunyuan.json": [
+                {
+                    "test_name": "diffusion_case",
+                    "Hardware": "910",
+                    "timestamp": "20261121-105919",
+                    "completed": 10,
+                    "failed": 0,
+                    "server_params": {"model": "tencent/HunyuanImage-3.0-Instruct"},
+                    "throughput_qps": 0.18737164038779,
+                    "latency_mean": 5.336798547685612,
+                    "latency_p99": 5.43519172689761,
+                    "peak_memory_mb_mean": 47214.0,
+                    "duration": 53.369869524030946,
+                    "baseline": {
+                        "H200": {"throughput_qps": 0.465},
+                        "A3": {"throughput_qps": 0.1855},
+                    },
+                }
+            ],
+            "result_test_no_metrics.json": {
+                "test_name": "empty_perf",
+                "model_id": "NoPerf",
+                "Hardware": "H100",
+                "completed": 0,
+                "failed": 0,
+                "random_input_len": 128,
+                "num_prompts": 4,
+                "audio_throughput": 0,
+                "image_throughput": 0,
+                "video_throughput": 0,
+            },
+            "benchmark_results_future.json": {
+                "test_name": "future_perf",
+                "model_id": "FutureModel",
+                "Hardware": "H100",
+                "date": "20261121-130000",
+                "completed": 2,
+                "failed": 0,
+                "custom_step_latency_ms": 12.5,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, payload in fixtures.items():
+                (root / name).write_text(json.dumps(payload))
+            md = render_perf_accuracy_summary_section(
+                log_dirs=[("Buildkite", root)],
+                report_date="2026-11-21",
+                buildkite_sources=[],
+            )
+        perf = md[: md.index("## Accuracy Summary")]
+        sections: dict[str, str] = {}
+        for part in perf.split("\n### "):
+            if part.startswith("### "):
+                part = part[4:]
+            title, _, body = part.partition("\n")
+            sections[title.strip()] = body
+
+        self.assertNotIn("Serving / omni", perf)
+        text = sections["Text serving"]
+        self.assertIn("text_serving_case", text)
+        self.assertIn("1.250", text)
+        self.assertIn("6.500", text)
+        self.assertIn("mean_itl_ms", text)
+        self.assertNotIn("audio_throughput", text)
+        self.assertNotIn("random_input_len", perf)
+
+        omni = sections["Omni text and audio"]
+        self.assertIn("mean_tpot_ms", omni)
+        self.assertIn("5.971", omni)
+        self.assertIn("mean_audio_rtf", omni)
+        self.assertIn("0.1318", omni)
+        self.assertIn("p99_audio_ttfp_ms", omni)
+        self.assertIn("0.9562", omni)  # H100 baseline, not the A3 0.5098 profile
+        self.assertNotIn("0.5098", omni)
+
+        audio = sections["Audio / TTS"]
+        self.assertIn("22.387", audio)
+        self.assertIn("1716.16", audio)
+        self.assertIn("2564.48", audio)
+        self.assertIn("0.7299", audio)
+        self.assertNotIn("mean_tpot_ms", audio)
+        self.assertNotIn("image_throughput", audio)
+
+        image = sections["Image generation"]
+        self.assertIn("0.2538", image)
+        self.assertIn("489.80", image)
+        self.assertIn("55502.33", image)
+        self.assertIn("58353.10", image)
+        self.assertIn("baseline_mean_e2el_ms", image)
+        self.assertNotIn("mean_ttft_ms", image)
+        self.assertNotIn("video_throughput", image)
+        self.assertNotIn("audio_throughput", image)
+
+        video = sections["Video generation"]
+        self.assertIn("video_case", video)
+        self.assertIn("lingbot_video_case", video)
+        self.assertIn("2.835", video)
+        self.assertIn("3898.24", video)
+        self.assertIn("208.65", video)
+        self.assertNotIn("image_throughput", video)
+        self.assertNotIn("mean_video_ttfc_ms", video)
+        self.assertNotIn("mean_denoise_step_latency_ms", video)
+
+        realtime = sections["Lingbot-World realtime"]
+        self.assertIn("4012.93", realtime)
+        self.assertIn("3.931", realtime)
+        self.assertIn("3021.81", realtime)
+        self.assertIn("min_video_fps", realtime)
+        self.assertNotIn("6332.39", realtime)  # A2 baseline does not match Hardware 910B
+        self.assertNotIn("mean_video_generation_ms", realtime)
+
+        duplex = sections["Omni duplex eval"]
+        self.assertIn("0.3411", duplex)
+        self.assertIn("4.602", duplex)
+        self.assertIn("565.94", duplex)
+        self.assertNotIn("input_lens", duplex)
+
+        diffusion = sections["Diffusion"]
+        self.assertIn("diffusion_case", diffusion)
+        self.assertIn("0.1874", diffusion)
+        self.assertIn("5.337", diffusion)
+        self.assertIn("47214.00", diffusion)
+        self.assertNotIn("0.4650", diffusion)  # H200 baseline, hardware is 910
+        self.assertNotIn("request_throughput", diffusion)
+
+        self.assertIn("12.500", sections["Performance (custom_step_latency_ms)"])
+        self.assertIn("*No performance metrics in `result_test_no_metrics.json`.*", perf)
+        self.assertNotIn("empty_perf", perf)
+        self.assertNotIn("NoPerf", perf)
+        self.assertEqual(perf.count("result_test_"), 1)
+
+
 class AccuracySchemaTests(unittest.TestCase):
     def test_accuracy_schemas_render_as_separate_tables(self) -> None:
         import json
