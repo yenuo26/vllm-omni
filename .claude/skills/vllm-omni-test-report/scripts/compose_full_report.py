@@ -4236,12 +4236,13 @@ def main() -> None:
   critical/high-priority bugs separately for reference); (4) `UT coverage meets this iteration requirement
   (Guide), Performance regression < 10% (Guide)` is a manual user-selectable
   row that does **not** influence the final Go / Rejected verdict.
-- **Performance Summary** and **Accuracy Summary:** two chapters of metric-value
-  tables (one numeric column per metric, no filename column) from the latest
+- **Performance Summary** and **Accuracy Summary:** metric-value tables (no filename
+  column) from the latest
   vllm-omni archives in omni-reviewbot (`kanban/data/vllm_omni/buildkite_nightly_raw/<YYYYMMDD>`
   and `local_nightly_raw/manual_<YYYYMMDD>`), plus any extra `--log-dir-h*` trees.
   Values are quoted only from those JSON files (`result_test_*` /
   `diffusion_result_*` / `benchmark_results_*` / `result_acc_*.json`).
+  Accuracy is one table per shared metric schema.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`. With `--release-version`,
   also the latest scheduled nightly, scheduled weekly, and scheduled release B200
