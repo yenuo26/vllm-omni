@@ -14,6 +14,7 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+from quality_defense_coverage import attach_quality_percentages  # noqa: E402
 from report_html_theme import EDITORIAL_THEME_CSS, RELEASE_MARKDOWN_DOC_CSS  # noqa: E402
 
 # Inserted after ``## Test conclusion``; replaced with interactive HTML (release) or static MD
@@ -2646,10 +2647,12 @@ def _upgrade_resource_usage_block(html_fragment: str) -> str:
 # toggled state) **and** to ``localStorage["quality-defense:<model>:<axis>"]``
 # for reload persistence.
 #
-# Segments are pre-lit (``data-quality-on="1"`` baked at render time) from
-# the vllm-omni repo code via :func:`_compute_quality_defense_coverage`; the
-# click-toggle JS reads this attribute first, so the baked state is the
-# initial render and clicks still override it within a session.
+# Functionality / Documentation / Stability / Gate are pre-lit
+# (``data-quality-on="1"``) from CI YAML and example/accuracy paths via
+# :func:`_compute_quality_defense_coverage`. Performance, Precision, and
+# Reliability are coverage percentages (filled radius + percent label),
+# from Model care rows and the issue-133 fault-mode library. Click-to-confirm
+# still toggles an outline; it does not change a baked percentage.
 #
 # Geometry is computed from a regular N-gon (N = axis count for the model):
 #   * ViewBox 300×300, centre at (150, 150).
@@ -2743,6 +2746,13 @@ def _qd_repo_root() -> Path | None:
     if env:
         root = Path(env).expanduser()
         return root if root.is_dir() else None
+    # The skill lives inside the vllm-omni checkout
+    # (``.claude/skills/.../scripts``). Walk parents before the laptop
+    # fallbacks so report generation sees ``tests/dfx`` without ``$REPO_ROOT``.
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "tests" / "dfx" / "reliability").is_dir() and (parent / "vllm_omni").is_dir():
+            return parent
     # Fall back through known laptop clone locations. Order matters: prefer a
     # path with the lane-split .buildkite layout the scan actually reads.
     for cand in (
@@ -2809,26 +2819,26 @@ def _compute_quality_defense_coverage(
     - ``func`` / ``stab`` — the model has a nightly test step in the lane's
       nightly YAML. ``stab`` tracks ``func`` per lane ("this lane exercises
       the model nightly").
-    - ``perf`` — the same lane YAML references a ``bench`` / ``throughput`` /
-      ``perf`` step near the model keyword.
     - ``doc`` — ``tests/examples/`` has a usage example for the model (a
       runnable example serves as "documentation" for driving it), gated by
       lane presence (lights only on lanes where ``func`` is lit).
-    - ``prec`` — ``tests/e2e/accuracy/`` has an accuracy test for the model
-      (numerical precision), gated by lane presence.
     - ``gate`` — the model appears in the lane's merge/ready gate YAML
       (``test-merge.yml`` / ``test-ready.yml`` for cuda; ``test-npu-ready.yml``
       for npu).
-    - ``rel`` — ``tests/dfx/reliability/`` has a reliability test for the
-      model (single axis; only ``_QUALITY_DEFENSE_HAS_REL`` models render a
-      Reliability segment, but the flag is computed for all models).
 
-    When ``repo_root`` is ``None`` or unreachable, every model returns empty
-    sets (the radar renders all-gray, i.e. the pre-change behavior).
+    Performance, Precision, and Reliability are **not** binary. They are
+    attached under ``pct`` by :func:`quality_defense_coverage.attach_quality_percentages`:
+    Model care scenario coverage for perf/prec, and the issue-133 fault-mode
+    library for rel. ``rel`` in the returned dict stays false so older
+    lit-counts do not treat a partial reliability axis as fully on.
+
+    When ``repo_root`` is ``None`` or unreachable, the binary axes stay off.
+    Models with Model care rows then score 0% (no cases found); models with
+    no Model care entry stay at 100% for Performance and Precision.
     """
     empty = {mid: {"gpu": set(), "npu": set(), "rel": False} for mid, _ in _QUALITY_DEFENSE_MODELS}
     if repo_root is None or not repo_root.is_dir():
-        return empty
+        return _qd_attach_percentages(empty, None)
 
     cuda_nightly = _qd_lane_yaml(repo_root, "cuda")
     npu_nightly = _qd_lane_yaml(repo_root, "npu")
@@ -2854,37 +2864,21 @@ def _compute_quality_defense_coverage(
         kws = _QUALITY_DEFENSE_MODEL_KEYWORDS.get(model_id, ())
         kws_lower = tuple(k.lower() for k in kws)
 
-        def _lane_has(text: str, *, perf: bool = False) -> bool:
+        def _lane_has(text: str) -> bool:
             if not text:
                 return False
             low = text.lower()
-            for kw in kws_lower:
-                # Find each keyword occurrence and check the surrounding window
-                # for a perf-collection signal (bench / throughput / perf).
-                # For func/stab/gate, a plain keyword hit suffices.
-                idx = low.find(kw)
-                while idx != -1:
-                    if perf:
-                        window = low[max(0, idx - 120): idx + len(kw) + 200]
-                        if any(p in window for p in ("bench", "throughput", "perf")):
-                            return True
-                    else:
-                        return True
-                    idx = low.find(kw, idx + len(kw))
-            return False
+            return any(kw in low for kw in kws_lower)
 
         gpu: set[str] = set()
         npu: set[str] = set()
 
-        # func / stab / perf per lane (nightly YAML).
+        # func / stab per lane (nightly YAML). Performance is a percentage
+        # axis and is not lit from this YAML.
         if _lane_has(cuda_nightly):
             gpu.update({"func", "stab"})
-        if _lane_has(cuda_nightly, perf=True):
-            gpu.add("perf")
         if _lane_has(npu_nightly):
             npu.update({"func", "stab"})
-        if _lane_has(npu_nightly, perf=True):
-            npu.add("perf")
 
         # gate per lane (merge/ready YAML).
         if _lane_has(cuda_gate):
@@ -2892,24 +2886,28 @@ def _compute_quality_defense_coverage(
         if _lane_has(npu_gate):
             npu.add("gate")
 
-        # doc / prec — repo-wide evidence, gated by lane presence (func lit).
+        # doc — repo-wide examples, gated by lane presence (func lit).
+        # Precision is a percentage axis (Model care), not this grep.
         has_doc = _grep_dir(repo_root / "tests" / "examples", kws_lower)
         if has_doc and "func" in gpu:
             gpu.add("doc")
         if has_doc and "func" in npu:
             npu.add("doc")
-        has_prec = _grep_dir(repo_root / "tests" / "e2e" / "accuracy", kws_lower)
-        if has_prec and "func" in gpu:
-            gpu.add("prec")
-        if has_prec and "func" in npu:
-            npu.add("prec")
 
-        # rel — reliability suite (single axis).
-        rel = _grep_dir(repo_root / "tests" / "dfx" / "reliability", kws_lower)
+        out[model_id] = {"gpu": gpu, "npu": npu, "rel": False}
 
-        out[model_id] = {"gpu": gpu, "npu": npu, "rel": rel}
+    return _qd_attach_percentages(out, repo_root)
 
-    return out
+
+def _qd_attach_percentages(coverage: dict[str, dict], repo_root: Path | None) -> dict[str, dict]:
+    """Fill ``pct`` for Performance, Precision, and Reliability."""
+    return attach_quality_percentages(
+        coverage,
+        repo_root,
+        has_rel=_QUALITY_DEFENSE_HAS_REL,
+        single_mode=_QUALITY_DEFENSE_SINGLE_MODE,
+        keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+    )
 
 
 def _qd_pentagon_point(angle_deg: float, radius: float) -> tuple[float, float]:
@@ -2918,25 +2916,52 @@ def _qd_pentagon_point(angle_deg: float, radius: float) -> tuple[float, float]:
     return (150 + radius * math.cos(rad), 150 + radius * math.sin(rad))
 
 
+def _qd_half_wedge(radius: float, sweep: int) -> str:
+    """Semicircle path of ``radius`` (sweep 0 = GPU side, 1 = NPU side)."""
+    if radius <= 0.05:
+        return ""
+    return f"M 0 {radius:.2f} A {radius:.2f} {radius:.2f} 0 0 {sweep} 0 {-radius:.2f} Z"
+
+
+def _qd_axis_numbers(lit: dict, axis: str) -> dict:
+    """Percent block for ``perf`` / ``prec`` / ``rel`` (empty when absent)."""
+    pct = lit.get("pct") if isinstance(lit, dict) else None
+    if not isinstance(pct, dict):
+        return {}
+    block = pct.get(axis)
+    return block if isinstance(block, dict) else {}
+
+
+def _qd_side_percent(block: dict, side: str) -> tuple[int, int, int]:
+    """``(percent, covered, total)`` for one hardware side."""
+    side_block = block.get(side)
+    if isinstance(side_block, dict) and "pct" in side_block:
+        return (
+            int(side_block.get("pct") or 0),
+            int(side_block.get("covered") or 0),
+            int(side_block.get("total") or 0),
+        )
+    return (int(block.get("pct") or 0), int(block.get("covered") or 0), int(block.get("total") or 0))
+
+
 def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
     """Inline SVG for a single model's N-axis coverage radar.
 
-    ``lit`` is ``{"gpu": set[axis], "npu": set[axis], "rel": bool}`` (from
-    :func:`_compute_quality_defense_coverage`). Each lit segment gets
-    ``data-quality-on="1"`` baked into its ``<g>`` tag; the click-toggle JS
-    reads this attribute first (before localStorage) so the baked state is the
-    initial render, and clicks still toggle it within a session.
+    ``lit`` is ``{"gpu": set[axis], "npu": set[axis], "rel": bool, "pct": {...}}``
+    from :func:`_compute_quality_defense_coverage`. Binary axes bake
+    ``data-quality-on="1"``. Performance, Precision, and Reliability bake
+    ``data-quality-pct`` plus a radius-scaled fill and a percent label.
 
     Axis layout is a regular N-gon (N = 6 for models without Reliability, 7
     with). Six axes are split into GPU + NPU halves of one circle (GPU half
     sweep=0, NPU half sweep=1); Reliability is a single circle. In
     ``_QUALITY_DEFENSE_SINGLE_MODE`` (Cosmos) every axis renders as a single
-    circle and lights when either lane has evidence.
+    circle. Binary single circles light when either lane has evidence.
+    Percentage single circles use the combined GPU+NPU fraction.
     """
     lit = lit or {"gpu": set(), "npu": set(), "rel": False}
     gpu_axes = lit.get("gpu", set())
     npu_axes = lit.get("npu", set())
-    rel_on = bool(lit.get("rel", False))
     single_mode = model_id in _QUALITY_DEFENSE_SINGLE_MODE
 
     axes = _qd_axes_for(model_id)
@@ -2952,15 +2977,81 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
         for p in outer_pts
     )
 
-    # Segments: split (gpu/npu halves) or single circle, per axis / model mode.
+    def _pct_circle(axis: str, percent: int, covered: int, total: int, label: str) -> str:
+        fill_r = 18.0 * max(0, min(100, percent)) / 100.0
+        fill = (
+            f'<circle class="qd-fill" cx="{mx:.1f}" cy="{my:.1f}" r="{fill_r:.2f}"/>'
+            if fill_r > 0.05
+            else ""
+        )
+        fraction = f" ({covered}/{total})" if total else ""
+        aria = f"{model_id} {label} {percent}%{fraction}"
+        return (
+            f'<g class="qd-segment" data-quality-key="{model_id}:{axis}" '
+            f'data-quality-pct="{percent}" data-quality-covered="{covered}" '
+            f'data-quality-total="{total}" data-quality-label="{html.escape(aria, quote=True)}" '
+            f'tabindex="0" role="button" aria-label="{html.escape(aria, quote=True)}" aria-pressed="false">'
+            f'<title>{html.escape(aria)}</title>'
+            f'<circle class="qd-circle qd-track" cx="{mx:.1f}" cy="{my:.1f}" r="18"/>'
+            f"{fill}"
+            f'<text class="qd-pct" x="{mx:.1f}" y="{my + 2.5:.1f}" text-anchor="middle">{percent}%</text>'
+            f"</g>"
+        )
+
+    def _pct_half(axis: str, side: str, sweep: int, percent: int, covered: int, total: int) -> str:
+        fill_r = 18.0 * max(0, min(100, percent)) / 100.0
+        wedge = _qd_half_wedge(fill_r, sweep)
+        fill = f'<path class="qd-fill qd-fill--{side}" d="{wedge}"/>' if wedge else ""
+        side_name = side.upper()
+        fraction = f" ({covered}/{total})" if total else ""
+        aria = f"{model_id} {ax_label} {side_name} {percent}%{fraction}"
+        return (
+            f'<g class="qd-segment" data-quality-key="{model_id}:{axis}-{side}" '
+            f'data-qd-side="{side}" data-quality-pct="{percent}" '
+            f'data-quality-covered="{covered}" data-quality-total="{total}" '
+            f'data-quality-label="{html.escape(aria, quote=True)}" '
+            f'tabindex="0" role="button" aria-label="{html.escape(aria, quote=True)}" aria-pressed="false">'
+            f'<title>{html.escape(aria)}</title>'
+            f'<g transform="translate({mx:.1f} {my:.1f}) rotate({angle:.4f})">'
+            f'<path class="qd-half qd-half--{side} qd-track" d="M 0 18 A 18 18 0 0 {sweep} 0 -18 Z"/>'
+            f"{fill}"
+            f"</g></g>"
+        )
+
+    # Segments: percentage fill for perf / prec / rel; binary circles otherwise.
     segment_parts: list[str] = []
+    caption_parts: list[str] = []
     for a in axes:
         angle = angles[a]
         mx, my = _qd_pentagon_point(angle, 75)
         ax_label = _QUALITY_DEFENSE_AXIS_LABELS[a]
 
-        if single_mode or a == "rel":
-            on = (rel_on if a == "rel" else (a in gpu_axes or a in npu_axes))
+        if a in ("perf", "prec", "rel"):
+            block = _qd_axis_numbers(lit, a)
+            if a == "rel" or single_mode:
+                if a == "rel":
+                    percent = int(block.get("pct") or 0)
+                    covered = int(block.get("covered") or 0)
+                    total = int(block.get("total") or 0)
+                else:
+                    percent = int(block.get("single") if block.get("single") is not None else block.get("pct") or 0)
+                    covered = int(block.get("covered") or 0)
+                    total = int(block.get("total") or 0)
+                segment_parts.append(_pct_circle(a, percent, covered, total, ax_label))
+            else:
+                gpu_pct, gpu_cov, gpu_tot = _qd_side_percent(block, "gpu")
+                npu_pct, npu_cov, npu_tot = _qd_side_percent(block, "npu")
+                segment_parts.append(_pct_half(a, "gpu", 0, gpu_pct, gpu_cov, gpu_tot))
+                segment_parts.append(_pct_half(a, "npu", 1, npu_pct, npu_cov, npu_tot))
+                cap_x, cap_y = _qd_pentagon_point(angle, 99)
+                caption_parts.append(
+                    f'<text class="qd-pct qd-pct-caption" x="{cap_x:.1f}" y="{cap_y:.1f}" '
+                    f'text-anchor="middle">{gpu_pct}%/{npu_pct}%</text>'
+                )
+            continue
+
+        if single_mode:
+            on = a in gpu_axes or a in npu_axes
             on_attr = ' data-quality-on="1"' if on else ""
             pressed = "true" if on else "false"
             segment_parts.append(
@@ -2994,6 +3085,7 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
             f"</g></g>"
         )
     segment_xml = "\n      ".join(segment_parts)
+    caption_xml = "\n      ".join(caption_parts)
 
     # Axis labels at radius 117 (pure radial, just outside the outer polygon).
     axis_label_xml = "\n      ".join(
@@ -3010,6 +3102,7 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
         {axis_lines}
       </g>
       {segment_xml}
+      {caption_xml}
       {axis_label_xml}
     </svg>"""
 
@@ -3057,34 +3150,41 @@ def _quality_defense_block_html() -> str:
         _qd_lit_count(mid, coverage[mid]) for mid, _ in _QUALITY_DEFENSE_MODELS
     )
     lit_note = (
-        f'Segments are pre-lit from the current vllm-omni repo code '
-        f'({lit_total}/{total_segments} lit) and remain click-to-override. '
+        f'Functionality, Documentation, Stability, and Gate are pre-lit from '
+        f'the current vllm-omni repo ({lit_total} binary segments on) and stay '
+        f'click-to-confirm. '
         if coverage and lit_total
-        else ""
+        else
+        'Functionality, Documentation, Stability, and Gate stay click-to-confirm. '
     )
     return (
         '<div class="qd-radar-wrap">'
         '<p class="qd-intro">Per-model 7-axis coverage radar across '
         '<strong>10 flagship models</strong> (Functionality / Performance / '
-        'Documentation / Precision / Stability / Reliability / Gate). Click '
-        'any segment to mark it as confirmed. Six axes (Functionality / '
-        'Performance / Documentation / Precision / Stability / Gate) expose '
-        '<strong>GPU</strong> and <strong>NPU</strong> halves of a single '
-        'circle independently: GPU halves turn '
-        '<strong style="color:#16a34a">green</strong> on click, NPU halves '
-        'turn <strong style="color:#0284c7">blue</strong>; NPU halves also '
-        'carry a dashed outline so the two sides are distinguishable even '
-        'before clicking. The Reliability axis is a single circle (green). '
+        'Documentation / Precision / Stability / Reliability / Gate). '
+        '<strong>Performance</strong> and <strong>Precision</strong> show the '
+        'share of '
+        '<a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> '
+        'Model care rows (<code>kind</code> performance or accuracy, split by '
+        'GPU / NPU) that have a matching test case in this repo. A flagship '
+        'model with no Model care entry is drawn at <strong>100%</strong> until '
+        'Model care adds it. <strong>Reliability</strong> shows the share of '
+        'in-scope detect / respond / recover cells from '
+        '<a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">'
+        'issue 133</a> covered by a non-skipped test under '
+        '<code>tests/dfx/reliability/</code>. The fill radius and the percent '
+        'label are that coverage. GPU halves are green, NPU halves are blue. '
         'Models without a Reliability axis render a 6-axis hexagon; '
-        '<strong>Cosmos</strong> renders all axes as single circles '
-        '(GPU-only). ' + lit_note +
-        'State is persisted in <code>localStorage</code>.</p>'
+        '<strong>Cosmos</strong> renders every axis as one circle. ' + lit_note +
+        'Clicking still stores a confirmation outline in <code>localStorage</code> '
+        'and does not replace the computed percent.</p>'
         f'<div class="qd-grid">\n      {cells_xml}\n    </div>'
-        '<p class="qd-legend">Click a segment: gray → '
-        '<strong style="color:#16a34a">green</strong> (GPU / single, '
-        'confirmed) or <strong style="color:#0284c7">blue</strong> (NPU, '
-        'confirmed); click again to revert. GPU halves carry a solid outline, '
-        'NPU halves carry a dashed outline. State saved in localStorage.</p>'
+        '<p class="qd-legend">Performance / Precision captions are '
+        '<strong>GPU% / NPU%</strong>. Reliability is one percent. '
+        'Other axes: click gray → '
+        '<strong style="color:#16a34a">green</strong> (GPU / single) or '
+        '<strong style="color:#0284c7">blue</strong> (NPU). '
+        'GPU halves use a solid outline, NPU halves a dashed outline.</p>'
         '</div>'
     )
 
@@ -3130,8 +3230,19 @@ _QUALITY_DEFENSE_SCRIPT = """<script>
     }
   }
   function k(key) { return "quality-defense:" + key; }
+  function isPct(g) { return g.hasAttribute("data-quality-pct"); }
   function apply(g) {
     var key = g.getAttribute("data-quality-key");
+    if (isPct(g)) {
+      // Baked percent stays. localStorage only toggles a confirmation outline.
+      var confirmed = lsGet(k(key)) === "1";
+      if (confirmed) g.setAttribute("data-quality-on", "1");
+      else g.removeAttribute("data-quality-on");
+      g.setAttribute("aria-pressed", confirmed ? "true" : "false");
+      var baked = g.getAttribute("data-quality-label");
+      if (baked) g.setAttribute("aria-label", baked);
+      return;
+    }
     var attr = g.getAttribute("data-quality-on");
     var v = (attr && attr !== "") ? attr : (lsGet(k(key)) || "0");
     if (v !== "1" && v !== "0") { v = "0"; }

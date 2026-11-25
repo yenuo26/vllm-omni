@@ -16,7 +16,19 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
 from perf_accuracy_summary import render_perf_accuracy_summary_section  # noqa: E402
+from quality_defense_coverage import (  # noqa: E402
+    RELIABILITY_ISSUE_URL,
+    attach_quality_percentages,
+    coverage_percent,
+    reliability_cell_count,
+)
 from release_md_to_html import (  # noqa: E402
+    _QUALITY_DEFENSE_HAS_REL,
+    _QUALITY_DEFENSE_MODEL_KEYWORDS,
+    _QUALITY_DEFENSE_SINGLE_MODE,
+    _compute_quality_defense_coverage,
+    _qd_model_radar_svg,
+    _qd_repo_root,
     convert_release_report_markdown,
     release_conclusion_widget_html,
     wrap_html_document,
@@ -791,6 +803,350 @@ class OmniReviewResultsTests(unittest.TestCase):
             self.assertIn("| Local |", md)
             self.assertIn("0.3655", md)
             self.assertNotIn("does not include metric values", md)
+
+
+class QualityDefenseCoverageTests(unittest.TestCase):
+    """Performance / Precision / Reliability percentages for the radar.
+
+    Live fractions are the current vllm-omni tree against the Model care
+    snapshot and the issue-133 fault library. Synthetic cases lock the
+    rules (100% when a model is absent from Model care, skips do not
+    count, a new JSON id is picked up without a code change).
+    """
+
+    def test_percent_rounding_and_library_size(self) -> None:
+        self.assertEqual(reliability_cell_count(), 54)
+        self.assertEqual(coverage_percent(0, 0), 100)
+        self.assertEqual(coverage_percent(2, 5), 40)
+        self.assertEqual(coverage_percent(8, 54), 15)
+        self.assertEqual(coverage_percent(12, 54), 22)
+        self.assertEqual(coverage_percent(11, 54), 20)
+        self.assertIn("issues/133", RELIABILITY_ISSUE_URL)
+
+    def test_model_without_care_entry_is_fully_filled(self) -> None:
+        scored = {}
+        for model_id, _name in (
+            ("qwen-tts", "Qwen-TTS"),
+            ("qwen-image", "Qwen-Image"),
+            ("HunyuanVideo", "HunyuanVideo"),
+            ("Wan", "Wan"),
+            ("MinimaxH3", "MinimaxH3"),
+            ("Cosmos", "Cosmos"),
+            ("lingbot", "LingBot"),
+        ):
+            scored[model_id] = {"gpu": set(), "npu": set(), "rel": False}
+        attach_quality_percentages(
+            scored,
+            _qd_repo_root(),
+            has_rel=_QUALITY_DEFENSE_HAS_REL,
+            single_mode=_QUALITY_DEFENSE_SINGLE_MODE,
+            keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+        )
+        for model_id in scored:
+            perf = scored[model_id]["pct"]["perf"]
+            prec = scored[model_id]["pct"]["prec"]
+            self.assertEqual(perf["basis"], "no-model-care", model_id)
+            self.assertEqual(prec["basis"], "no-model-care", model_id)
+            self.assertEqual(perf["gpu"]["pct"], 100)
+            self.assertEqual(perf["npu"]["pct"], 100)
+            self.assertEqual(prec["single"], 100)
+            self.assertEqual(perf["gpu"]["total"], 0)
+
+    def test_new_model_care_id_is_not_hardcoded_to_three_models(self) -> None:
+        import json
+        import tempfile
+
+        payload = {
+            "scenarios": [
+                {
+                    "id": "qwen3-tts",
+                    "title": "Qwen-TTS",
+                    "aliases": ["qwen3_tts", "Qwen-TTS"],
+                    "rows": [
+                        {
+                            "mode": "Non-full duplex",
+                            "kind": "performance",
+                            "feature": "default",
+                            "hardware": "GPU",
+                            "dataset": "seed-tts",
+                        }
+                    ],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model_care_scenarios.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            scored = {"qwen-tts": {"gpu": set(), "npu": set(), "rel": False}}
+            attach_quality_percentages(
+                scored,
+                Path(tmp),
+                has_rel=frozenset(),
+                single_mode=frozenset(),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+                model_care_path=path,
+            )
+        perf = scored["qwen-tts"]["pct"]["perf"]
+        self.assertEqual(perf["basis"], "model-care")
+        self.assertEqual(perf["gpu"]["covered"], 0)
+        self.assertEqual(perf["gpu"]["total"], 1)
+        self.assertEqual(perf["gpu"]["pct"], 0)
+        # The row is GPU-only, so the NPU half has an empty requirement.
+        self.assertEqual(perf["npu"]["total"], 0)
+        self.assertEqual(perf["npu"]["pct"], 100)
+
+    def test_skipped_fault_and_matching_case_rules(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            acc = root / "tests" / "e2e" / "accuracy" / "qwen3_omni"
+            acc.mkdir(parents=True)
+            (acc / "test_qwen3_omni.py").write_text(
+                "\n".join(
+                    [
+                        "def get_chunk_config():",
+                        "    return {'async_chunk': True}",
+                        "",
+                        "@hardware_test(res={'cuda': 'H100'})",
+                        "def test_qwen3_omni_seed_tts_wer_bench(omni_server):",
+                        "    params = get_chunk_config()",
+                        "    assert params",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rel = root / "tests" / "dfx" / "reliability"
+            rel.mkdir(parents=True)
+            (rel / "test_reliability_qwen3_omni.py").write_text(
+                "\n".join(
+                    [
+                        "import pytest",
+                        "TREE_SIGNAL_PARAMS = [",
+                        "    pytest.param('SIGKILL', id='sigkill'),",
+                        "    pytest.param('SIGTERM', id='sigterm', marks=pytest.mark.skip(reason='not a crash')),",
+                        "]",
+                        "",
+                        "@pytest.mark.skip(reason='issue#4285')",
+                        "def test_reliability_fault_gpu_oom_under_load():",
+                        "    assert_fault_exception('oom')",
+                        "",
+                        "@pytest.mark.parametrize('signal_name', TREE_SIGNAL_PARAMS)",
+                        "def test_reliability_fault_process_kill_tree_no_load_fast_fail_and_cleanup(signal_name):",
+                        "    _assert_post_fault_chat_fast_fail()",
+                        "    assert_no_server_tree_process_residual_and_gpu_release()",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            care = {
+                "scenarios": [
+                    {
+                        "id": "qwen3-omni",
+                        "aliases": ["qwen3_omni", "Qwen3-Omni"],
+                        "rows": [
+                            {
+                                "mode": "Non-full duplex",
+                                "kind": "accuracy",
+                                "feature": "async chunk + prefix",
+                                "hardware": "GPU",
+                                "dataset": "seed-tts",
+                            },
+                            {
+                                "mode": "Non-full duplex",
+                                "kind": "accuracy",
+                                "feature": "default",
+                                "hardware": "GPU",
+                                "dataset": "seed-tts",
+                            },
+                            {
+                                "mode": "Non-full duplex",
+                                "kind": "performance",
+                                "feature": "async chunk + prefix",
+                                "hardware": "NPU",
+                                "dataset": "seed-tts",
+                            },
+                        ],
+                    }
+                ]
+            }
+            care_path = root / "care.json"
+            care_path.write_text(json.dumps(care), encoding="utf-8")
+            scored = {
+                "qwen-omni": {"gpu": {"func"}, "npu": set(), "rel": False},
+                "minicpm": {"gpu": set(), "npu": set(), "rel": False},
+            }
+            attach_quality_percentages(
+                scored,
+                root,
+                has_rel=frozenset({"qwen-omni", "minicpm"}),
+                single_mode=frozenset(),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+                model_care_path=care_path,
+            )
+        prec = scored["qwen-omni"]["pct"]["prec"]["gpu"]
+        self.assertEqual(prec["covered"], 1)
+        self.assertEqual(prec["total"], 2)
+        self.assertEqual(prec["pct"], 50)
+        covered_rows = [row for row in prec["rows"] if row["covered"]]
+        self.assertEqual(len(covered_rows), 1)
+        self.assertIn("async", str(covered_rows[0]["feature"]))
+        self.assertIn("seed_tts", covered_rows[0]["by"])
+        perf_npu = scored["qwen-omni"]["pct"]["perf"]["npu"]
+        self.assertEqual((perf_npu["covered"], perf_npu["total"], perf_npu["pct"]), (0, 1, 0))
+        rel = scored["qwen-omni"]["pct"]["rel"]
+        self.assertEqual(rel["total"], 54)
+        self.assertEqual(rel["covered"], 3)
+        self.assertEqual(sorted(rel["hits"]), [
+            "tree_idle:detect",
+            "tree_idle:recover",
+            "tree_idle:respond",
+        ])
+        self.assertEqual(rel["issue"], RELIABILITY_ISSUE_URL)
+        # MiniCPM has care rows in the live file, but this fixture JSON does
+        # not list it, so Performance stays fully filled. Reliability is still
+        # the fault library, and this fixture has no MiniCPM test file.
+        self.assertEqual(scored["minicpm"]["pct"]["perf"]["basis"], "no-model-care")
+        self.assertEqual(scored["minicpm"]["pct"]["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(scored["minicpm"]["pct"]["rel"]["covered"], 0)
+        self.assertEqual(scored["minicpm"]["pct"]["rel"]["pct"], 0)
+        # Binary axes are unchanged by the percentage attachment.
+        self.assertEqual(scored["qwen-omni"]["gpu"], {"func"})
+
+    def test_live_repo_fractions(self) -> None:
+        cov = _compute_quality_defense_coverage(_qd_repo_root())
+        qwen = cov["qwen-omni"]["pct"]
+        self.assertEqual(qwen["perf"]["gpu"]["covered"], 0)
+        self.assertEqual(qwen["perf"]["gpu"]["total"], 4)
+        self.assertEqual(qwen["perf"]["npu"]["total"], 3)
+        self.assertEqual(qwen["prec"]["gpu"]["pct"], 40)
+        self.assertEqual((qwen["prec"]["gpu"]["covered"], qwen["prec"]["gpu"]["total"]), (2, 5))
+        self.assertEqual(qwen["prec"]["npu"]["pct"], 0)
+        gpu_rows = qwen["prec"]["gpu"]["rows"]
+        by_dataset = {row["dataset"]: row for row in gpu_rows}
+        self.assertTrue(by_dataset["daily-omni"]["covered"])
+        self.assertIn("daily_omni", by_dataset["daily-omni"]["by"])
+        self.assertTrue(by_dataset["seed-tts"]["covered"])
+        self.assertFalse(any(row["covered"] for row in gpu_rows if row["dataset"] == "duplexEval"))
+        self.assertEqual(qwen["rel"]["covered"], 8)
+        self.assertEqual(qwen["rel"]["pct"], 15)
+        self.assertIn("tree_idle:detect", qwen["rel"]["hits"])
+        self.assertNotIn("oom_under_load:detect", qwen["rel"]["hits"])
+        self.assertNotIn("root_idle:detect", qwen["rel"]["hits"])
+
+        mini = cov["minicpm"]["pct"]
+        self.assertEqual(mini["perf"]["gpu"]["pct"], 0)
+        self.assertEqual(mini["perf"]["npu"]["total"], 4)
+        self.assertEqual(mini["prec"]["gpu"]["total"], 5)
+        self.assertEqual(mini["rel"]["covered"], 0)
+        self.assertEqual(mini["rel"]["pct"], 0)
+
+        hy = cov["HunyuanImage"]["pct"]
+        self.assertEqual((hy["perf"]["gpu"]["covered"], hy["perf"]["gpu"]["total"]), (2, 2))
+        self.assertEqual(hy["perf"]["gpu"]["pct"], 100)
+        self.assertEqual((hy["perf"]["npu"]["covered"], hy["perf"]["npu"]["total"]), (0, 2))
+        self.assertEqual((hy["prec"]["gpu"]["covered"], hy["prec"]["gpu"]["total"]), (2, 2))
+        self.assertEqual(hy["prec"]["npu"]["pct"], 0)
+        self.assertEqual(hy["rel"]["covered"], 11)
+        self.assertEqual(hy["rel"]["pct"], 20)
+        self.assertIn("root_idle:detect", hy["rel"]["hits"])
+        self.assertNotIn("oom_under_load:detect", hy["rel"]["hits"])
+
+        wan = cov["Wan"]["pct"]
+        self.assertEqual(wan["perf"]["basis"], "no-model-care")
+        self.assertEqual(wan["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(wan["rel"]["covered"], 12)
+        self.assertEqual(wan["rel"]["pct"], 22)
+        self.assertIn("oom_under_load:detect", wan["rel"]["hits"])
+        self.assertIn("stage_under_load:respond", wan["rel"]["hits"])
+        self.assertNotIn("root_under_load:detect", wan["rel"]["hits"])
+        self.assertNotIn("oom_under_load:recover", wan["rel"]["hits"])
+
+        for model_id in ("qwen-tts", "qwen-image", "HunyuanVideo", "MinimaxH3", "Cosmos", "lingbot"):
+            self.assertEqual(cov[model_id]["pct"]["perf"]["basis"], "no-model-care")
+            self.assertEqual(cov[model_id]["pct"]["prec"]["single"], 100)
+        # Percentage axes are not stuffed back into the binary lit-sets.
+        self.assertNotIn("perf", cov["qwen-omni"]["gpu"])
+        self.assertNotIn("prec", cov["qwen-omni"]["gpu"])
+        self.assertFalse(cov["qwen-omni"]["rel"])
+
+    def test_svg_bakes_percent_fill_and_leaves_other_axes_binary(self) -> None:
+        lit = {
+            "gpu": {"func"},
+            "npu": set(),
+            "rel": False,
+            "pct": {
+                "perf": {
+                    "basis": "model-care",
+                    "single": 25,
+                    "pct": 25,
+                    "covered": 1,
+                    "total": 4,
+                    "gpu": {"pct": 50, "covered": 1, "total": 2, "rows": []},
+                    "npu": {"pct": 0, "covered": 0, "total": 2, "rows": []},
+                },
+                "prec": {
+                    "basis": "no-model-care",
+                    "single": 100,
+                    "pct": 100,
+                    "covered": 0,
+                    "total": 0,
+                    "gpu": {"pct": 100, "covered": 0, "total": 0, "rows": []},
+                    "npu": {"pct": 100, "covered": 0, "total": 0, "rows": []},
+                },
+                "rel": {"pct": 15, "covered": 8, "total": 54, "basis": "issue-133"},
+            },
+        }
+        svg = _qd_model_radar_svg("qwen-omni", lit)
+        self.assertIn('data-quality-pct="50"', svg)
+        self.assertIn('data-quality-pct="0"', svg)
+        self.assertIn('data-quality-pct="100"', svg)
+        self.assertIn('data-quality-pct="15"', svg)
+        self.assertIn(">15%</text>", svg)
+        self.assertIn(">50%/0%</text>", svg)
+        self.assertIn('class="qd-fill qd-fill--gpu"', svg)
+        func = svg.split('data-quality-key="qwen-omni:func-gpu"', 1)[1].split("</g>", 1)[0]
+        self.assertNotIn("data-quality-pct", func)
+        self.assertIn('data-quality-on="1"', func)
+        doc = svg.split('data-quality-key="qwen-omni:doc-gpu"', 1)[1].split("</g>", 1)[0]
+        self.assertNotIn("data-quality-on", doc)
+        self.assertNotIn("data-quality-pct", doc)
+
+        cosmos = _qd_model_radar_svg(
+            "Cosmos",
+            {
+                "gpu": set(),
+                "npu": set(),
+                "rel": False,
+                "pct": {
+                    "perf": {"single": 100, "pct": 100, "covered": 0, "total": 0, "basis": "no-model-care"},
+                    "prec": {"single": 100, "pct": 100, "covered": 0, "total": 0, "basis": "no-model-care"},
+                },
+            },
+        )
+        self.assertIn('data-quality-key="Cosmos:perf"', cosmos)
+        self.assertIn('data-quality-pct="100"', cosmos)
+        self.assertNotIn("Cosmos:rel", cosmos)
+
+    def test_generator_modules_stay_stdlib_only(self) -> None:
+        import ast
+        import sys
+
+        scripts = Path(__file__).resolve().parent
+        local = {path.stem for path in scripts.glob("*.py")}
+        for name in ("release_md_to_html.py", "quality_defense_coverage.py"):
+            tree = ast.parse((scripts / name).read_text(encoding="utf-8"))
+            modules: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    modules.update(alias.name.split(".", 1)[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    modules.add(node.module.split(".", 1)[0])
+            third_party = modules - set(sys.stdlib_module_names) - local
+            self.assertEqual(third_party, set(), name)
 
 
 if __name__ == "__main__":

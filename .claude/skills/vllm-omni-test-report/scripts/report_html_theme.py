@@ -3622,15 +3622,41 @@ td.oi-followup-cell[data-oi-state="set"] .oi-followup-select {
   fill: color-mix(in srgb, #7dd3fc 35%, var(--dashboard-muted-bg, #e5e7eb));
 }
 /* On state — GPU halves turn green, NPU halves turn blue so the two
-   halves of the same circle are unmistakably distinct when "checked". */
-.release-doc .qd-radar .qd-segment[data-qd-side="gpu"][data-quality-on="1"] .qd-half,
-.release-doc .qd-radar .qd-segment[data-quality-on="1"] .qd-circle {
+   halves of the same circle are unmistakably distinct when "checked".
+   Percentage axes (data-quality-pct) keep a gray track and a radius-scaled
+   .qd-fill, so a confirmation click must not paint the whole disc. */
+.release-doc .qd-radar .qd-segment[data-qd-side="gpu"][data-quality-on="1"]:not([data-quality-pct]) .qd-half,
+.release-doc .qd-radar .qd-segment[data-quality-on="1"]:not([data-quality-pct]) .qd-circle {
   fill: #4ade80;
   stroke: #22c55e;
 }
-.release-doc .qd-radar .qd-segment[data-qd-side="npu"][data-quality-on="1"] .qd-half {
+.release-doc .qd-radar .qd-segment[data-qd-side="npu"][data-quality-on="1"]:not([data-quality-pct]) .qd-half {
   fill: #7dd3fc;
   stroke: #0284c7;
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct] .qd-track {
+  fill: var(--dashboard-muted-bg, #e5e7eb);
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct][data-qd-side="gpu"] .qd-fill,
+.release-doc .qd-radar .qd-segment[data-quality-pct]:not([data-qd-side]) .qd-fill {
+  fill: #4ade80;
+  stroke: none;
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct][data-qd-side="npu"] .qd-fill {
+  fill: #7dd3fc;
+  stroke: none;
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct][data-quality-on="1"] .qd-track {
+  stroke-width: 2.75;
+}
+.release-doc .qd-radar .qd-pct {
+  font-size: 7px;
+  font-weight: 700;
+  fill: #1f2328;
+  pointer-events: none;
+}
+.release-doc .qd-radar .qd-pct-caption {
+  font-size: 8px;
 }
 .release-doc .qd-legend {
   font-size: 12px;

@@ -1,0 +1,2386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Quality Defense Radar preview</title>
+  <style>
+
+.release-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.release-doc .release-section-card {
+  margin-bottom: 0;
+}
+.release-doc .release-section-h2 {
+  margin: 0 0 1rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 2px solid
+    color-mix(
+      in srgb,
+      var(--section-accent, var(--dashboard-border)) 42%,
+      var(--dashboard-border)
+    );
+  font-size: 1.12rem;
+  font-weight: 800;
+  color: var(--dashboard-text);
+  letter-spacing: -0.02em;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+.release-doc .release-section-h2-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.release-doc .release-section-h2-ico {
+  flex-shrink: 0;
+  width: 2.65rem;
+  height: 2.65rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: color-mix(
+    in srgb,
+    var(--section-ico-bg, var(--dashboard-badge-bg)) 100%,
+    transparent
+  );
+  color: var(--section-accent, var(--accent));
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--section-accent, var(--border)) 25%,
+      var(--dashboard-border)
+    );
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+.release-doc .release-section-h2-label {
+  min-width: 0;
+  line-height: 1.28;
+}
+.release-doc .release-section-card--intro {
+  border-top: 3px dashed
+    color-mix(in srgb, var(--dashboard-muted) 52%, var(--dashboard-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dashboard-badge-bg) 72%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 48%
+  );
+}
+.release-doc .release-section-card--conclusion {
+  --section-accent: var(--ok);
+  --section-ico-bg: var(--ok-bg);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 48%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--metrics {
+  --section-accent: var(--dashboard-healthy);
+  --section-ico-bg: var(--dashboard-healthy-bg);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dashboard-healthy-bg) 52%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+/* Metric analysis — operator-editable rich-text analysis box. Blue accent
+   (distinct from the green Metrics overview chart section directly above) +
+   a pencil icon signal "write your analysis here". Mirrors the themed-accent
+   + ico-color pattern of --quality-defense / --stability. */
+.release-doc .release-section-card--metric-analysis {
+  --section-accent: #2563eb;
+  --section-ico-bg: rgba(37, 99, 235, 0.13);
+  --section-ico-color: #2563eb;
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--metric-analysis .release-section-h2-ico svg {
+  color: var(--section-ico-color);
+}
+.release-doc .release-section-card--failure {
+  --section-accent: var(--dashboard-warning);
+  --section-ico-bg: var(--dashboard-warning-bg);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dashboard-warning-bg) 52%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--tests {
+  --section-accent: var(--dashboard-violet);
+  --section-ico-bg: var(--dashboard-violet-bg);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dashboard-violet-bg) 42%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--tracking {
+  --section-accent: var(--dashboard-warning);
+  --section-ico-bg: var(--dashboard-warning-bg);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dashboard-warning-bg) 52%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--open-issues {
+  --section-accent: color-mix(in srgb, var(--danger) 82%, #991b1b);
+  --section-ico-bg: var(--danger-bg);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger-bg) 52%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--outstanding {
+  --section-accent: color-mix(in srgb, #dc2626 88%, #991b1b);
+  --section-ico-bg: rgba(220, 38, 38, 0.14);
+  --section-ico-color: #dc2626;
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--outstanding .release-section-h2-ico svg {
+  color: var(--section-ico-color);
+}
+
+/* Quality Defense Radar — per-model 7-axis coverage; green-leaning accent
+   so the section card prefigures the click-to-green segment fill. The
+   per-segment green is owned by
+   `.qd-segment[data-quality-on="1"] .qd-half` / `.qd-circle { fill: #4ade80; }`
+   in the radar CSS block below — no overlap. */
+.release-doc .release-section-card--quality-defense {
+  --section-accent: color-mix(in srgb, #22c55e 80%, #15803d);
+  --section-ico-bg: rgba(34, 197, 94, 0.14);
+  --section-ico-color: #22c55e;
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--quality-defense .release-section-h2-ico svg {
+  color: var(--section-ico-color);
+}
+
+/* Stability Run Results — long-running test results; amber accent */
+.release-doc .release-section-card--stability {
+  --section-accent: #b45309;
+  --section-ico-bg: rgba(180, 83, 9, 0.12);
+  --section-ico-color: #b45309;
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--stability .release-section-h2-ico svg {
+  color: var(--section-ico-color);
+}
+.release-doc .release-section-card--skip-monitor {
+  --section-accent: #f59e0b;
+  --section-ico-bg: rgba(245, 158, 11, 0.12);
+  --section-ico-color: #d97706;
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--skip-monitor .release-section-h2-ico svg {
+  color: var(--section-ico-color);
+}
+.release-doc .release-section-card--version {
+  --section-accent: #0284c7;
+  --section-ico-bg: rgba(2, 132, 199, 0.12);
+  --section-ico-color: #0369a1;
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--version .release-section-h2-ico svg {
+  color: var(--section-ico-color);
+}
+.release-doc .release-section-card--data {
+  --section-accent: #64748b;
+  --section-ico-bg: rgba(148, 163, 184, 0.18);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--section-ico-bg) 75%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+.release-doc .release-section-card--default {
+  --section-accent: var(--accent);
+  --section-ico-bg: var(--accent-tint);
+  border-top: 4px solid var(--section-accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-tint) 88%, var(--dashboard-panel-bg)) 0%,
+    var(--dashboard-panel-bg) 46%
+  );
+}
+/* H2 major sections (Test conclusion / Metrics / Test Result / …): entire block collapsible */
+.release-doc details.panel.release-section-card.release-section-details {
+  padding: 0;
+  overflow: hidden;
+}
+.release-doc summary.release-section-fold-summary {
+  list-style: none;
+  cursor: pointer;
+  margin: 0;
+  padding: 0.95rem 1.2rem 0.95rem 3rem;
+  position: relative;
+}
+.release-doc summary.release-section-fold-summary::-webkit-details-marker {
+  display: none;
+}
+.release-doc summary.release-section-fold-summary::before {
+  content: "▸";
+  position: absolute;
+  left: 0.82rem;
+  top: 1.05rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--section-accent, var(--accent));
+  line-height: 1;
+  pointer-events: none;
+}
+.release-doc details.release-section-details[open] > summary.release-section-fold-summary::before {
+  content: "▾";
+}
+.release-doc details.release-section-details[open] > summary.release-section-fold-summary {
+  border-bottom: 1px solid var(--dashboard-border);
+}
+.release-doc details.release-section-details > summary.release-section-fold-summary .release-section-h2 {
+  margin: 0 0 0.35rem;
+  padding-bottom: 0.5rem;
+}
+.release-doc .release-section-fold-body {
+  padding: 1rem 1.3rem 1.25rem;
+}
+.release-doc .release-section-fold-body > *:first-child,
+.release-doc .release-section-fold-body > details:first-child {
+  margin-top: 0;
+}
+.release-doc .release-gpu-summary-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+.release-doc .release-gpu-summary-ico {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--release-gpu-ico, var(--accent));
+}
+.release-doc .release-h4-fold {
+  border-left: 3px solid
+    color-mix(in srgb, var(--accent) 50%, var(--dashboard-border));
+}
+.release-doc .release-h4-fold > summary.report-subcard-summary {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent-soft) 22%, var(--dashboard-panel-strong)) 0%,
+    var(--dashboard-panel-bg) 100%
+  );
+}
+.release-doc .release-h5-fold {
+  border-left: 3px solid
+    color-mix(in srgb, var(--dashboard-violet) 55%, var(--dashboard-border));
+  background: color-mix(
+    in srgb,
+    var(--dashboard-violet-bg) 14%,
+    var(--dashboard-panel-bg)
+  );
+}
+.release-doc .release-h5-fold > summary.report-subcard-summary {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--dashboard-violet-bg) 55%, var(--dashboard-panel-strong)) 0%,
+    var(--dashboard-panel-bg) 100%
+  );
+}
+.release-doc .release-h5-fold > summary.report-subcard-summary::before {
+  color: var(--dashboard-violet);
+}
+/* GPU rows: ``details.panel`` inherited global ``.panel`` padding — inset summary looked flat. Reset + accent edge. */
+.release-doc details.panel.test-result-gpu-card.release-gpu-details {
+  padding: 0;
+  overflow: hidden;
+  margin: 0 0 0.95rem;
+  background: var(--dashboard-panel-bg);
+  border-radius: var(--radius);
+  border: 1px solid
+    color-mix(in srgb, var(--release-gpu-ico, var(--accent)) 28%, var(--dashboard-border));
+  border-left: 4px solid var(--release-gpu-ico, var(--accent));
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.09);
+  --release-gpu-ico: var(--accent);
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details.release-gpu-details--h200 {
+  --release-gpu-ico: #7c3aed;
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details.release-gpu-details--h800 {
+  --release-gpu-ico: #2563eb;
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details.release-gpu-details--a100 {
+  --release-gpu-ico: #059669;
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details.release-gpu-details--a3 {
+  --release-gpu-ico: #f59e0b;
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details.release-gpu-details--h100 {
+  --release-gpu-ico: var(--ci);
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details.release-gpu-details--b200 {
+  /* B200 (Blackwell) — Buildkite scheduled release. Teal to distinguish from
+     H100's CI-purple and H200's local-GPU violet. */
+  --release-gpu-ico: #0ea5e9;
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details:last-child {
+  margin-bottom: 0;
+}
+.release-doc details.panel.test-result-gpu-card.release-gpu-details:hover {
+  border-color: color-mix(in srgb, var(--release-gpu-ico, var(--accent)) 45%, var(--dashboard-border));
+  border-left-color: var(--release-gpu-ico, var(--accent));
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
+}
+.release-doc details.release-gpu-details[open] > summary.release-gpu-details-summary {
+  border-bottom: 1px solid var(--dashboard-border);
+}
+.release-doc summary.release-gpu-details-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.92rem 1.05rem 0.92rem 3.15rem;
+  position: relative;
+  font-weight: 800;
+  font-size: 1.08rem;
+  color: var(--dashboard-text);
+  letter-spacing: -0.02em;
+  background: linear-gradient(
+    105deg,
+    color-mix(in srgb, var(--release-gpu-ico, var(--accent)) 14%, var(--dashboard-panel-strong)) 0%,
+    var(--dashboard-panel-bg) 62%
+  );
+  margin: 0;
+}
+.release-doc summary.release-gpu-details-summary::-webkit-details-marker {
+  display: none;
+}
+.release-doc summary.release-gpu-details-summary::before {
+  content: "▸";
+  position: absolute;
+  left: 0.88rem;
+  top: 0.98rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--release-gpu-ico, var(--accent));
+  line-height: 1;
+  pointer-events: none;
+}
+.release-doc details.release-gpu-details[open] > summary.release-gpu-details-summary::before {
+  content: "▾";
+}
+.release-doc .release-gpu-details-body {
+  padding: 1rem 1.2rem 1.2rem;
+  background: color-mix(in srgb, var(--dashboard-badge-bg) 32%, var(--dashboard-panel-bg));
+}
+.release-doc .release-gpu-details-body > .release-h4-fold:first-child,
+.release-doc .release-gpu-details-body > p:first-child {
+  margin-top: 0;
+}
+.release-doc .release-h5-fold .report-subcard-body {
+  font-size: 0.98rem;
+}
+/* Clicks must reach <summary>; decorative SVGs must not steal the toggle. */
+.release-doc details > summary svg,
+.release-doc details > summary .ico {
+  pointer-events: none;
+}
+.release-doc > .meta.generated-meta {
+  margin: 0;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--dashboard-border-strong) 55%, transparent);
+  flex-shrink: 0;
+}
+.release-doc h3 {
+  margin: 1.15rem 0 0.55rem;
+  font-size: 1.04rem;
+  color: var(--dashboard-soft-text);
+  font-weight: 700;
+}
+.release-doc h4, .release-doc h5, .release-doc h6 {
+  margin: 1rem 0 0.45rem;
+  font-size: 1rem;
+  color: var(--dashboard-soft-text);
+  font-weight: 700;
+}
+.release-doc p {
+  margin: 0.65rem 0;
+}
+.release-doc p:first-of-type {
+  margin-top: 0;
+}
+.release-doc ul {
+  margin: 0.5rem 0 0.85rem 1.25rem;
+  padding: 0;
+}
+.release-doc li {
+  margin: 0.3rem 0;
+}
+.release-doc .table-scroll {
+  margin: 0.85rem 0;
+}
+.release-doc .table-scroll > table {
+  min-width: 480px;
+}
+.release-doc table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0;
+  font-size: 0.92rem;
+}
+.release-doc th, .release-doc td {
+  border: 1px solid var(--border);
+  padding: 0.65rem 0.8rem;
+  text-align: left;
+  vertical-align: top;
+}
+.release-doc th {
+  background: var(--dashboard-panel-strong);
+  font-weight: 650;
+  color: var(--dashboard-chart-text);
+}
+.release-doc tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--dashboard-badge-bg) 45%, var(--dashboard-panel-bg));
+}
+.release-doc code {
+  background: color-mix(in srgb, var(--dashboard-badge-bg) 55%, var(--dashboard-panel-bg));
+  padding: 0.12em 0.38em;
+  border-radius: 4px;
+  font-size: 0.92em;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+.release-doc a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-soft);
+}
+.release-doc a:hover {
+  color: var(--accent-hover);
+  border-bottom-color: var(--accent);
+}
+.release-conclusion-wrap {
+  margin: 0.5rem 0 1rem;
+}
+.release-conclusion-table {
+  min-width: 320px;
+}
+.release-conclusion-table td:last-child {
+  white-space: normal;
+}
+.conc-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+.conc-btns.conc-auto {
+  pointer-events: none;
+  opacity: 0.9;
+}
+.conc-auto-hint {
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--dashboard-text) 65%, transparent);
+}
+.conc-btn {
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 650;
+  padding: 0.38rem 0.95rem;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--dashboard-panel-bg) 88%, var(--dashboard-badge-bg));
+  color: var(--dashboard-text);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.conc-btn:hover {
+  border-color: var(--accent-soft);
+}
+.conc-btn.conc-pass.is-on {
+  background: color-mix(in srgb, #16a34a 22%, var(--dashboard-panel-bg));
+  border-color: color-mix(in srgb, #16a34a 45%, var(--border));
+  color: #15803d;
+}
+.conc-btn.conc-fail.is-on {
+  background: color-mix(in srgb, #dc2626 20%, var(--dashboard-panel-bg));
+  border-color: color-mix(in srgb, #dc2626 42%, var(--border));
+  color: #b91c1c;
+}
+.release-verdict-line {
+  margin: 1rem 0 0.25rem;
+  font-size: 1.02rem;
+  font-weight: 650;
+}
+.release-verdict {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.release-conclusion-table th:last-child,
+.release-conclusion-table td.conc-evidence-cell {
+  min-width: 14rem;
+  vertical-align: top;
+}
+.conc-evidence-list {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.conc-evidence-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+.conc-evidence-item a {
+  overflow-wrap: anywhere;
+}
+.conc-evidence-thumb {
+  display: block;
+  max-width: 10rem;
+  max-height: 6rem;
+  object-fit: contain;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 6px;
+  background: var(--dashboard-badge-bg);
+}
+.conc-evidence-remove {
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  border: 0;
+  background: transparent;
+  color: var(--dashboard-muted);
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+.conc-evidence-remove:hover { color: #b91c1c; }
+.conc-evidence-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+.conc-evidence-input {
+  width: 100%;
+  min-width: 12rem;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 6px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  resize: vertical;
+}
+.conc-evidence-upload {
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--accent);
+  cursor: pointer;
+}
+.conc-evidence-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+/* UT coverage editable cell — sits inline inside the Result column of the
+   Development Metrics overview. The cell renders **only the value** (no
+   inline editor / reset / saved-hint buttons) so the row reads the same
+   as every other Result cell. Clicking the value opens the in-page modal
+   below (works in iframes where ``window.prompt`` is blocked). */
+.ut-coverage-cell {
+  display: inline;
+}
+.ut-coverage-btn {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--dashboard-muted) 65%, transparent);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ut-coverage-btn:hover {
+  border-bottom-style: solid;
+  color: var(--accent);
+}
+
+/* UT coverage modal — used by the Development Metrics overview snapshot
+   (works in iframe contexts where ``window.prompt`` is blocked). The modal
+   owns Save / Cancel / Reset so the cell itself stays clean. */
+.ut-coverage-modal[hidden] {
+  display: none !important;
+}
+.ut-coverage-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+.ut-coverage-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--dashboard-text) 42%, transparent);
+  backdrop-filter: blur(2px);
+}
+.ut-coverage-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 32rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--dashboard-panel-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--dashboard-border);
+  box-shadow: 0 20px 50px color-mix(in srgb, var(--dashboard-text) 22%, transparent);
+  overflow: hidden;
+}
+.ut-coverage-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--dashboard-border);
+  background: linear-gradient(180deg, var(--dashboard-panel-strong) 0%, var(--dashboard-panel-bg) 100%);
+}
+.ut-coverage-modal-header h2 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--dashboard-text);
+}
+.ut-coverage-modal-close {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 8px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.ut-coverage-modal-body {
+  padding: 1rem 1.1rem;
+}
+.ut-coverage-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--dashboard-text);
+}
+.ut-coverage-modal-label {
+  font-weight: 600;
+  color: var(--dashboard-text);
+}
+.ut-coverage-modal-hint {
+  font-size: 0.75rem;
+  color: var(--dashboard-muted);
+}
+.ut-coverage-modal-input {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 8px;
+  background: var(--dashboard-panel-bg);
+  color: var(--text);
+  width: 100%;
+  box-sizing: border-box;
+}
+.ut-coverage-modal-input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.ut-coverage-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.85rem 1.1rem;
+  border-top: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-strong);
+}
+.ut-coverage-modal-footer-spacer {
+  flex: 1 1 auto;
+}
+.ut-coverage-modal-reset,
+.ut-coverage-modal-cancel,
+.ut-coverage-modal-save {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.95rem;
+  border-radius: 8px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.ut-coverage-modal-save {
+  background: var(--dashboard-healthy);
+  color: #fff;
+  border-color: var(--dashboard-healthy);
+  font-weight: 600;
+}
+.ut-coverage-modal-save:hover {
+  filter: brightness(0.95);
+}
+.ut-coverage-modal-cancel:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+.ut-coverage-modal-reset:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+.ut-coverage-modal-open {
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ */
+/* DI Top-10 Assignee + Maintainer cells — text when filled,           */
+/* white-background dashed-border input when empty.                    */
+/*                                                                     */
+/* Filled cells render a plain <span class="di-{assignee,maintainer}-  */
+/* text">; empty cells render an inline <input class="di-{assignee,      */
+/* maintainer}-input">. Same pattern as the development report's         */
+/* `di-top10-{assignee,maintainer}-*` block (lines below) so the two    */
+/* report kinds stay visually consistent.                              */
+/*                                                                     */
+/* Persistence: `_di_top10_inline_edit_script` (nightly) and            */
+/* `_DI_TOP10_INPUT_SCRIPT` (development) write to `data-di-*-value`     */
+/* attributes + localStorage keys `di-{top10-,}assignee:#N` and          */
+/* `di-{top10-,}maintainer:#N`.                                        */
+/* ------------------------------------------------------------------ */
+td.di-assignee-cell,
+td.di-maintainer-cell {
+  min-width: 7rem;
+  vertical-align: middle;
+}
+/* Filled text — plain text, no edit affordance. */
+.di-assignee-text,
+.di-maintainer-text {
+  color: var(--dashboard-text);
+  font-weight: 500;
+  font-size: 0.9rem;
+  display: inline-block;
+  padding: 0.18rem 0.1rem;
+}
+/* Empty input — white background, dashed muted border (matches the */
+/* development report's earlier ns-item-btn pattern).                */
+.di-assignee-input,
+.di-maintainer-input {
+  width: 100%;
+  min-width: 7rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  border-radius: 7px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.di-assignee-input::placeholder,
+.di-maintainer-input::placeholder {
+  color: color-mix(in srgb, var(--dashboard-muted) 80%, transparent);
+  font-style: italic;
+  font-weight: 500;
+}
+.di-assignee-input:hover,
+.di-maintainer-input:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+}
+.di-assignee-input:focus,
+.di-maintainer-input:focus {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.di-assignee-input[data-da-persisted="1"],
+.di-maintainer-input[data-dm-persisted="1"] {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--dashboard-muted) 70%, transparent);
+  background: var(--dashboard-panel-bg);
+  font-weight: 500;
+}
+
+/* ── Outstanding Items — inline editing & action buttons ────────── */
+
+/* Add Item button */
+.ns-add-item-wrap {
+  margin-bottom: 0.65rem;
+}
+.ns-add-item-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.35rem 1rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  letter-spacing: 0.02em;
+}
+.ns-add-item-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.ns-add-item-btn:active {
+  filter: brightness(0.92);
+}
+
+/* Delete row button */
+td.ns-del-cell {
+  width: 2.2rem;
+  text-align: center;
+  vertical-align: middle;
+}
+th.ns-del-th {
+  width: 2.2rem;
+}
+.ns-del-btn {
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--dashboard-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.ns-del-btn:hover {
+  background: rgba(220, 38, 38, 0.10);
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.25);
+}
+
+/* Item cell */
+td.ns-item-cell {
+  min-width: 10rem;
+  vertical-align: middle;
+}
+.ns-item-cell--editable {
+  cursor: pointer;
+}
+.ns-item-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  width: 100%;
+  padding: 0.22rem 0.4rem;
+  border-radius: 7px;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  background: transparent;
+  color: var(--dashboard-text);
+  cursor: pointer;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ns-item-btn:hover {
+  border-style: solid;
+  border-color: var(--accent);
+}
+.ns-item-btn.ns-item-empty {
+  color: var(--dashboard-muted);
+  font-style: italic;
+}
+.ns-item-value {
+  font-weight: 500;
+}
+td.ns-item-cell[data-ns-item-state="set"] .ns-item-value {
+  color: var(--dashboard-text);
+}
+.ns-item-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 12rem;
+}
+.ns-item-input {
+  font: inherit;
+  font-size: 0.82rem;
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+}
+.ns-item-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+.ns-item-save,
+.ns-item-cancel {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.ns-item-save {
+  background: var(--dashboard-healthy);
+  border-color: var(--dashboard-healthy);
+  color: #fff;
+  font-weight: 600;
+}
+.ns-item-save:hover {
+  filter: brightness(0.95);
+}
+.ns-item-cancel:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+
+td.ns-assignee-cell {
+  min-width: 7rem;
+  vertical-align: middle;
+}
+/* DI Top10 Assignee cell — plain text (filled); editable input (empty). */
+/* Mirrors the development report's earlier ns-item-btn pattern: white    */
+/* background, dashed muted border (not accent-tinted).                   */
+.release-doc td.di-top10-assignee-cell {
+  min-width: 7rem;
+  vertical-align: middle;
+}
+.release-doc td.di-top10-assignee-cell.is-filled .di-top10-assignee-text {
+  color: var(--dashboard-text);
+  font-weight: 500;
+  font-size: 0.9rem;
+  display: inline-block;
+  padding: 0.18rem 0.1rem;
+}
+.release-doc .di-top10-assignee-input {
+  width: 100%;
+  min-width: 7rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  border-radius: 7px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.release-doc .di-top10-assignee-input::placeholder {
+  color: color-mix(in srgb, var(--dashboard-muted) 80%, transparent);
+  font-style: italic;
+  font-weight: 500;
+}
+.release-doc .di-top10-assignee-input:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+}
+.release-doc .di-top10-assignee-input:focus {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.release-doc .di-top10-assignee-input[data-di-assignee-persisted="1"] {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--dashboard-muted) 70%, transparent);
+  background: var(--dashboard-panel-bg);
+  font-weight: 500;
+}
+
+/* DI Top10 Maintainer cell — development report variant. Mirrors the     */
+/* `.di-top10-assignee-*` block above so the two columns render identically. */
+.release-doc td.di-top10-maintainer-cell {
+  min-width: 7rem;
+  vertical-align: middle;
+}
+.release-doc td.di-top10-maintainer-cell.is-filled .di-top10-maintainer-text {
+  color: var(--dashboard-text);
+  font-weight: 500;
+  font-size: 0.9rem;
+  display: inline-block;
+  padding: 0.18rem 0.1rem;
+}
+.release-doc .di-top10-maintainer-input {
+  width: 100%;
+  min-width: 7rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  border-radius: 7px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.release-doc .di-top10-maintainer-input::placeholder {
+  color: color-mix(in srgb, var(--dashboard-muted) 80%, transparent);
+  font-style: italic;
+  font-weight: 500;
+}
+.release-doc .di-top10-maintainer-input:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+}
+.release-doc .di-top10-maintainer-input:focus {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.release-doc .di-top10-maintainer-input[data-di-maintainer-persisted="1"] {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--dashboard-muted) 70%, transparent);
+  background: var(--dashboard-panel-bg);
+  font-weight: 500;
+}
+
+/* Device-Hours / Build — manual metric row. Mirrors the   */
+/* di-top10-assignee / -maintainer input pattern so the cell visually  */
+/* matches the rest of the editable cells in the Metrics overview.    */
+.release-doc .dhpb-input {
+  width: 100%;
+  min-width: 8rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  border-radius: 7px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.release-doc .dhpb-input::placeholder {
+  color: color-mix(in srgb, var(--dashboard-muted) 80%, transparent);
+  font-style: italic;
+  font-weight: 500;
+}
+.release-doc .dhpb-input:hover {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+}
+.release-doc .dhpb-input:focus {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.release-doc .dhpb-input[data-dhpb-persisted="1"] {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--dashboard-muted) 70%, transparent);
+  background: var(--dashboard-panel-bg);
+  font-weight: 500;
+}
+.ns-assignee-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  width: 100%;
+  padding: 0.22rem 0.4rem;
+  border-radius: 7px;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  background: transparent;
+  color: var(--dashboard-text);
+  cursor: pointer;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ns-assignee-btn:hover {
+  border-style: solid;
+  border-color: var(--accent);
+}
+.ns-assignee-btn.ns-assignee-empty {
+  color: var(--dashboard-muted);
+  font-style: italic;
+}
+.ns-assignee-value {
+  font-weight: 600;
+}
+td.ns-assignee-cell[data-ns-assignee-state="set"] .ns-assignee-value {
+  color: color-mix(in srgb, var(--accent) 80%, var(--dashboard-text));
+}
+.ns-assignee-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 10rem;
+}
+.ns-assignee-input {
+  font: inherit;
+  font-size: 0.82rem;
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+}
+.ns-assignee-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+.ns-assignee-save,
+.ns-assignee-cancel {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.ns-assignee-save {
+  background: var(--dashboard-healthy);
+  border-color: var(--dashboard-healthy);
+  color: #fff;
+  font-weight: 600;
+}
+.ns-assignee-save:hover {
+  filter: brightness(0.95);
+}
+.ns-assignee-cancel:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+/* Status <select> in Next Steps table */
+td.ns-status-cell {
+  vertical-align: middle;
+}
+.ns-status-select {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.22rem 0.4rem;
+  border-radius: 7px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+  min-width: 7rem;
+}
+.ns-status-select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* Fail-status modal — used by the failure-analysis tables when the report is
+   embedded via iframe (kanban Reports page). The legacy ``window.prompt()``
+   flow is blocked by iframe sandbox lacking ``allow-modals``; this in-page
+   modal works in both standalone and iframe contexts. */
+.fail-status-modal[hidden] {
+  display: none !important;
+}
+.fail-status-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+}
+.fail-status-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--dashboard-text) 42%, transparent);
+  backdrop-filter: blur(2px);
+}
+.fail-status-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 38rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--dashboard-panel-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--dashboard-border);
+  box-shadow: 0 20px 50px color-mix(in srgb, var(--dashboard-text) 22%, transparent);
+  overflow: hidden;
+}
+.fail-status-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--dashboard-border);
+  background: linear-gradient(180deg, var(--dashboard-panel-strong) 0%, var(--dashboard-panel-bg) 100%);
+}
+.fail-status-modal-header h2 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--dashboard-text);
+}
+.fail-status-modal-close {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 8px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.fail-status-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem;
+}
+.fail-status-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--dashboard-text);
+}
+.fail-status-modal-label {
+  font-weight: 600;
+  color: var(--dashboard-text);
+}
+.fail-status-modal-hint {
+  font-size: 0.75rem;
+  color: var(--dashboard-muted);
+}
+.fail-status-modal-input,
+.fail-status-modal-textarea {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 8px;
+  background: var(--dashboard-panel-bg);
+  color: var(--text);
+  width: 100%;
+  box-sizing: border-box;
+}
+.fail-status-modal-textarea {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  min-height: 5.5rem;
+  resize: vertical;
+}
+.fail-status-modal-input:focus,
+.fail-status-modal-textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.fail-status-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  padding: 0.85rem 1.1rem;
+  border-top: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-strong);
+}
+.fail-status-modal-cancel,
+.fail-status-modal-save {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.95rem;
+  border-radius: 8px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.fail-status-modal-save {
+  background: var(--dashboard-healthy);
+  color: #fff;
+  border-color: var(--dashboard-healthy);
+  font-weight: 600;
+}
+.fail-status-modal-save:hover {
+  filter: brightness(0.95);
+}
+.fail-status-modal-cancel:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+.fail-status-modal-open {
+  overflow: hidden;
+}
+.fail-status-note {
+  color: var(--dashboard-muted);
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------------ */
+/* Skip Test Case Monitoring — per-issue collapsible groups.           */
+/* The table's first column is ``Issue #``; rows sharing one issue are */
+/* folded under a single group row by                                  */
+/* ``release_md_to_html._group_skip_monitor_table_by_issue`` and        */
+/* toggled by ``_SKIP_GROUP_SCRIPT``.                                  */
+/* ------------------------------------------------------------------ */
+.skip-group-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.35rem 0 0.6rem;
+}
+.skip-group-tools-label {
+  font-size: 0.82rem;
+  color: var(--dashboard-muted);
+  margin-right: auto;
+}
+.skip-group-all {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.skip-group-all:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+tr.skip-issue-group {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 6%, var(--dashboard-panel-bg, #fff));
+}
+tr.skip-issue-group:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--dashboard-panel-bg, #fff));
+}
+tr.skip-issue-group > td {
+  font-weight: 600;
+}
+td.skip-group-issue {
+  white-space: nowrap;
+}
+.skip-group-toggle {
+  font: inherit;
+  padding: 0;
+  margin-right: 0.15rem;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  line-height: 1;
+}
+.skip-group-caret {
+  display: inline-block;
+  font-size: 0.85em;
+}
+.skip-group-count {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.02em 0.5em;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--dashboard-muted) 18%, transparent);
+  color: var(--dashboard-muted);
+}
+td.skip-group-summary {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--dashboard-muted);
+}
+tr.skip-issue-child[hidden] {
+  display: none;
+}
+tr.skip-issue-child > td {
+  font-size: 0.92em;
+}
+td.skip-child-issue {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Open issues — manual triage columns (Follow-up dropdown + Remarks).  */
+/* Upgraded from `—` placeholders by                                   */
+/* ``release_md_to_html._upgrade_open_issue_action_cells`` and driven   */
+/* by ``_OPEN_ISSUE_ACTION_SCRIPT`` (localStorage, keyed by issue #).   */
+/* ------------------------------------------------------------------ */
+td.oi-followup-cell,
+td.oi-note-cell {
+  min-width: 9.5rem;
+  vertical-align: middle;
+}
+.oi-followup-select {
+  font: inherit;
+  font-size: 0.82rem;
+  width: 100%;
+  max-width: 12rem;
+  padding: 0.22rem 0.4rem;
+  border-radius: 7px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.oi-followup-select:hover {
+  border-color: var(--accent);
+}
+td.oi-followup-cell[data-oi-state="set"] .oi-followup-select {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--dashboard-border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--dashboard-panel-bg, #fff));
+  font-weight: 600;
+}
+.oi-note-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  width: 100%;
+  padding: 0.22rem 0.4rem;
+  border-radius: 7px;
+  border: 1px dashed color-mix(in srgb, var(--dashboard-muted) 55%, transparent);
+  background: transparent;
+  color: var(--dashboard-text);
+  cursor: pointer;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.oi-note-btn:hover {
+  border-style: solid;
+  border-color: var(--accent);
+}
+.oi-note-btn.oi-note-empty {
+  color: var(--dashboard-muted);
+  font-style: italic;
+}
+.oi-note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 12rem;
+}
+.oi-note-input {
+  font: inherit;
+  font-size: 0.82rem;
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  resize: vertical;
+}
+.oi-note-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+.oi-note-save,
+.oi-note-cancel {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--dashboard-border);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  cursor: pointer;
+}
+.oi-note-save {
+  background: var(--dashboard-healthy);
+  border-color: var(--dashboard-healthy);
+  color: #fff;
+  font-weight: 600;
+}
+.oi-note-save:hover {
+  filter: brightness(0.95);
+}
+.oi-note-cancel:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+
+/* -----------------------------------------------------------------------
+ * Resource Usage Analysis — manual-entry editor block (multi-module)
+ * The editor lives inside the collapsible section body and holds a list of
+ * modules (each with its own editable title + rich-text body editor —
+ * contenteditable + B/I/H3/H4/list/Clear toolbar, mirroring the
+ * metric-analysis editor). Clicking the module title (or the caret toggle)
+ * collapses / expands the module body.
+ * Persistence: localStorage['resource-usage-analysis'] + data-uri-value.
+ * ----------------------------------------------------------------------- */
+.resource-usage-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0.4rem 0 0.2rem;
+}
+.resource-usage-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.resource-usage-toolbar--top {
+  padding-bottom: 0.3rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.resource-usage-status {
+  font-size: 0.78rem;
+  color: var(--dashboard-muted);
+}
+.resource-usage-status[data-resource-usage-state="saved"] {
+  color: var(--dashboard-healthy);
+}
+.resource-usage-add {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.28rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+.resource-usage-add:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Per-module card --------------------------------------------------- */
+.resource-usage-modules {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.resource-usage-module {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 8px;
+  background: var(--dashboard-panel-bg);
+  overflow: hidden;
+}
+.resource-usage-module-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  cursor: pointer;
+  user-select: none;
+}
+.resource-usage-module-header:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.resource-usage-toggle {
+  font: inherit;
+  font-size: 0.9rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  color: var(--dashboard-text);
+  cursor: pointer;
+  padding: 0;
+}
+.resource-usage-module-title {
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  padding: 0.18rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dashboard-text);
+  cursor: text;
+}
+.resource-usage-module-title:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.resource-usage-module-title:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--dashboard-panel-bg);
+}
+.resource-usage-delete {
+  font: inherit;
+  font-size: 1rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dashboard-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.resource-usage-delete:hover {
+  border-color: var(--dashboard-warning);
+  color: var(--danger-strong);
+}
+.resource-usage-module-body {
+  padding: 0.7rem 0.8rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.resource-usage-module[data-collapsed="true"] .resource-usage-module-body {
+  display: none;
+}
+.resource-usage-module-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.ru-btn {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-width: 1.8rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--dashboard-text);
+  cursor: pointer;
+  line-height: 1.3;
+}
+.ru-btn:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+}
+.ru-btn:active {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.resource-usage-module-editor {
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  width: 100%;
+  min-height: 16rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  box-sizing: border-box;
+  overflow-y: auto;
+  /* Cap runaway growth (the rich body has no native resize handle). */
+  max-height: 60vh;
+}
+.resource-usage-module-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* contenteditable has no native placeholder; show hint via :empty:before */
+.resource-usage-module-editor:empty:before {
+  content: attr(data-placeholder);
+  color: color-mix(in srgb, var(--dashboard-muted) 80%, transparent);
+  font-style: italic;
+}
+.resource-usage-module-editor h3 {
+  font-size: 1.02rem;
+  font-weight: 700;
+  margin: 0.6rem 0 0.3rem;
+  line-height: 1.35;
+}
+.resource-usage-module-editor h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.25rem;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--dashboard-text) 90%, transparent);
+}
+.resource-usage-module-editor p {
+  margin: 0.3rem 0;
+}
+.resource-usage-module-editor ul,
+.resource-usage-module-editor ol {
+  margin: 0.3rem 0;
+  padding-left: 1.5rem;
+}
+.resource-usage-module-editor ul {
+  list-style: disc;
+}
+.resource-usage-module-editor ol {
+  list-style: decimal;
+}
+.resource-usage-module-editor li {
+  margin: 0.15rem 0;
+}
+.resource-usage-module-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  font-size: 0.74rem;
+  color: var(--dashboard-muted);
+}
+.resource-usage-module-empty .resource-usage-module-title::before {
+  content: "Untitled module — ";
+  color: var(--dashboard-muted);
+  font-weight: 400;
+}
+
+/* ── Metric analysis (editable rich-text box) ───────────────────── */
+.release-doc .metric-analysis-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.4rem 0 0.2rem;
+}
+.release-doc .metric-analysis-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.release-doc .metric-analysis-status {
+  font-size: 0.78rem;
+  color: var(--dashboard-muted);
+  margin-left: auto;
+}
+.release-doc .metric-analysis-status[data-ma-state="saved"] {
+  color: var(--dashboard-healthy, #22c55e);
+}
+.release-doc .ma-btn {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-width: 1.8rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--dashboard-text);
+  cursor: pointer;
+  line-height: 1.3;
+}
+.release-doc .ma-btn:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+}
+.release-doc .ma-btn:active {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.release-doc .metric-analysis-editor {
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  min-height: 160px;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 6px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  box-sizing: border-box;
+  overflow-y: auto;
+  /* contenteditable has no native placeholder; show hint via :empty:before */
+}
+.release-doc .metric-analysis-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.release-doc .metric-analysis-editor:empty:before {
+  content: attr(data-placeholder);
+  color: color-mix(in srgb, var(--dashboard-muted) 80%, transparent);
+  font-style: italic;
+}
+.release-doc .metric-analysis-editor h3 {
+  font-size: 1.02rem;
+  font-weight: 700;
+  margin: 0.6rem 0 0.3rem;
+  line-height: 1.35;
+}
+.release-doc .metric-analysis-editor h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.25rem;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--dashboard-text) 90%, transparent);
+}
+.release-doc .metric-analysis-editor p {
+  margin: 0.3rem 0;
+}
+.release-doc .metric-analysis-editor ul,
+.release-doc .metric-analysis-editor ol {
+  margin: 0.3rem 0;
+  padding-left: 1.5rem;
+}
+.release-doc .metric-analysis-editor ul {
+  list-style: disc;
+}
+.release-doc .metric-analysis-editor ol {
+  list-style: decimal;
+}
+.release-doc .metric-analysis-editor li {
+  margin: 0.15rem 0;
+}
+
+/* ── Quality Defense Radar — 9 models × 5 axes ──────────────────── */
+.release-doc .qd-radar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 6px 0;
+}
+.release-doc .qd-intro {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--dashboard-fg, #1f2328);
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--dashboard-card-bg);
+  border-left: 3px solid var(--section-ico-color, #22c55e);
+  border-radius: 4px;
+}
+.release-doc .qd-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 960px) {
+  .release-doc .qd-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 620px) {
+  .release-doc .qd-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.release-doc .qd-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 8px 8px;
+  border: 1px solid var(--dashboard-border, #d0d7de);
+  border-radius: 8px;
+  background: var(--dashboard-card-bg);
+}
+.release-doc .qd-cell-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--dashboard-fg, #1f2328);
+  letter-spacing: 0.02em;
+}
+.release-doc .qd-cell svg.qd-radar {
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+  font-family: inherit;
+}
+.release-doc .qd-radar .qd-grid {
+  pointer-events: none;
+}
+.release-doc .qd-radar .qd-pentagon-outer,
+.release-doc .qd-radar .qd-pentagon-inner {
+  fill: none;
+  stroke: var(--dashboard-border, #d0d7de);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  opacity: 0.7;
+}
+.release-doc .qd-radar line {
+  stroke: var(--dashboard-border, #d0d7de);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  opacity: 0.6;
+}
+.release-doc .qd-radar .qd-axis-label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--dashboard-fg, #1f2328);
+}
+.release-doc .qd-radar .qd-segment {
+  cursor: pointer;
+  outline: none;
+}
+.release-doc .qd-radar .qd-segment:focus-visible .qd-circle,
+.release-doc .qd-radar .qd-segment:focus-visible .qd-half {
+  stroke: var(--section-accent, #22c55e);
+  stroke-width: 3;
+}
+/* Default gray state — half-circles (split segments, GPU + NPU halves). */
+.release-doc .qd-radar .qd-segment .qd-half {
+  fill: var(--dashboard-muted-bg, #e5e7eb);
+  stroke: var(--dashboard-border, #9ca3af);
+  stroke-width: 1.5;
+  transition: fill 160ms ease, stroke 160ms ease;
+}
+/* NPU halves carry a dashed outline even in the default state so reviewers
+   can tell GPU from NPU at a glance, before clicking. */
+.release-doc .qd-radar .qd-segment[data-qd-side="npu"] .qd-half {
+  stroke-dasharray: 4 2;
+}
+/* Default gray state — full circles (single segments, doc / rel). */
+.release-doc .qd-radar .qd-segment .qd-circle {
+  fill: var(--dashboard-muted-bg, #e5e7eb);
+  stroke: var(--dashboard-border, #9ca3af);
+  stroke-width: 1.5;
+  transition: fill 160ms ease, stroke 160ms ease;
+}
+.release-doc .qd-radar .qd-segment:hover .qd-circle,
+.release-doc .qd-radar .qd-segment[data-qd-side="gpu"]:hover .qd-half {
+  fill: color-mix(in srgb, #4ade80 35%, var(--dashboard-muted-bg, #e5e7eb));
+}
+.release-doc .qd-radar .qd-segment[data-qd-side="npu"]:hover .qd-half {
+  fill: color-mix(in srgb, #7dd3fc 35%, var(--dashboard-muted-bg, #e5e7eb));
+}
+/* On state — GPU halves turn green, NPU halves turn blue so the two
+   halves of the same circle are unmistakably distinct when "checked".
+   Percentage axes (data-quality-pct) keep a gray track and a radius-scaled
+   .qd-fill, so a confirmation click must not paint the whole disc. */
+.release-doc .qd-radar .qd-segment[data-qd-side="gpu"][data-quality-on="1"]:not([data-quality-pct]) .qd-half,
+.release-doc .qd-radar .qd-segment[data-quality-on="1"]:not([data-quality-pct]) .qd-circle {
+  fill: #4ade80;
+  stroke: #22c55e;
+}
+.release-doc .qd-radar .qd-segment[data-qd-side="npu"][data-quality-on="1"]:not([data-quality-pct]) .qd-half {
+  fill: #7dd3fc;
+  stroke: #0284c7;
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct] .qd-track {
+  fill: var(--dashboard-muted-bg, #e5e7eb);
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct][data-qd-side="gpu"] .qd-fill,
+.release-doc .qd-radar .qd-segment[data-quality-pct]:not([data-qd-side]) .qd-fill {
+  fill: #4ade80;
+  stroke: none;
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct][data-qd-side="npu"] .qd-fill {
+  fill: #7dd3fc;
+  stroke: none;
+}
+.release-doc .qd-radar .qd-segment[data-quality-pct][data-quality-on="1"] .qd-track {
+  stroke-width: 2.75;
+}
+.release-doc .qd-radar .qd-pct {
+  font-size: 7px;
+  font-weight: 700;
+  fill: #1f2328;
+  pointer-events: none;
+}
+.release-doc .qd-radar .qd-pct-caption {
+  font-size: 8px;
+}
+.release-doc .qd-legend {
+  font-size: 12px;
+  color: var(--dashboard-muted, #6b7280);
+  text-align: center;
+  margin: 0;
+}
+
+  </style>
+</head>
+<body>
+  <div class="release-doc">
+    <h2>Quality Defense Radar</h2>
+<div class="qd-radar-wrap"><p class="qd-intro">Per-model 7-axis coverage radar across <strong>10 flagship models</strong> (Functionality / Performance / Documentation / Precision / Stability / Reliability / Gate). <strong>Performance</strong> and <strong>Precision</strong> show the share of <a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> Model care rows (<code>kind</code> performance or accuracy, split by GPU / NPU) that have a matching test case in this repo. A flagship model with no Model care entry is drawn at <strong>100%</strong> until Model care adds it. <strong>Reliability</strong> shows the share of in-scope detect / respond / recover cells from <a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">issue 133</a> covered by a non-skipped test under <code>tests/dfx/reliability/</code>. The fill radius and the percent label are that coverage. GPU halves are green, NPU halves are blue. Models without a Reliability axis render a 6-axis hexagon; <strong>Cosmos</strong> renders every axis as one circle. Functionality, Documentation, Stability, and Gate stay click-to-confirm. Clicking still stores a confirmation outline in <code>localStorage</code> and does not replace the computed percent.</p><div class="qd-grid">
+      <div class="qd-cell" data-qd-model="qwen-omni"><h3 class="qd-cell-title">Qwen3-Omni</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="qwen-omni quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 232.1,84.5 252.4,173.4 195.6,244.6 104.4,244.6 47.6,173.4 67.9,84.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 189.1,118.8 198.7,161.1 171.7,195.0 128.3,195.0 101.3,161.1 110.9,118.8"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="232.1" y2="84.5"/>
+        <line x1="150" y1="150" x2="252.4" y2="173.4"/>
+        <line x1="150" y1="150" x2="195.6" y2="244.6"/>
+        <line x1="150" y1="150" x2="104.4" y2="244.6"/>
+        <line x1="150" y1="150" x2="47.6" y2="173.4"/>
+        <line x1="150" y1="150" x2="67.9" y2="84.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="qwen-omni:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-omni Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-omni Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:perf-gpu" data-qd-side="gpu" data-quality-pct="0" data-quality-covered="0" data-quality-total="4" data-quality-label="qwen-omni Performance GPU 0% (0/4)" tabindex="0" role="button" aria-label="qwen-omni Performance GPU 0% (0/4)" aria-pressed="false"><title>qwen-omni Performance GPU 0% (0/4)</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:perf-npu" data-qd-side="npu" data-quality-pct="0" data-quality-covered="0" data-quality-total="3" data-quality-label="qwen-omni Performance NPU 0% (0/3)" tabindex="0" role="button" aria-label="qwen-omni Performance NPU 0% (0/3)" aria-pressed="false"><title>qwen-omni Performance NPU 0% (0/3)</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-omni Documentation GPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-omni Documentation NPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:prec-gpu" data-qd-side="gpu" data-quality-pct="40" data-quality-covered="2" data-quality-total="5" data-quality-label="qwen-omni Precision GPU 40% (2/5)" tabindex="0" role="button" aria-label="qwen-omni Precision GPU 40% (2/5)" aria-pressed="false"><title>qwen-omni Precision GPU 40% (2/5)</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 7.20 A 7.20 7.20 0 0 0 0 -7.20 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:prec-npu" data-qd-side="npu" data-quality-pct="0" data-quality-covered="0" data-quality-total="3" data-quality-label="qwen-omni Precision NPU 0% (0/3)" tabindex="0" role="button" aria-label="qwen-omni Precision NPU 0% (0/3)" aria-pressed="false"><title>qwen-omni Precision NPU 0% (0/3)</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-omni Stability GPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-omni Stability NPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:rel" data-quality-pct="15" data-quality-covered="8" data-quality-total="54" data-quality-label="qwen-omni Reliability 15% (8/54)" tabindex="0" role="button" aria-label="qwen-omni Reliability 15% (8/54)" aria-pressed="false"><title>qwen-omni Reliability 15% (8/54)</title><circle class="qd-circle qd-track" cx="76.9" cy="166.7" r="18"/><circle class="qd-fill" cx="76.9" cy="166.7" r="2.70"/><text class="qd-pct" x="76.9" y="169.2" text-anchor="middle">15%</text></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-omni Gate GPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-omni:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-omni Gate NPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="227.4" y="88.3" text-anchor="middle">0%/0%</text>
+      <text class="qd-pct qd-pct-caption" x="193.0" y="239.2" text-anchor="middle">40%/0%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="241.5" y="77.1" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="264.1" y="176.0" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="200.8" y="255.4" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="99.2" y="255.4" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="35.9" y="176.0" text-anchor="middle">Reliability</text>
+      <text class="qd-axis-label" x="58.5" y="77.1" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="minicpm"><h3 class="qd-cell-title">MiniCPM</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="minicpm quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 232.1,84.5 252.4,173.4 195.6,244.6 104.4,244.6 47.6,173.4 67.9,84.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 189.1,118.8 198.7,161.1 171.7,195.0 128.3,195.0 101.3,161.1 110.9,118.8"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="232.1" y2="84.5"/>
+        <line x1="150" y1="150" x2="252.4" y2="173.4"/>
+        <line x1="150" y1="150" x2="195.6" y2="244.6"/>
+        <line x1="150" y1="150" x2="104.4" y2="244.6"/>
+        <line x1="150" y1="150" x2="47.6" y2="173.4"/>
+        <line x1="150" y1="150" x2="67.9" y2="84.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="minicpm:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="minicpm Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="minicpm Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:perf-gpu" data-qd-side="gpu" data-quality-pct="0" data-quality-covered="0" data-quality-total="4" data-quality-label="minicpm Performance GPU 0% (0/4)" tabindex="0" role="button" aria-label="minicpm Performance GPU 0% (0/4)" aria-pressed="false"><title>minicpm Performance GPU 0% (0/4)</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:perf-npu" data-qd-side="npu" data-quality-pct="0" data-quality-covered="0" data-quality-total="4" data-quality-label="minicpm Performance NPU 0% (0/4)" tabindex="0" role="button" aria-label="minicpm Performance NPU 0% (0/4)" aria-pressed="false"><title>minicpm Performance NPU 0% (0/4)</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="minicpm Documentation GPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="minicpm Documentation NPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:prec-gpu" data-qd-side="gpu" data-quality-pct="0" data-quality-covered="0" data-quality-total="5" data-quality-label="minicpm Precision GPU 0% (0/5)" tabindex="0" role="button" aria-label="minicpm Precision GPU 0% (0/5)" aria-pressed="false"><title>minicpm Precision GPU 0% (0/5)</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:prec-npu" data-qd-side="npu" data-quality-pct="0" data-quality-covered="0" data-quality-total="4" data-quality-label="minicpm Precision NPU 0% (0/4)" tabindex="0" role="button" aria-label="minicpm Precision NPU 0% (0/4)" aria-pressed="false"><title>minicpm Precision NPU 0% (0/4)</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="minicpm Stability GPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="minicpm Stability NPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:rel" data-quality-pct="0" data-quality-covered="0" data-quality-total="54" data-quality-label="minicpm Reliability 0% (0/54)" tabindex="0" role="button" aria-label="minicpm Reliability 0% (0/54)" aria-pressed="false"><title>minicpm Reliability 0% (0/54)</title><circle class="qd-circle qd-track" cx="76.9" cy="166.7" r="18"/><text class="qd-pct" x="76.9" y="169.2" text-anchor="middle">0%</text></g>
+      <g class="qd-segment" data-quality-key="minicpm:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="minicpm Gate GPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="minicpm:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="minicpm Gate NPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="227.4" y="88.3" text-anchor="middle">0%/0%</text>
+      <text class="qd-pct qd-pct-caption" x="193.0" y="239.2" text-anchor="middle">0%/0%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="241.5" y="77.1" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="264.1" y="176.0" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="200.8" y="255.4" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="99.2" y="255.4" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="35.9" y="176.0" text-anchor="middle">Reliability</text>
+      <text class="qd-axis-label" x="58.5" y="77.1" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="qwen-tts"><h3 class="qd-cell-title">Qwen-TTS</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="qwen-tts quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
+        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
+        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
+        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
+        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="qwen-tts:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-tts Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-tts Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-tts Performance GPU 100%" tabindex="0" role="button" aria-label="qwen-tts Performance GPU 100%" aria-pressed="false"><title>qwen-tts Performance GPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:perf-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-tts Performance NPU 100%" tabindex="0" role="button" aria-label="qwen-tts Performance NPU 100%" aria-pressed="false"><title>qwen-tts Performance NPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-tts Documentation GPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-tts Documentation NPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-tts Precision GPU 100%" tabindex="0" role="button" aria-label="qwen-tts Precision GPU 100%" aria-pressed="false"><title>qwen-tts Precision GPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:prec-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-tts Precision NPU 100%" tabindex="0" role="button" aria-label="qwen-tts Precision NPU 100%" aria-pressed="false"><title>qwen-tts Precision NPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-tts Stability GPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-tts Stability NPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-tts Gate GPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-tts:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-tts Gate NPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="235.7" y="100.5" text-anchor="middle">100%/100%</text>
+      <text class="qd-pct qd-pct-caption" x="150.0" y="249.0" text-anchor="middle">100%/100%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="qwen-image"><h3 class="qd-cell-title">Qwen-Image</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="qwen-image quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
+        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
+        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
+        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
+        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="qwen-image:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-image Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-image Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-image Performance GPU 100%" tabindex="0" role="button" aria-label="qwen-image Performance GPU 100%" aria-pressed="false"><title>qwen-image Performance GPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:perf-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-image Performance NPU 100%" tabindex="0" role="button" aria-label="qwen-image Performance NPU 100%" aria-pressed="false"><title>qwen-image Performance NPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-image Documentation GPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-image Documentation NPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-image Precision GPU 100%" tabindex="0" role="button" aria-label="qwen-image Precision GPU 100%" aria-pressed="false"><title>qwen-image Precision GPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:prec-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="qwen-image Precision NPU 100%" tabindex="0" role="button" aria-label="qwen-image Precision NPU 100%" aria-pressed="false"><title>qwen-image Precision NPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-image Stability GPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-image Stability NPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="qwen-image Gate GPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="qwen-image:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="qwen-image Gate NPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="235.7" y="100.5" text-anchor="middle">100%/100%</text>
+      <text class="qd-pct qd-pct-caption" x="150.0" y="249.0" text-anchor="middle">100%/100%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="HunyuanImage"><h3 class="qd-cell-title">HunyuanImage</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HunyuanImage quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 232.1,84.5 252.4,173.4 195.6,244.6 104.4,244.6 47.6,173.4 67.9,84.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 189.1,118.8 198.7,161.1 171.7,195.0 128.3,195.0 101.3,161.1 110.9,118.8"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="232.1" y2="84.5"/>
+        <line x1="150" y1="150" x2="252.4" y2="173.4"/>
+        <line x1="150" y1="150" x2="195.6" y2="244.6"/>
+        <line x1="150" y1="150" x2="104.4" y2="244.6"/>
+        <line x1="150" y1="150" x2="47.6" y2="173.4"/>
+        <line x1="150" y1="150" x2="67.9" y2="84.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanImage Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanImage Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="2" data-quality-total="2" data-quality-label="HunyuanImage Performance GPU 100% (2/2)" tabindex="0" role="button" aria-label="HunyuanImage Performance GPU 100% (2/2)" aria-pressed="false"><title>HunyuanImage Performance GPU 100% (2/2)</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:perf-npu" data-qd-side="npu" data-quality-pct="0" data-quality-covered="0" data-quality-total="2" data-quality-label="HunyuanImage Performance NPU 0% (0/2)" tabindex="0" role="button" aria-label="HunyuanImage Performance NPU 0% (0/2)" aria-pressed="false"><title>HunyuanImage Performance NPU 0% (0/2)</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanImage Documentation GPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanImage Documentation NPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="2" data-quality-total="2" data-quality-label="HunyuanImage Precision GPU 100% (2/2)" tabindex="0" role="button" aria-label="HunyuanImage Precision GPU 100% (2/2)" aria-pressed="false"><title>HunyuanImage Precision GPU 100% (2/2)</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:prec-npu" data-qd-side="npu" data-quality-pct="0" data-quality-covered="0" data-quality-total="2" data-quality-label="HunyuanImage Precision NPU 0% (0/2)" tabindex="0" role="button" aria-label="HunyuanImage Precision NPU 0% (0/2)" aria-pressed="false"><title>HunyuanImage Precision NPU 0% (0/2)</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanImage Stability GPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanImage Stability NPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:rel" data-quality-pct="20" data-quality-covered="11" data-quality-total="54" data-quality-label="HunyuanImage Reliability 20% (11/54)" tabindex="0" role="button" aria-label="HunyuanImage Reliability 20% (11/54)" aria-pressed="false"><title>HunyuanImage Reliability 20% (11/54)</title><circle class="qd-circle qd-track" cx="76.9" cy="166.7" r="18"/><circle class="qd-fill" cx="76.9" cy="166.7" r="3.60"/><text class="qd-pct" x="76.9" y="169.2" text-anchor="middle">20%</text></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanImage Gate GPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanImage:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanImage Gate NPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="227.4" y="88.3" text-anchor="middle">100%/0%</text>
+      <text class="qd-pct qd-pct-caption" x="193.0" y="239.2" text-anchor="middle">100%/0%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="241.5" y="77.1" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="264.1" y="176.0" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="200.8" y="255.4" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="99.2" y="255.4" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="35.9" y="176.0" text-anchor="middle">Reliability</text>
+      <text class="qd-axis-label" x="58.5" y="77.1" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="HunyuanVideo"><h3 class="qd-cell-title">HunyuanVideo</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HunyuanVideo quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
+        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
+        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
+        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
+        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanVideo Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanVideo Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="HunyuanVideo Performance GPU 100%" tabindex="0" role="button" aria-label="HunyuanVideo Performance GPU 100%" aria-pressed="false"><title>HunyuanVideo Performance GPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:perf-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="HunyuanVideo Performance NPU 100%" tabindex="0" role="button" aria-label="HunyuanVideo Performance NPU 100%" aria-pressed="false"><title>HunyuanVideo Performance NPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanVideo Documentation GPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanVideo Documentation NPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="HunyuanVideo Precision GPU 100%" tabindex="0" role="button" aria-label="HunyuanVideo Precision GPU 100%" aria-pressed="false"><title>HunyuanVideo Precision GPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:prec-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="HunyuanVideo Precision NPU 100%" tabindex="0" role="button" aria-label="HunyuanVideo Precision NPU 100%" aria-pressed="false"><title>HunyuanVideo Precision NPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanVideo Stability GPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanVideo Stability NPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="HunyuanVideo Gate GPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="HunyuanVideo:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="HunyuanVideo Gate NPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="235.7" y="100.5" text-anchor="middle">100%/100%</text>
+      <text class="qd-pct qd-pct-caption" x="150.0" y="249.0" text-anchor="middle">100%/100%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="Wan"><h3 class="qd-cell-title">Wan</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Wan quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 232.1,84.5 252.4,173.4 195.6,244.6 104.4,244.6 47.6,173.4 67.9,84.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 189.1,118.8 198.7,161.1 171.7,195.0 128.3,195.0 101.3,161.1 110.9,118.8"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="232.1" y2="84.5"/>
+        <line x1="150" y1="150" x2="252.4" y2="173.4"/>
+        <line x1="150" y1="150" x2="195.6" y2="244.6"/>
+        <line x1="150" y1="150" x2="104.4" y2="244.6"/>
+        <line x1="150" y1="150" x2="47.6" y2="173.4"/>
+        <line x1="150" y1="150" x2="67.9" y2="84.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="Wan:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="Wan Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="Wan Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="Wan Performance GPU 100%" tabindex="0" role="button" aria-label="Wan Performance GPU 100%" aria-pressed="false"><title>Wan Performance GPU 100%</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:perf-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="Wan Performance NPU 100%" tabindex="0" role="button" aria-label="Wan Performance NPU 100%" aria-pressed="false"><title>Wan Performance NPU 100%</title><g transform="translate(208.6 103.2) rotate(-38.5714)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="Wan Documentation GPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="Wan Documentation NPU" aria-pressed="false"><g transform="translate(223.1 166.7) rotate(12.8571)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="Wan Precision GPU 100%" tabindex="0" role="button" aria-label="Wan Precision GPU 100%" aria-pressed="false"><title>Wan Precision GPU 100%</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:prec-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="Wan Precision NPU 100%" tabindex="0" role="button" aria-label="Wan Precision NPU 100%" aria-pressed="false"><title>Wan Precision NPU 100%</title><g transform="translate(182.5 217.6) rotate(64.2857)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="Wan Stability GPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="Wan Stability NPU" aria-pressed="false"><g transform="translate(117.5 217.6) rotate(115.7143)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:rel" data-quality-pct="22" data-quality-covered="12" data-quality-total="54" data-quality-label="Wan Reliability 22% (12/54)" tabindex="0" role="button" aria-label="Wan Reliability 22% (12/54)" aria-pressed="false"><title>Wan Reliability 22% (12/54)</title><circle class="qd-circle qd-track" cx="76.9" cy="166.7" r="18"/><circle class="qd-fill" cx="76.9" cy="166.7" r="3.96"/><text class="qd-pct" x="76.9" y="169.2" text-anchor="middle">22%</text></g>
+      <g class="qd-segment" data-quality-key="Wan:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="Wan Gate GPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="Wan:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="Wan Gate NPU" aria-pressed="false"><g transform="translate(91.4 103.2) rotate(218.5714)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="227.4" y="88.3" text-anchor="middle">100%/100%</text>
+      <text class="qd-pct qd-pct-caption" x="193.0" y="239.2" text-anchor="middle">100%/100%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="241.5" y="77.1" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="264.1" y="176.0" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="200.8" y="255.4" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="99.2" y="255.4" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="35.9" y="176.0" text-anchor="middle">Reliability</text>
+      <text class="qd-axis-label" x="58.5" y="77.1" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="MinimaxH3"><h3 class="qd-cell-title">MinimaxH3</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MinimaxH3 quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
+        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
+        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
+        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
+        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="MinimaxH3 Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="MinimaxH3 Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="MinimaxH3 Performance GPU 100%" tabindex="0" role="button" aria-label="MinimaxH3 Performance GPU 100%" aria-pressed="false"><title>MinimaxH3 Performance GPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:perf-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="MinimaxH3 Performance NPU 100%" tabindex="0" role="button" aria-label="MinimaxH3 Performance NPU 100%" aria-pressed="false"><title>MinimaxH3 Performance NPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="MinimaxH3 Documentation GPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="MinimaxH3 Documentation NPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="MinimaxH3 Precision GPU 100%" tabindex="0" role="button" aria-label="MinimaxH3 Precision GPU 100%" aria-pressed="false"><title>MinimaxH3 Precision GPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:prec-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="MinimaxH3 Precision NPU 100%" tabindex="0" role="button" aria-label="MinimaxH3 Precision NPU 100%" aria-pressed="false"><title>MinimaxH3 Precision NPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="MinimaxH3 Stability GPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="MinimaxH3 Stability NPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="MinimaxH3 Gate GPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="MinimaxH3:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="MinimaxH3 Gate NPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="235.7" y="100.5" text-anchor="middle">100%/100%</text>
+      <text class="qd-pct qd-pct-caption" x="150.0" y="249.0" text-anchor="middle">100%/100%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="Cosmos"><h3 class="qd-cell-title">Cosmos</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cosmos quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
+        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
+        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
+        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
+        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="Cosmos:func" tabindex="0" role="button" aria-label="Cosmos Functionality" aria-pressed="false"><circle class="qd-circle" cx="150.0" cy="75.0" r="18"/></g>
+      <g class="qd-segment" data-quality-key="Cosmos:perf" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="Cosmos Performance 100%" tabindex="0" role="button" aria-label="Cosmos Performance 100%" aria-pressed="false"><title>Cosmos Performance 100%</title><circle class="qd-circle qd-track" cx="215.0" cy="112.5" r="18"/><circle class="qd-fill" cx="215.0" cy="112.5" r="18.00"/><text class="qd-pct" x="215.0" y="115.0" text-anchor="middle">100%</text></g>
+      <g class="qd-segment" data-quality-key="Cosmos:doc" tabindex="0" role="button" aria-label="Cosmos Documentation" aria-pressed="false"><circle class="qd-circle" cx="215.0" cy="187.5" r="18"/></g>
+      <g class="qd-segment" data-quality-key="Cosmos:prec" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="Cosmos Precision 100%" tabindex="0" role="button" aria-label="Cosmos Precision 100%" aria-pressed="false"><title>Cosmos Precision 100%</title><circle class="qd-circle qd-track" cx="150.0" cy="225.0" r="18"/><circle class="qd-fill" cx="150.0" cy="225.0" r="18.00"/><text class="qd-pct" x="150.0" y="227.5" text-anchor="middle">100%</text></g>
+      <g class="qd-segment" data-quality-key="Cosmos:stab" tabindex="0" role="button" aria-label="Cosmos Stability" aria-pressed="false"><circle class="qd-circle" cx="85.0" cy="187.5" r="18"/></g>
+      <g class="qd-segment" data-quality-key="Cosmos:gate" tabindex="0" role="button" aria-label="Cosmos Gate" aria-pressed="false"><circle class="qd-circle" cx="85.0" cy="112.5" r="18"/></g>
+      
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
+    </svg></div>
+      <div class="qd-cell" data-qd-model="lingbot"><h3 class="qd-cell-title">LingBot</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="lingbot quality defense radar">
+      <g class="qd-grid" aria-hidden="true">
+        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
+        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
+        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
+        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
+        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
+        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
+        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
+        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
+      </g>
+      <g class="qd-segment" data-quality-key="lingbot:func-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="lingbot Functionality GPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:func-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="lingbot Functionality NPU" aria-pressed="false"><g transform="translate(150.0 75.0) rotate(-90.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:perf-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="lingbot Performance GPU 100%" tabindex="0" role="button" aria-label="lingbot Performance GPU 100%" aria-pressed="false"><title>lingbot Performance GPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:perf-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="lingbot Performance NPU 100%" tabindex="0" role="button" aria-label="lingbot Performance NPU 100%" aria-pressed="false"><title>lingbot Performance NPU 100%</title><g transform="translate(215.0 112.5) rotate(-30.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:doc-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="lingbot Documentation GPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:doc-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="lingbot Documentation NPU" aria-pressed="false"><g transform="translate(215.0 187.5) rotate(30.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:prec-gpu" data-qd-side="gpu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="lingbot Precision GPU 100%" tabindex="0" role="button" aria-label="lingbot Precision GPU 100%" aria-pressed="false"><title>lingbot Precision GPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--gpu qd-track" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/><path class="qd-fill qd-fill--gpu" d="M 0 18.00 A 18.00 18.00 0 0 0 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:prec-npu" data-qd-side="npu" data-quality-pct="100" data-quality-covered="0" data-quality-total="0" data-quality-label="lingbot Precision NPU 100%" tabindex="0" role="button" aria-label="lingbot Precision NPU 100%" aria-pressed="false"><title>lingbot Precision NPU 100%</title><g transform="translate(150.0 225.0) rotate(90.0000)"><path class="qd-half qd-half--npu qd-track" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/><path class="qd-fill qd-fill--npu" d="M 0 18.00 A 18.00 18.00 0 0 1 0 -18.00 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:stab-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="lingbot Stability GPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:stab-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="lingbot Stability NPU" aria-pressed="false"><g transform="translate(85.0 187.5) rotate(150.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:gate-gpu" data-qd-side="gpu" tabindex="0" role="button" aria-label="lingbot Gate GPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--gpu" d="M 0 18 A 18 18 0 0 0 0 -18 Z"/></g></g>
+      <g class="qd-segment" data-quality-key="lingbot:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="lingbot Gate NPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
+      <text class="qd-pct qd-pct-caption" x="235.7" y="100.5" text-anchor="middle">100%/100%</text>
+      <text class="qd-pct qd-pct-caption" x="150.0" y="249.0" text-anchor="middle">100%/100%</text>
+      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
+      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
+      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
+      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
+      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
+      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
+    </svg></div>
+    </div><p class="qd-legend">Performance / Precision captions are <strong>GPU% / NPU%</strong>. Reliability is one percent. Other axes: click gray → <strong style="color:#16a34a">green</strong> (GPU / single) or <strong style="color:#0284c7">blue</strong> (NPU). GPU halves use a solid outline, NPU halves a dashed outline.</p></div>
+  </div>
+</body>
+</html>
