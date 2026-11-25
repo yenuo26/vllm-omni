@@ -49,10 +49,12 @@ https://github.com/JiusiServe/vllm-omni-project-manage/issues/133
 section 「可靠性测试需求规划（检测 / 响应 / 恢复）」 and the 0.34.0
 必达 rows of the 场景×模型缺口 table. Each scenario is scored on
 detect / respond / recover (优雅退出的「清理」counts as recover).
-Timings the issue prints as 「拉起/空闲」are separate cells, because the
-issue says an idle case does not cover startup. Host memory, SIGSTOP
-hang, overload, and dependency faults are out of scope and are not in
-the denominator.
+Timings the issue prints as 「拉起/空闲」are separate cells for crash
+rows, because the issue says an idle case does not cover startup. Hang
+rows keep 「拉起/空闲」as one cell. Hang, overload, and dependency rows
+stay in the denominator even when no test implements them. Host memory
+is still out of scope. Wan and Hunyuan multi-replica SIGKILL and
+multi-replica hang cells are planned and are not in those denominators.
 
 Numerator: non-skipped ``test_*.py`` files under
 ``tests/dfx/reliability/`` (not ``conftest.py``, ``helpers.py``,
@@ -105,6 +107,21 @@ _RELIABILITY_SCENARIOS: tuple[tuple[str, str], ...] = (
     ("root_under_load", "Serve-root SIGKILL under load"),
     ("exit_single", "Graceful SIGTERM exit, single replica"),
     ("exit_multi", "Graceful SIGTERM exit, multi replica"),
+    # Hang rows. 「拉起/空闲」is one library row here, not two cells.
+    ("hang_full_quiet", "Full-process hang at startup or idle"),
+    ("hang_full_under_load", "Full-process hang under load"),
+    ("hang_full_during_exit", "Full-process hang during exit"),
+    ("hang_stage_quiet", "Partial stage hang at startup or idle"),
+    ("hang_stage_under_load", "Partial stage hang under load"),
+    ("hang_stage_during_exit", "Partial stage hang during exit"),
+    ("hang_replica_quiet", "Partial replica hang at startup or idle"),
+    ("hang_replica_under_load", "Partial replica hang under load"),
+    ("hang_replica_during_exit", "Partial replica hang during exit"),
+    ("overload_under_load", "Overload and backpressure under load"),
+    ("dependency_startup", "Dependency fault at startup"),
+    ("dependency_idle", "Dependency fault while idle"),
+    ("dependency_under_load", "Dependency fault under load"),
+    ("dependency_during_exit", "Dependency fault during exit"),
 )
 _RELIABILITY_DIMENSIONS = ("detect", "respond", "recover")
 # Issue 133 (updated 2026-11-25): Wan and Hunyuan multi-replica rows are
@@ -115,6 +132,9 @@ _REPLICA_SCENARIO_IDS = frozenset(
         "replica_idle",
         "replica_under_load",
         "replica_during_exit",
+        "hang_replica_quiet",
+        "hang_replica_under_load",
+        "hang_replica_during_exit",
     }
 )
 _RELIABILITY_PLANNED_REPLICA = frozenset({"Wan", "HunyuanImage"})
@@ -179,8 +199,9 @@ def reliability_cell_count() -> int:
 def reliability_scenarios_for(model_id: str | None) -> tuple[str, ...]:
     """Scenario ids in this model's denominator.
 
-    Wan and Hunyuan drop the four multi-replica scenarios. Those cells are
-    planned, not uncovered gaps.
+    Wan and Hunyuan drop multi-replica SIGKILL and multi-replica hang.
+    Those cells are planned, not uncovered gaps. Hang, overload, and
+    dependency rows stay in every model's denominator.
     """
     if model_id in _RELIABILITY_PLANNED_REPLICA:
         return tuple(sid for sid, _label in _RELIABILITY_SCENARIOS if sid not in _REPLICA_SCENARIO_IDS)
@@ -327,7 +348,8 @@ def _row_datasets(dataset: str) -> frozenset[str]:
         return frozenset({"seed-tts"})
     if compact == "random":
         return frozenset({"random"})
-    if compact == "custom":
+    # ``custom_image`` is the perf-JSON name of the care-list ``custom`` row.
+    if compact in {"custom", "customimage"}:
         return frozenset({"custom"})
     if "singleimage" in compact:
         return frozenset({"single-image"})
@@ -1233,6 +1255,40 @@ def _selected_sides(
     return selected
 
 
+def _is_local_mark(text: str) -> bool:
+    """True for ``local_model`` / ``local_test`` marks. Those runs are local, not nightly."""
+    return re.search(r"local[_\s-]?model|local[_\s-]?test", text or "", re.I) is not None
+
+
+def _json_is_local(item: dict) -> bool:
+    try:
+        blob = json.dumps(item.get("mark"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        blob = str(item.get("mark"))
+    return _is_local_mark(blob)
+
+
+def _deploy_config_text(repo_root: Path, text: str) -> str:
+    """Fold a referenced deploy YAML into async-chunk detection."""
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for name in re.findall(r"([\w./-]+\.ya?ml)", text):
+        candidates = (
+            repo_root / name,
+            repo_root / "vllm_omni" / "deploy" / Path(name).name,
+        )
+        for path in candidates:
+            key = str(path)
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            try:
+                chunks.append(path.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                continue
+    return "\n".join(chunks)
+
+
 def _has_accuracy_metrics(obj: object) -> bool:
     """True when a bench object carries accuracy metric keys, not path strings."""
     if isinstance(obj, dict):
@@ -1322,6 +1378,10 @@ def scan_model_care_cases(
                         config=rel_config,
                         test_name=test_name or label,
                     )
+                    # A local_model case is run outside nightly and still counts
+                    # on the hardware it declares.
+                    if _json_is_local(item):
+                        selected = set(selected) | ({"gpu"} if gpu else set()) | ({"npu"} if npu else set())
                     side_gpu = bool(gpu and "gpu" in selected)
                     side_npu = bool(npu and "npu" in selected)
                     record = _case_record(
@@ -1368,6 +1428,8 @@ def scan_model_care_cases(
                     continue
                 func_async = _async_flag(expanded)
                 async_chunk = func_async if func_async is not None else header_async
+                if async_chunk is None:
+                    async_chunk = _async_flag(_deploy_config_text(repo_root, header + "\n" + expanded))
                 datasets = _datasets_in_text(func_name + "\n" + expanded)
                 marked = _hardware_from_decorator(decorators)
                 if marked is None and re.search(r"pytest\.mark\.cpu\b", decorators):
@@ -1377,6 +1439,8 @@ def scan_model_care_cases(
                 else:
                     gpu, npu = marked
                 selected = _selected_sides(invocations, test_name=func_name, py_path=rel)
+                if _is_local_mark(decorators + "\n" + body):
+                    selected = set(selected) | ({"gpu"} if gpu else set()) | ({"npu"} if npu else set())
                 cases.append(
                     _case_record(
                         kind="prec",

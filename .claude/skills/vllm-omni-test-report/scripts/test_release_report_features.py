@@ -815,7 +815,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
     """
 
     def test_percent_rounding_and_library_size(self) -> None:
-        self.assertEqual(reliability_cell_count(), 54)
+        self.assertEqual(reliability_cell_count(), 96)
         self.assertEqual(coverage_percent(0, 0), 100)
         self.assertEqual(coverage_percent(2, 5), 40)
         self.assertEqual(coverage_percent(8, 54), 15)
@@ -1061,7 +1061,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         perf_npu = scored["qwen-omni"]["pct"]["perf"]["npu"]
         self.assertEqual((perf_npu["covered"], perf_npu["total"], perf_npu["pct"]), (0, 1, 0))
         rel = scored["qwen-omni"]["pct"]["rel"]
-        self.assertEqual(rel["total"], 54)
+        self.assertEqual(rel["total"], 96)
         self.assertEqual(rel["covered"], 3)
         self.assertEqual(sorted(rel["hits"]), [
             "tree_idle:detect",
@@ -1243,7 +1243,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertNotIn("tree_startup:detect", hits)
         self.assertNotIn("oom_startup:recover", hits)
         self.assertEqual(rel_pct["covered"], 13)
-        self.assertEqual(rel_pct["total"], 54)
+        self.assertEqual(rel_pct["total"], 96)
 
     def test_live_repo_fractions(self) -> None:
         cov = _compute_quality_defense_coverage(_qd_repo_root())
@@ -1257,7 +1257,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual((qwen["prec"]["gpu"]["covered"], qwen["prec"]["gpu"]["total"]), (0, 5))
         self.assertEqual(qwen["prec"]["npu"]["pct"], 0)
         self.assertEqual(qwen["rel"]["covered"], 8)
-        self.assertEqual(qwen["rel"]["pct"], 15)
+        self.assertEqual(qwen["rel"]["pct"], coverage_percent(8, 96))
         self.assertIn("tree_idle:detect", qwen["rel"]["hits"])
         self.assertNotIn("oom_under_load:detect", qwen["rel"]["hits"])
         self.assertNotIn("root_idle:detect", qwen["rel"]["hits"])
@@ -1276,9 +1276,9 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual((hy["prec"]["gpu"]["covered"], hy["prec"]["gpu"]["total"]), (0, 2))
         self.assertEqual(hy["prec"]["npu"]["pct"], 0)
         self.assertEqual(hy["rel"]["covered"], 11)
-        self.assertEqual(hy["rel"]["total"], 42)
-        self.assertEqual(hy["rel"]["pct"], 26)
-        self.assertEqual(len(hy["rel"]["planned"]), 12)
+        self.assertEqual(hy["rel"]["total"], 75)
+        self.assertEqual(hy["rel"]["pct"], coverage_percent(11, 75))
+        self.assertEqual(len(hy["rel"]["planned"]), 21)
         self.assertIn("root_idle:detect", hy["rel"]["hits"])
         self.assertNotIn("oom_under_load:detect", hy["rel"]["hits"])
 
@@ -1289,8 +1289,8 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual(wan["prec"]["gpu"]["pct"], 0)
         self.assertEqual(wan["prec"]["npu"]["pct"], 0)
         self.assertEqual(wan["rel"]["covered"], 12)
-        self.assertEqual(wan["rel"]["total"], 42)
-        self.assertEqual(wan["rel"]["pct"], 29)
+        self.assertEqual(wan["rel"]["total"], 75)
+        self.assertEqual(wan["rel"]["pct"], coverage_percent(12, 75))
         self.assertIn("oom_under_load:detect", wan["rel"]["hits"])
         self.assertIn("stage_under_load:respond", wan["rel"]["hits"])
         self.assertNotIn("root_under_load:detect", wan["rel"]["hits"])
@@ -1338,17 +1338,142 @@ class QualityDefenseCoverageTests(unittest.TestCase):
             {"minimax-h3-image"},
         )
 
+    def test_local_model_and_custom_image_cover_matching_rows(self) -> None:
+        import json
+        import tempfile
+
+        care = {
+            "scenarios": [
+                {
+                    "id": "hunyuan-image",
+                    "aliases": ["hunyuan_image", "HunyuanImage"],
+                    "rows": [
+                        {
+                            "mode": "Non-full duplex",
+                            "kind": "performance",
+                            "feature": None,
+                            "hardware": "GPU/NPU",
+                            "dataset": "custom",
+                        }
+                    ],
+                },
+                {
+                    "id": "qwen3-omni",
+                    "aliases": ["qwen3_omni", "Qwen3-Omni"],
+                    "rows": [
+                        {
+                            "mode": "Non-full duplex",
+                            "kind": "accuracy",
+                            "feature": "async chunk + prefix",
+                            "hardware": "NPU",
+                            "dataset": "seed-tts",
+                        },
+                        {
+                            "mode": "Non-full duplex",
+                            "kind": "accuracy",
+                            "feature": "default",
+                            "hardware": "NPU",
+                            "dataset": "seed-tts",
+                        },
+                        {
+                            "mode": "Non-full duplex",
+                            "kind": "performance",
+                            "feature": "default",
+                            "hardware": "NPU",
+                            "dataset": "seed-tts",
+                        },
+                    ],
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            perf = root / "tests" / "dfx" / "perf" / "tests"
+            perf.mkdir(parents=True)
+            deploy = root / "vllm_omni" / "deploy"
+            deploy.mkdir(parents=True)
+            (deploy / "qwen3_omni_moe.yaml").write_text("async_chunk: true\n", encoding="utf-8")
+            (perf / "test_hunyuan_image3_ar.json").write_text(
+                json.dumps(
+                    {
+                        "test_name": "test_hunyuan_image3_distil_fp8_ar_tp2_dit_sp2",
+                        "mark": [{"hardware_marks": {"res": {"cuda": "H100"}}, "num_cards": 4}, "local_model"],
+                        "server_params": {"model": "tencent/HunyuanImage-3.0"},
+                        "benchmark_params": [{"dataset_name": "custom_image", "name": "ar"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (perf / "test_qwen3_omni_non_full_duplex.json").write_text(
+                json.dumps(
+                    {
+                        "test_name": "test_qwen3_omni_datasets_npu_default",
+                        "mark": [{"hardware_marks": {"res": {"npu": "A3"}}, "num_cards": 4}, "full_model"],
+                        "server_params": {
+                            "model": "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+                            "update": {"async_chunk": False},
+                        },
+                        "benchmark_params": [{"dataset_name": "seed-tts", "name": "default-seed-tts-c32"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            acc = root / "tests" / "e2e" / "accuracy" / "qwen3_omni"
+            acc.mkdir(parents=True)
+            (acc / "test_qwen3_omni.py").write_text(
+                "\n".join(
+                    [
+                        'stage_configs = [get_deploy_config_path("qwen3_omni_moe.yaml")]',
+                        "",
+                        '@hardware_test(res={"npu": "A3"}, num_cards=2)',
+                        "@pytest.mark.local_model",
+                        "def test_qwen3_omni_seed_tts_wer_bench(omni_server):",
+                        "    assert 'seed-tts'",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            care_path = root / "care.json"
+            care_path.write_text(json.dumps(care), encoding="utf-8")
+            scored = {
+                "HunyuanImage": {"gpu": set(), "npu": set(), "rel": False},
+                "qwen-omni": {"gpu": set(), "npu": set(), "rel": False},
+            }
+            attach_quality_percentages(
+                scored,
+                root,
+                has_rel=frozenset(),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+                model_care_path=care_path,
+            )
+        hy = scored["HunyuanImage"]["pct"]["perf"]
+        self.assertTrue(hy["gpu"]["rows"][0]["covered"])
+        self.assertIn("test_hunyuan_image3_ar.json", hy["gpu"]["rows"][0]["by"])
+        qwen_prec = scored["qwen-omni"]["pct"]["prec"]["npu"]["rows"]
+        by_feature = {row["feature"]: row for row in qwen_prec}
+        self.assertTrue(by_feature["async chunk + prefix"]["covered"])
+        self.assertFalse(by_feature["default"]["covered"])
+        qwen_perf = scored["qwen-omni"]["pct"]["perf"]["npu"]["rows"]
+        self.assertFalse(qwen_perf[0]["covered"])
+
     def test_wan_and_hunyuan_replica_cells_are_planned(self) -> None:
         from quality_defense_coverage import reliability_scenarios_for, score_reliability
 
-        self.assertEqual(len(reliability_scenarios_for("qwen-omni")) * 3, 54)
-        self.assertEqual(len(reliability_scenarios_for("Wan")) * 3, 42)
-        self.assertEqual(len(reliability_scenarios_for("HunyuanImage")) * 3, 42)
+        self.assertEqual(len(reliability_scenarios_for("qwen-omni")) * 3, 96)
+        self.assertEqual(len(reliability_scenarios_for("Wan")) * 3, 75)
+        self.assertEqual(len(reliability_scenarios_for("HunyuanImage")) * 3, 75)
         planned = score_reliability(set(), model_id="Wan")
-        self.assertEqual(planned["total"], 42)
-        self.assertEqual(len(planned["planned"]), 12)
-        self.assertTrue(all(item.startswith("replica_") for item in planned["planned"]))
+        self.assertEqual(planned["total"], 75)
+        self.assertEqual(len(planned["planned"]), 21)
+        self.assertTrue(any(item.startswith("hang_replica_") for item in planned["planned"]))
+        self.assertTrue(any(item.startswith("replica_") for item in planned["planned"]))
         self.assertEqual(score_reliability(set(), model_id="qwen-omni")["planned"], [])
+        empty = score_reliability(set(), model_id="qwen-omni")
+        self.assertEqual(empty["total"], 96)
+        self.assertTrue(any(item.startswith("hang_full_") for item in empty["missing"]))
+        self.assertTrue(any(item.startswith("overload_") for item in empty["missing"]))
+        self.assertTrue(any(item.startswith("dependency_") for item in empty["missing"]))
 
     def test_qwen_and_minicpm_perf_rows_match_dataset_benches(self) -> None:
         """GPU and NPU Model care perf rows match the dataset benches on main.

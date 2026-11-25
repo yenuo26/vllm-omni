@@ -7,6 +7,7 @@ import html
 import math
 import os
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,12 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from quality_defense_coverage import attach_quality_percentages, keyword_matches  # noqa: E402
+from quality_defense_coverage import (  # noqa: E402
+    _RELIABILITY_DIMENSIONS,
+    _RELIABILITY_SCENARIOS,
+    attach_quality_percentages,
+    keyword_matches,
+)
 from report_html_theme import EDITORIAL_THEME_CSS, RELEASE_MARKDOWN_DOC_CSS  # noqa: E402
 
 # Inserted after ``## Test conclusion``; replaced with interactive HTML (release) or static MD
@@ -2802,6 +2808,181 @@ def _qd_gate_yaml(repo_root: Path, lane: str) -> str:
     return _qd_read_yamls(repo_root, [".buildkite/npu/test-npu-ready.yml"])
 
 
+_DOC_ALLOW = (
+    "openbmb/MiniCPM-o-4_5",
+    "Qwen/Qwen3-Omni-*",
+    "Qwen/Qwen3-TTS-*",
+    "Qwen/Qwen-Image-2.1",
+    "Qwen/Qwen-Image-2.1-Turbo",
+    "tencent/HunyuanImage-3.0",
+    "tencent/HunyuanImage-3.0-*",
+    "hunyuanvideo-community/HunyuanVideo-1.5-*",
+    "tencent/HunyuanVideo-1.5",
+    "tencent/HunyuanVideo-1.5-*",
+    "Wan-AI/Wan2.2-*",
+    "MiniMaxAI/MiniMax-H3",
+)
+
+
+def _doc_fnmatch(model: str, pattern: str) -> bool:
+    import fnmatch
+
+    return fnmatch.fnmatchcase(model, pattern)
+
+
+def _doc_models_allowed(models: list[str]) -> bool:
+    return bool(models) and all(any(_doc_fnmatch(model, pattern) for pattern in _DOC_ALLOW) for model in models)
+
+
+def _snippet_models(language: str, code: str) -> list[str]:
+    """Model ids named by a README fence. Dynamic names are ignored."""
+    found: list[str] = []
+    if language == "bash":
+        try:
+            argv = shlex.split(code.replace("\\\n", " "), comments=True)
+        except ValueError:
+            return []
+        for index, arg in enumerate(argv):
+            if arg == "--model" and index + 1 < len(argv):
+                found.append(argv[index + 1])
+            elif arg.startswith("--model="):
+                found.append(arg.partition("=")[2])
+            elif arg.startswith("MODEL="):
+                found.append(arg.partition("=")[2])
+            elif arg == "serve" and index > 0 and argv[index - 1] == "vllm" and index + 1 < len(argv):
+                found.append(argv[index + 1])
+    elif language == "python":
+        for match in re.finditer(
+            r"""(?:model|model_name|model_id)\s*=\s*['\"]([^'\"]+)['\"]|Omni\(\s*['\"]([^'\"]+)['\"]""",
+            code,
+        ):
+            found.append(next(group for group in match.groups() if group))
+    kept: list[str] = []
+    for model in found:
+        if model and model not in kept:
+            kept.append(model)
+    return kept
+
+
+def _readme_collected_models(readme: Path, *, skip_h2: set[str], skip_python: bool) -> list[str]:
+    """Models in README fences the example test would collect and not skip."""
+    if not readme.is_file():
+        return []
+    text = readme.read_text(encoding="utf-8", errors="ignore")
+    h2 = ""
+    fence: str | None = None
+    buf: list[str] = []
+    models: list[str] = []
+    for line in text.splitlines():
+        if fence is None and line.startswith("## "):
+            h2 = line[3:].strip()
+        if line.startswith("```"):
+            if fence is None:
+                info = line[3:].strip().split()
+                lang = info[0].lower() if info else ""
+                if lang in {"shell", "sh", "ksh", "zsh"}:
+                    lang = "bash"
+                fence = lang
+                buf = []
+            else:
+                code = "\n".join(buf)
+                skip = h2 in skip_h2 or (skip_python and fence == "python") or "/path/to/" in code
+                if not skip and fence in {"bash", "python"}:
+                    named = _snippet_models(fence, code)
+                    if _doc_models_allowed(named):
+                        models.extend(named)
+                fence = None
+            continue
+        if fence is not None:
+            buf.append(line)
+    return models
+
+
+def _radar_ids_for_models(models: list[str]) -> set[str]:
+    found: set[str] = set()
+    for model in models:
+        for model_id, keywords in _QUALITY_DEFENSE_MODEL_KEYWORDS.items():
+            if any(keyword_matches(model, keyword) for keyword in keywords):
+                found.add(model_id)
+    return found
+
+
+def _qd_doc_sides(repo_root: Path) -> dict[str, set[str]]:
+    """Documentation sides from nightly Doc Test commands and local_model example tests.
+
+    A model lights only when a collected snippet or an explicit server case
+    names it. Being on the README allowlist is not enough. NPU stays empty
+    unless an NPU pipeline or a local_model test actually invokes that model.
+    """
+    sides: dict[str, set[str]] = {model_id: set() for model_id, _name in _QUALITY_DEFENSE_MODELS}
+    invocations = {"gpu": [], "npu": []}
+    for folder, side in (("cuda", "gpu"), ("npu", "npu"), ("amd", "gpu")):
+        directory = repo_root / ".buildkite" / folder
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*nightly*.y*ml")):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            invocations[side].append(text)
+
+    def _invoked(side: str, needle: str) -> bool:
+        return any(needle in text for text in invocations[side])
+
+    if _invoked("gpu", "tests/examples/online_serving/test_qwen3_omni.py"):
+        sides["qwen-omni"].add("gpu")
+    if _invoked("npu", "tests/examples/online_serving/test_qwen3_omni.py"):
+        qwen_doc = repo_root / "tests" / "examples" / "online_serving" / "test_qwen3_omni.py"
+        if qwen_doc.is_file() and "npu" in qwen_doc.read_text(encoding="utf-8", errors="ignore").lower():
+            sides["qwen-omni"].add("npu")
+
+    if _invoked("gpu", "tests/examples/") and _invoked("gpu", "test_text_to_image.py"):
+        online = repo_root / "tests" / "examples" / "online_serving" / "test_text_to_image.py"
+        offline_readme = repo_root / "examples" / "offline_inference" / "text_to_image" / "README.md"
+        named: list[str] = []
+        if online.is_file():
+            named.extend(_snippet_models("python", online.read_text(encoding="utf-8", errors="ignore")))
+        named.extend(_readme_collected_models(offline_readme, skip_h2={"Web UI Demo"}, skip_python=False))
+        for model_id in _radar_ids_for_models(named):
+            sides[model_id].add("gpu")
+    if _invoked("npu", "test_text_to_image.py"):
+        online = repo_root / "tests" / "examples" / "online_serving" / "test_text_to_image.py"
+        if online.is_file() and re.search(r"npu", online.read_text(encoding="utf-8", errors="ignore"), re.I):
+            for model_id in _radar_ids_for_models(
+                _snippet_models("python", online.read_text(encoding="utf-8", errors="ignore"))
+            ):
+                sides[model_id].add("npu")
+
+    if _invoked("gpu", "tests/examples/offline_inference/test_image_to_video.py"):
+        readme = repo_root / "examples" / "offline_inference" / "image_to_video" / "README.md"
+        named = _readme_collected_models(
+            readme,
+            skip_h2={"Prerequisites", "Advanced Features", "FAQ", "Wan2.1 VACE Conditional Tasks"},
+            skip_python=True,
+        )
+        for model_id in _radar_ids_for_models(named):
+            sides[model_id].add("gpu")
+
+    examples = repo_root / "tests" / "examples"
+    if examples.is_dir():
+        for path in examples.rglob("test_*.py"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not re.search(r"local[_\s-]?model|local[_\s-]?test", text, re.I):
+                continue
+            gpu = bool(re.search(r"cuda|rocm|h100", text, re.I))
+            npu = bool(re.search(r"\bnpu\b", text, re.I))
+            for model_id in _radar_ids_for_models(_snippet_models("python", text)):
+                if gpu:
+                    sides[model_id].add("gpu")
+                if npu:
+                    sides[model_id].add("npu")
+    return sides
+
+
 def _compute_quality_defense_coverage(
     repo_root: Path | None,
 ) -> dict[str, dict]:
@@ -2884,15 +3065,15 @@ def _compute_quality_defense_coverage(
         if _lane_has(npu_gate):
             npu.add("gate")
 
-        # doc — repo-wide examples, gated by lane presence (func lit).
-        # Precision is a percentage axis (Model care), not this grep.
-        has_doc = _grep_dir(repo_root / "tests" / "examples", kws_lower)
-        if has_doc and "func" in gpu:
-            gpu.add("doc")
-        if has_doc and "func" in npu:
-            npu.add("doc")
-
         out[model_id] = {"gpu": gpu, "npu": npu, "rel": False}
+
+    doc_sides = _qd_doc_sides(repo_root)
+    for model_id, _display in _QUALITY_DEFENSE_MODELS:
+        doc = doc_sides.get(model_id, set())
+        if "gpu" in doc:
+            out[model_id]["gpu"].add("doc")
+        if "npu" in doc:
+            out[model_id]["npu"].add("doc")
 
     return _qd_attach_percentages(out, repo_root)
 
@@ -3117,34 +3298,102 @@ def _qd_lit_count(model_id: str, cov: dict) -> int:
     return len(cov.get("gpu", set())) + len(cov.get("npu", set())) + rel_lit
 
 
-def _qd_reliability_gap_html(coverage: dict) -> str:
-    """Covered / skipped / missing / planned cells for the four reliability models."""
+def _qd_table_style() -> str:
+    return (
+        "<style>"
+        ".qd-library{margin:1.25rem 0;overflow:auto;}"
+        ".qd-library table{border-collapse:collapse;width:100%;font-size:0.82rem;}"
+        ".qd-library caption{text-align:left;font-weight:700;margin:0 0 0.4rem;}"
+        ".qd-library th,.qd-library td{border:1px solid #d1d5db;padding:0.28rem 0.45rem;vertical-align:top;}"
+        ".qd-library th{background:#f3f4f6;}"
+        ".qd-st-missing{color:#b91c1c;font-weight:700;}"
+        ".qd-st-skipped{color:#b45309;}"
+        ".qd-st-planned{color:#6b7280;}"
+        ".qd-st-covered{color:#15803d;}"
+        "</style>"
+    )
+
+
+def _qd_care_table_html(coverage: dict) -> str:
+    """Model care rows with whether each hardware side is covered."""
     rows: list[str] = []
+    for model_id, display_name in _QUALITY_DEFENSE_MODELS:
+        pct = ((coverage.get(model_id) or {}).get("pct") or {})
+        for axis, title in (("perf", "Performance"), ("prec", "Precision")):
+            block = pct.get(axis) or {}
+            if block.get("basis") != "model-care":
+                continue
+            for side in ("gpu", "npu"):
+                side_block = block.get(side) or {}
+                for row in side_block.get("rows") or []:
+                    state = "covered" if row.get("covered") else "missing"
+                    evidence = row.get("by") or ""
+                    rows.append(
+                        "<tr>"
+                        f"<td>{html.escape(display_name)}</td>"
+                        f"<td>{title}</td>"
+                        f"<td>{side.upper()}</td>"
+                        f"<td>{html.escape(str(row.get('mode') or ''))}</td>"
+                        f"<td>{html.escape(str(row.get('feature') or ''))}</td>"
+                        f"<td>{html.escape(str(row.get('dataset') or ''))}</td>"
+                        f"<td class=\"qd-st-{state}\">{state}</td>"
+                        f"<td>{html.escape(evidence)}</td>"
+                        "</tr>"
+                    )
+    if not rows:
+        return ""
+    return (
+        '<div class="qd-library"><table><caption>Model care scenarios. '
+        "A row is covered only when a nightly-selected or local_model case matches "
+        "dataset, mode, feature, and hardware. Missing rows stay visible.</caption>"
+        "<thead><tr><th>Model</th><th>Axis</th><th>Side</th><th>Mode</th>"
+        "<th>Feature</th><th>Dataset</th><th>Status</th><th>Evidence</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
+def _qd_reliability_gap_html(coverage: dict) -> str:
+    """Issue 133 library: covered, skipped, missing, and planned cells."""
+    labels = dict(_RELIABILITY_SCENARIOS)
+    sections: list[str] = []
     for model_id, display_name in _QUALITY_DEFENSE_MODELS:
         if model_id not in _QUALITY_DEFENSE_HAS_REL:
             continue
         rel = ((coverage.get(model_id) or {}).get("pct") or {}).get("rel") or {}
         if not isinstance(rel, dict) or "covered" not in rel:
             continue
-        rows.append(
-            "<tr>"
-            f"<td>{html.escape(display_name)}</td>"
-            f"<td>{int(rel.get('covered') or 0)}/{int(rel.get('total') or 0)}</td>"
-            f"<td>{len(rel.get('skipped') or [])}</td>"
-            f"<td>{len(rel.get('missing') or [])}</td>"
-            f"<td>{len(rel.get('planned') or [])}</td>"
-            "</tr>"
+        status = {}
+        for cell in rel.get("hits") or []:
+            status[cell] = "covered"
+        for cell in rel.get("skipped") or []:
+            status.setdefault(cell, "skipped")
+        for cell in rel.get("missing") or []:
+            status.setdefault(cell, "missing")
+        for cell in rel.get("planned") or []:
+            status[cell] = "planned"
+        body: list[str] = []
+        for scenario_id, _label in _RELIABILITY_SCENARIOS:
+            cells = []
+            for dim in _RELIABILITY_DIMENSIONS:
+                key = f"{scenario_id}:{dim}"
+                state = status.get(key, "missing")
+                cells.append(f'<td class="qd-st-{state}">{state}</td>')
+            body.append(
+                "<tr>"
+                f"<td>{html.escape(labels.get(scenario_id, scenario_id))}</td>"
+                f"{''.join(cells)}</tr>"
+            )
+        sections.append(
+            '<div class="qd-library"><table><caption>'
+            f"{html.escape(display_name)} reliability library: "
+            f"{int(rel.get('covered') or 0)}/{int(rel.get('total') or 0)} covered. "
+            "Missing cells are unimplemented 必达 gaps and stay in the denominator. "
+            "Skipped tests do not count. Planned multi-replica cells are outside "
+            "the Wan and Hunyuan denominators."
+            "</caption><thead><tr><th>Fault mode</th><th>Detect</th>"
+            f"<th>Respond</th><th>Recover</th></tr></thead><tbody>{''.join(body)}</tbody></table></div>"
         )
-    if not rows:
-        return ""
-    return (
-        '<table class="qd-rel-gap"><caption>Reliability against the planned '
-        "issue 133 library. Missing cells are uncovered planned work. "
-        "Skipped tests are separate from those gaps. Planned is the Wan and "
-        "Hunyuan multi-replica set, which is not in their denominator."
-        "</caption><thead><tr><th>Model</th><th>Covered</th><th>Skipped</th>"
-        f"<th>Missing</th><th>Planned</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
-    )
+    return "".join(sections)
 
 
 def _quality_defense_block_html() -> str:
@@ -3189,19 +3438,24 @@ def _quality_defense_block_html() -> str:
         '<a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> '
         'Model care rows covered by a case with the same dataset, full vs '
         'non-full duplex, feature, and hardware side, and that the CUDA or NPU '
-        'nightly pipeline actually runs. A <code>random</code> bench does not '
-        'cover seed-tts, daily-omni, duplexEval, or OmniInteract, and an '
-        '<code>npu</code> mark does not count when NPU nightly never selects '
-        'that test. Other models fill a side when a test of that type is '
+        'nightly pipeline runs, or that is marked <code>local_model</code>. '
+        'A <code>random</code> bench does not cover seed-tts, daily-omni, '
+        'duplexEval, or OmniInteract. An <code>npu</code> mark does not count '
+        'when NPU nightly never selects that test and it is not '
+        '<code>local_model</code>. Other models fill a side when a test of that type is '
         'really run there, and leave it empty otherwise, with no percent '
-        'caption. <strong>Reliability</strong> is the planned issue '
+        'caption. <strong>Reliability</strong> is the issue '
         '<a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">'
-        '133</a> library. Wan and Hunyuan multi-replica cells are planned, '
-        'not gaps. GPU halves are green, NPU halves are blue. '
+        '133</a> library, including hang, overload, and dependency rows. '
+        'Unimplemented cells stay in the denominator. Wan and Hunyuan '
+        'multi-replica SIGKILL and hang cells are planned, not gaps. '
+        'GPU halves are green, NPU halves are blue. '
         'Models without a Reliability axis render a 6-axis hexagon. ' + lit_note +
         'Clicking still stores a confirmation outline in <code>localStorage</code> '
         'and does not replace the computed percent.</p>'
+        f"{_qd_table_style()}"
         f'<div class="qd-grid">\n      {cells_xml}\n    </div>'
+        f"{_qd_care_table_html(coverage)}"
         f"{_qd_reliability_gap_html(coverage)}"
         '<p class="qd-legend">Model care Performance / Precision captions are '
         '<strong>GPU% / NPU%</strong>. Models without a care list have no percent. '
