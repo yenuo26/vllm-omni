@@ -2833,8 +2833,9 @@ def _compute_quality_defense_coverage(
     lit-counts do not treat a partial reliability axis as fully on.
 
     When ``repo_root`` is ``None`` or unreachable, the binary axes stay off.
-    Models with Model care rows then score 0% (no cases found); models with
-    no Model care entry stay at 100% for Performance and Precision.
+    Models with Model care rows then score 0% when no cases match. A model
+    with no Model care rows for an axis is 100% on a side only when a real
+    performance or accuracy test exists there, and 0% otherwise.
     """
     empty = {mid: {"gpu": set(), "npu": set(), "rel": False} for mid, _ in _QUALITY_DEFENSE_MODELS}
     if repo_root is None or not repo_root.is_dir():
@@ -3166,9 +3167,10 @@ def _quality_defense_block_html() -> str:
         'share of '
         '<a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> '
         'Model care rows (<code>kind</code> performance or accuracy, split by '
-        'GPU / NPU) that have a matching test case in this repo. A flagship '
-        'model with no Model care entry is drawn at <strong>100%</strong> until '
-        'Model care adds it. <strong>Reliability</strong> shows the share of '
+        'GPU / NPU) that have a matching test case in this repo. A model with '
+        'no Model care rows for an axis is <strong>100%</strong> on a hardware '
+        'side only when this repo has a test of that type there, and '
+        '<strong>0%</strong> when it does not. <strong>Reliability</strong> shows the share of '
         'in-scope detect / respond / recover cells from '
         '<a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">'
         'issue 133</a> covered by a non-skipped test under '

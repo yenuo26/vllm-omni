@@ -15,10 +15,11 @@ Denominator: rows in the Model care scenario table whose ``kind`` is
    (``references/model_care_scenarios.json``)
 
 The checkout wins over the snapshot, so a newly added scenario is picked
-up without editing this module. A flagship model with **no** matching
-scenario is reported as 100% on Performance and Precision (both hardware
-sides). Matching uses the radar keyword list; the three ids in today's
-JSON are not hardcoded.
+up without editing this module. A flagship model with **no** rows for an
+axis is 100% on a hardware side only when this repo has a real test of
+that type on that side (performance JSON for Performance, an accuracy
+test for Precision). A side with no such test stays at 0%. Matching uses
+the radar keyword list; the three ids in today's JSON are not hardcoded.
 
 A row with hardware ``GPU`` counts on the GPU half only, ``NPU`` on the
 NPU half only, and ``GPU/NPU`` on both halves. The numerator is a real
@@ -321,10 +322,42 @@ def _tags_in_text(text: str) -> set[str]:
 
 
 def _is_duplex_text(text: str, datasets: set[str]) -> bool:
-    if "duplexeval" in datasets:
+    if "duplexeval" in datasets or "omniinteract" in datasets:
         return True
     low = text.lower()
-    return "full duplex" in low or "full_duplex" in low or "fullduplex" in low
+    return (
+        "full duplex" in low
+        or "full_duplex" in low
+        or "fullduplex" in low
+        or "realtime-duplex" in low
+        or "realtime_duplex" in low
+    )
+
+
+def _sides_from_marks(item: dict) -> tuple[bool, bool] | None:
+    """Read ``mark[].hardware_marks.res`` (``cuda``/``rocm`` → GPU, ``npu`` → NPU)."""
+    marks = item.get("mark")
+    if not isinstance(marks, list):
+        return None
+    gpu = False
+    npu = False
+    found = False
+    for mark in marks:
+        if not isinstance(mark, dict):
+            continue
+        hardware = mark.get("hardware_marks")
+        res = hardware.get("res") if isinstance(hardware, dict) else None
+        if not isinstance(res, dict):
+            continue
+        found = True
+        keys = {str(key).lower() for key in res}
+        if keys & {"cuda", "rocm", "gpu", "xpu"}:
+            gpu = True
+        if "npu" in keys:
+            npu = True
+    if not found:
+        return None
+    return gpu, npu
 
 
 def _hardware_flags(text: str, path: Path, npu_yaml: str) -> tuple[bool, bool]:
@@ -694,15 +727,28 @@ def scan_model_care_cases(
                         if isinstance(value, str) and value.strip():
                             raw_dataset = value.strip()
                             break
-                    datasets = set()
-                    key = _row_datasets(raw_dataset)
-                    # _row_datasets returns the care key; keep it when it is a single known token.
-                    if len(key) == 1:
-                        datasets.add(next(iter(key)))
-                    elif "duplexeval" in key or "omniinteract" in key:
-                        datasets |= set(key)
-                    gpu, npu = _hardware_flags(model_text + "\n" + json.dumps(bench), path, npu_yaml)
-                    label = str(bench.get("name") or item.get("test_name") or path.stem)
+                    datasets = set(_row_datasets(raw_dataset))
+                    marked = _sides_from_marks(item)
+                    if marked is None:
+                        gpu, npu = _hardware_flags(
+                            model_text + "\n" + json.dumps(bench, ensure_ascii=False),
+                            path,
+                            npu_yaml,
+                        )
+                    else:
+                        gpu, npu = marked
+                    test_name = str(item.get("test_name") or "")
+                    if re.search(r"(^|_)npu($|_)", test_name.lower()):
+                        npu = True
+                    duplex_blob = " ".join(
+                        [
+                            raw_dataset,
+                            test_name,
+                            str(bench.get("backend") or ""),
+                            json.dumps(bench.get("extra_body") or {}),
+                        ]
+                    )
+                    label = str(bench.get("name") or test_name or path.stem)
                     cases.append(
                         _case_record(
                             kind="perf",
@@ -710,7 +756,7 @@ def scan_model_care_cases(
                             datasets=datasets,
                             tags=_tags_in_text(json.dumps(bench)),
                             async_chunk=async_chunk,
-                            duplex=_is_duplex_text(raw_dataset, datasets),
+                            duplex=_is_duplex_text(duplex_blob, datasets),
                             gpu=gpu,
                             npu=npu,
                             source=f"{path.relative_to(repo_root).as_posix()}:{label}",
@@ -762,7 +808,7 @@ def scan_model_care_cases(
     return cases
 
 
-def _case_covers(case: dict, row: dict, side: str) -> bool:
+def _case_covers(case: dict, row: dict, side: str, *, dataset_token: str | None = None) -> bool:
     kind = _row_kind(row)
     if kind is None or case["kind"] != kind:
         return False
@@ -770,7 +816,7 @@ def _case_covers(case: dict, row: dict, side: str) -> bool:
         return False
     if side == "npu" and not case["npu"]:
         return False
-    needed = _row_datasets(str(row.get("dataset") or ""))
+    needed = frozenset({dataset_token}) if dataset_token else _row_datasets(str(row.get("dataset") or ""))
     if not needed or not needed <= case["datasets"]:
         return False
     if _row_requires_cot(row) and "cot" not in case["tags"]:
@@ -781,8 +827,11 @@ def _case_covers(case: dict, row: dict, side: str) -> bool:
     if not full and case["duplex"]:
         return False
     feature = _row_feature(row)
+    # A full-duplex bench that does not repeat async_chunk still covers the
+    # duplex care row. An explicit ``async_chunk: false`` does not.
     if feature == "async" and case["async_chunk"] is not True:
-        return False
+        if not (full and case["async_chunk"] is None):
+            return False
     if feature == "default" and case["async_chunk"] is not False:
         return False
     if feature == "none" and case["async_chunk"] is True:
@@ -791,7 +840,20 @@ def _case_covers(case: dict, row: dict, side: str) -> bool:
 
 
 def _empty_side() -> dict:
-    return {"covered": 0, "total": 0, "pct": 100, "rows": []}
+    return {"covered": 0, "total": 0, "pct": 0, "rows": []}
+
+
+def _presence_side(cases: list[dict], kind: str, side: str) -> dict:
+    """100% when any real case of ``kind`` exists on ``side``, else 0%."""
+    hits = [case["source"] for case in cases if case["kind"] == kind and case.get(side)]
+    present = bool(hits)
+    return {
+        "covered": 1 if present else 0,
+        "total": 1 if present else 0,
+        "pct": 100 if present else 0,
+        "rows": [],
+        "by": hits[0] if hits else "",
+    }
 
 
 def score_model_care(
@@ -803,18 +865,30 @@ def score_model_care(
 ) -> dict[str, dict]:
     """Performance and Precision fractions for one radar model.
 
-    Missing scenario → both axes are 100% with ``basis="no-model-care"``.
+    No Model care rows for an axis → ``basis="repo-tests"``: 100% on a
+    hardware side only when a real case of that kind exists there, else 0%.
     """
     matched = matching_scenarios(scenarios, model_id, keywords)
+    model_cases = [case for case in cases if model_id in case["models"]]
     result = {
-        "perf": _empty_side() | {"basis": "no-model-care", "gpu": _empty_side(), "npu": _empty_side()},
-        "prec": _empty_side() | {"basis": "no-model-care", "gpu": _empty_side(), "npu": _empty_side()},
+        "perf": _empty_side() | {"basis": "repo-tests", "gpu": _empty_side(), "npu": _empty_side()},
+        "prec": _empty_side() | {"basis": "repo-tests", "gpu": _empty_side(), "npu": _empty_side()},
     }
     if not matched:
-        for axis in ("perf", "prec"):
-            result[axis]["single"] = 100
+        for axis, kind in (("perf", "perf"), ("prec", "prec")):
+            gpu = _presence_side(model_cases, kind, "gpu")
+            npu = _presence_side(model_cases, kind, "npu")
+            single = 100 if gpu["pct"] == 100 or npu["pct"] == 100 else 0
+            result[axis] = {
+                "basis": "repo-tests",
+                "gpu": gpu,
+                "npu": npu,
+                "covered": gpu["covered"] + npu["covered"],
+                "total": gpu["total"] + npu["total"],
+                "pct": single,
+                "single": single,
+            }
         return result
-    model_cases = [case for case in cases if model_id in case["models"]]
     for axis in ("perf", "prec"):
         result[axis] = {
             "basis": "model-care",
@@ -830,17 +904,33 @@ def score_model_care(
                 continue
             for side in _hardware_sides(str(row.get("hardware") or "")):
                 bucket = result[axis][side]
-                matched_cases = [case for case in model_cases if _case_covers(case, row, side)]
-                # Prefer a case that does not carry tokens the row does not
-                # require (a COT suite also asserts PSNR, but the PSNR-only
-                # row should cite the pixel test when one exists).
-                if not _row_requires_cot(row):
-                    tighter = [case for case in matched_cases if "cot" not in case["tags"]]
-                    if tighter:
-                        matched_cases = tighter
-                hits = [case["source"] for case in matched_cases]
+                needed = _row_datasets(str(row.get("dataset") or ""))
+                # A care row that names two datasets (duplexEval-OmniInteract)
+                # is covered when each dataset has its own matching case.
+                # The repo records those benches in separate JSON files.
+                if len(needed) > 1:
+                    hits: list[str] = []
+                    covered = True
+                    for token in sorted(needed):
+                        token_hits = [
+                            case["source"]
+                            for case in model_cases
+                            if _case_covers(case, row, side, dataset_token=token)
+                        ]
+                        if not token_hits:
+                            covered = False
+                            hits = []
+                            break
+                        hits.append(token_hits[0])
+                else:
+                    matched_cases = [case for case in model_cases if _case_covers(case, row, side)]
+                    if not _row_requires_cot(row):
+                        tighter = [case for case in matched_cases if "cot" not in case["tags"]]
+                        if tighter:
+                            matched_cases = tighter
+                    hits = [case["source"] for case in matched_cases]
+                    covered = bool(hits)
                 bucket["total"] += 1
-                covered = bool(hits)
                 if covered:
                     bucket["covered"] += 1
                 bucket["rows"].append(
@@ -850,19 +940,34 @@ def score_model_care(
                         "dataset": row.get("dataset"),
                         "hardware": row.get("hardware"),
                         "covered": covered,
-                        "by": hits[0] if hits else "",
+                        "by": "; ".join(hits),
                     }
                 )
-    for axis in ("perf", "prec"):
+    for axis, kind in (("perf", "perf"), ("prec", "prec")):
         gpu = result[axis]["gpu"]
         npu = result[axis]["npu"]
-        gpu["pct"] = coverage_percent(gpu["covered"], gpu["total"])
-        npu["pct"] = coverage_percent(npu["covered"], npu["total"])
+        # A side the care table does not mention is presence-based, same as
+        # a model with no rows: full only when a real case exists.
+        if gpu["total"] == 0:
+            present = _presence_side(model_cases, kind, "gpu")
+            gpu["pct"] = present["pct"]
+            gpu["by"] = present["by"]
+        else:
+            gpu["pct"] = coverage_percent(gpu["covered"], gpu["total"])
+        if npu["total"] == 0:
+            present = _presence_side(model_cases, kind, "npu")
+            npu["pct"] = present["pct"]
+            npu["by"] = present["by"]
+        else:
+            npu["pct"] = coverage_percent(npu["covered"], npu["total"])
         combined_cov = gpu["covered"] + npu["covered"]
         combined_total = gpu["total"] + npu["total"]
         result[axis]["covered"] = combined_cov
         result[axis]["total"] = combined_total
-        result[axis]["pct"] = coverage_percent(combined_cov, combined_total)
+        if combined_total == 0:
+            result[axis]["pct"] = 100 if gpu["pct"] == 100 or npu["pct"] == 100 else 0
+        else:
+            result[axis]["pct"] = coverage_percent(combined_cov, combined_total)
         result[axis]["single"] = result[axis]["pct"]
         result[axis]["basis"] = "model-care"
     return result

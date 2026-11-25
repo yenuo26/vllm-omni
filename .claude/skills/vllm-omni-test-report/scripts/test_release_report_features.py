@@ -808,10 +808,11 @@ class OmniReviewResultsTests(unittest.TestCase):
 class QualityDefenseCoverageTests(unittest.TestCase):
     """Performance / Precision / Reliability percentages for the radar.
 
-    Live fractions are the current vllm-omni tree against the Model care
-    snapshot and the issue-133 fault library. Synthetic cases lock the
-    rules (100% when a model is absent from Model care, skips do not
-    count, a new JSON id is picked up without a code change).
+    Live fractions are this checkout against the Model care snapshot and
+    the issue-133 fault library. A model with no Model care rows is 100%
+    on a side only when a real test of that type exists there. Dataset
+    perf JSON shaped like vllm-project/vllm-omni main locks the Qwen3-Omni
+    and MiniCPM GPU/NPU rows. Skips do not count.
     """
 
     def test_percent_rounding_and_library_size(self) -> None:
@@ -823,34 +824,50 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual(coverage_percent(11, 54), 20)
         self.assertIn("issues/133", RELIABILITY_ISSUE_URL)
 
-    def test_model_without_care_entry_is_fully_filled(self) -> None:
-        scored = {}
-        for model_id, _name in (
-            ("qwen-tts", "Qwen-TTS"),
-            ("qwen-image", "Qwen-Image"),
-            ("HunyuanVideo", "HunyuanVideo"),
-            ("Wan", "Wan"),
-            ("MinimaxH3", "MinimaxH3"),
-            ("Cosmos", "Cosmos"),
-            ("lingbot", "LingBot"),
-        ):
-            scored[model_id] = {"gpu": set(), "npu": set(), "rel": False}
-        attach_quality_percentages(
-            scored,
-            _qd_repo_root(),
-            has_rel=_QUALITY_DEFENSE_HAS_REL,
-            single_mode=_QUALITY_DEFENSE_SINGLE_MODE,
-            keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
-        )
-        for model_id in scored:
-            perf = scored[model_id]["pct"]["perf"]
-            prec = scored[model_id]["pct"]["prec"]
-            self.assertEqual(perf["basis"], "no-model-care", model_id)
-            self.assertEqual(prec["basis"], "no-model-care", model_id)
-            self.assertEqual(perf["gpu"]["pct"], 100)
-            self.assertEqual(perf["npu"]["pct"], 100)
-            self.assertEqual(prec["single"], 100)
-            self.assertEqual(perf["gpu"]["total"], 0)
+    def test_missing_model_care_uses_real_tests_not_a_full_default(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            perf = root / "tests" / "dfx" / "perf" / "tests"
+            perf.mkdir(parents=True)
+            (perf / "test_qwen_image_vllm_omni.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "test_name": "test_qwen_image_gpu",
+                            "mark": [{"hardware_marks": {"res": {"cuda": "H100"}, "num_cards": 1}}],
+                            "server_params": {"model": "Qwen/Qwen-Image"},
+                            "benchmark_params": [{"dataset_name": "random", "name": "t2i"}],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            scored = {
+                "qwen-image": {"gpu": set(), "npu": set(), "rel": False},
+                "lingbot": {"gpu": set(), "npu": set(), "rel": False},
+            }
+            attach_quality_percentages(
+                scored,
+                root,
+                has_rel=frozenset(),
+                single_mode=frozenset(),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+                model_care_path=root / "missing-care.json",
+            )
+        image = scored["qwen-image"]["pct"]
+        self.assertEqual(image["perf"]["basis"], "repo-tests")
+        self.assertEqual(image["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(image["perf"]["npu"]["pct"], 0)
+        self.assertEqual(image["prec"]["gpu"]["pct"], 0)
+        self.assertEqual(image["prec"]["npu"]["pct"], 0)
+        # No performance or accuracy case at all → both axes stay unfilled.
+        ling = scored["lingbot"]["pct"]
+        self.assertEqual(ling["perf"]["gpu"]["pct"], 0)
+        self.assertEqual(ling["perf"]["npu"]["pct"], 0)
+        self.assertEqual(ling["prec"]["single"], 0)
 
     def test_new_model_care_id_is_not_hardcoded_to_three_models(self) -> None:
         import json
@@ -891,9 +908,9 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual(perf["gpu"]["covered"], 0)
         self.assertEqual(perf["gpu"]["total"], 1)
         self.assertEqual(perf["gpu"]["pct"], 0)
-        # The row is GPU-only, so the NPU half has an empty requirement.
+        # The care row is GPU-only and this tree has no NPU perf case.
         self.assertEqual(perf["npu"]["total"], 0)
-        self.assertEqual(perf["npu"]["pct"], 100)
+        self.assertEqual(perf["npu"]["pct"], 0)
 
     def test_skipped_fault_and_matching_case_rules(self) -> None:
         import json
@@ -1006,11 +1023,11 @@ class QualityDefenseCoverageTests(unittest.TestCase):
             "tree_idle:respond",
         ])
         self.assertEqual(rel["issue"], RELIABILITY_ISSUE_URL)
-        # MiniCPM has care rows in the live file, but this fixture JSON does
-        # not list it, so Performance stays fully filled. Reliability is still
-        # the fault library, and this fixture has no MiniCPM test file.
-        self.assertEqual(scored["minicpm"]["pct"]["perf"]["basis"], "no-model-care")
-        self.assertEqual(scored["minicpm"]["pct"]["perf"]["gpu"]["pct"], 100)
+        # This fixture JSON does not list MiniCPM and the tree has no MiniCPM
+        # perf case, so Performance stays unfilled. Reliability is still the
+        # fault library.
+        self.assertEqual(scored["minicpm"]["pct"]["perf"]["basis"], "repo-tests")
+        self.assertEqual(scored["minicpm"]["pct"]["perf"]["gpu"]["pct"], 0)
         self.assertEqual(scored["minicpm"]["pct"]["rel"]["covered"], 0)
         self.assertEqual(scored["minicpm"]["pct"]["rel"]["pct"], 0)
         # Binary axes are unchanged by the percentage attachment.
@@ -1056,8 +1073,11 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertNotIn("oom_under_load:detect", hy["rel"]["hits"])
 
         wan = cov["Wan"]["pct"]
-        self.assertEqual(wan["perf"]["basis"], "no-model-care")
+        self.assertEqual(wan["perf"]["basis"], "repo-tests")
         self.assertEqual(wan["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(wan["perf"]["npu"]["pct"], 0)
+        self.assertEqual(wan["prec"]["gpu"]["pct"], 100)
+        self.assertEqual(wan["prec"]["npu"]["pct"], 0)
         self.assertEqual(wan["rel"]["covered"], 12)
         self.assertEqual(wan["rel"]["pct"], 22)
         self.assertIn("oom_under_load:detect", wan["rel"]["hits"])
@@ -1065,13 +1085,168 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertNotIn("root_under_load:detect", wan["rel"]["hits"])
         self.assertNotIn("oom_under_load:recover", wan["rel"]["hits"])
 
-        for model_id in ("qwen-tts", "qwen-image", "HunyuanVideo", "MinimaxH3", "Cosmos", "lingbot"):
-            self.assertEqual(cov[model_id]["pct"]["perf"]["basis"], "no-model-care")
-            self.assertEqual(cov[model_id]["pct"]["prec"]["single"], 100)
+        self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["basis"], "repo-tests")
+        self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["npu"]["pct"], 0)
+        self.assertEqual(cov["qwen-tts"]["pct"]["prec"]["gpu"]["pct"], 0)
+        self.assertEqual(cov["qwen-image"]["pct"]["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["qwen-image"]["pct"]["perf"]["npu"]["pct"], 0)
+        self.assertEqual(cov["qwen-image"]["pct"]["prec"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["qwen-image"]["pct"]["prec"]["npu"]["pct"], 0)
+        self.assertEqual(cov["HunyuanVideo"]["pct"]["perf"]["gpu"]["pct"], 0)
+        self.assertEqual(cov["HunyuanVideo"]["pct"]["prec"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["HunyuanVideo"]["pct"]["prec"]["npu"]["pct"], 0)
+        self.assertEqual(cov["MinimaxH3"]["pct"]["perf"]["single"], 0)
+        self.assertEqual(cov["MinimaxH3"]["pct"]["prec"]["single"], 0)
+        self.assertEqual(cov["lingbot"]["pct"]["perf"]["single"], 0)
+        self.assertEqual(cov["lingbot"]["pct"]["prec"]["single"], 0)
+        # Cosmos is a single circle: accuracy tests exist, performance tests do not.
+        self.assertEqual(cov["Cosmos"]["pct"]["perf"]["single"], 0)
+        self.assertEqual(cov["Cosmos"]["pct"]["prec"]["single"], 100)
         # Percentage axes are not stuffed back into the binary lit-sets.
         self.assertNotIn("perf", cov["qwen-omni"]["gpu"])
         self.assertNotIn("prec", cov["qwen-omni"]["gpu"])
         self.assertFalse(cov["qwen-omni"]["rel"])
+
+    def test_qwen_and_minicpm_perf_rows_match_dataset_benches(self) -> None:
+        """GPU and NPU Model care perf rows match the dataset benches on main.
+
+        This skills checkout does not carry those JSON files (they live on
+        vllm-project/vllm-omni main). The fixture keeps the hardware mark,
+        dataset name, and async_chunk flag that the real files use.
+        """
+        import json
+        import tempfile
+
+        def bench(name, dataset, marks, async_chunk, backend="openai-chat-omni"):
+            return {
+                "test_name": name,
+                "mark": [{"hardware_marks": {"res": marks, "num_cards": 2}}],
+                "server_params": {
+                    "model": "placeholder",
+                    "update": {"async_chunk": async_chunk},
+                },
+                "benchmark_params": [
+                    {"name": name, "dataset_name": dataset, "backend": backend}
+                ],
+            }
+
+        qwen_model = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+        mini_model = "openbmb/MiniCPM-o-4_5"
+        files = {
+            "test_qwen3_omni_non_full_duplex.json": [
+                bench("default-seed-tts-c64", "seed-tts", {"cuda": ["H100"]}, False),
+                bench("async-prefix-daily-omni-c8", "daily-omni", {"cuda": ["H100"]}, True),
+                bench("async-prefix-seed-tts-c64", "seed-tts", {"cuda": ["H100"]}, True),
+                bench("default-seed-tts-c32", "seed-tts", {"npu": "A3"}, False),
+                bench("async-prefix-seed-tts-c32", "seed-tts", {"npu": "A3"}, True),
+            ],
+            "test_qwen3_omni_duplex_omni_duplex_eval.json": [
+                bench(
+                    "c8_accuracy_response_stats",
+                    "omni-duplex-eval",
+                    {"cuda": ["H100"]},
+                    True,
+                    "openai-realtime-duplex",
+                ),
+                bench(
+                    "c8_accuracy_response_stats_npu",
+                    "omni-duplex-eval",
+                    {"npu": "A3"},
+                    True,
+                    "openai-realtime-duplex",
+                ),
+            ],
+            "test_qwen3_omni_duplex_omniinteract.json": [
+                bench(
+                    "c8_accuracy_response_stats",
+                    "omniinteract",
+                    {"cuda": "H100"},
+                    True,
+                    "openai-realtime-duplex",
+                )
+            ],
+            "test_minicpmo_4_5.json": [
+                bench("test_minicpmo_4_5_default", "seed-tts", {"cuda": ["H100"]}, False),
+                bench("test_minicpmo_4_5_async_prefix", "seed-tts", {"cuda": ["H100"]}, True),
+                bench("test_minicpmo_4_5_async_prefix_daily_omni", "daily-omni", {"cuda": ["H100"]}, True),
+                bench("default-seed-tts-c16", "seed-tts", {"npu": "A3"}, False),
+                bench("async-prefix-seed-tts-c16", "seed-tts", {"npu": "A3"}, True),
+            ],
+            "test_minicpmo_4_5_omni_duplex_eval.json": [
+                bench(
+                    "test_minicpmo_4_5_omni_duplex_eval",
+                    "omni-duplex-eval",
+                    {"cuda": ["H100"], "npu": "A3"},
+                    None,
+                    "openai-realtime-duplex",
+                )
+            ],
+            "test_minicpmo_4_5_omniinteract.json": [
+                bench(
+                    "test_minicpmo_4_5_omniinteract",
+                    "omniinteract",
+                    {"cuda": "H100"},
+                    None,
+                    "openai-realtime-duplex",
+                )
+            ],
+        }
+        # Stamp the real model id onto each object.
+        for name, items in files.items():
+            model = mini_model if "minicpmo" in name else qwen_model
+            for item in items:
+                item["server_params"]["model"] = model
+                if item["server_params"]["update"]["async_chunk"] is None:
+                    del item["server_params"]["update"]["async_chunk"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            perf = root / "tests" / "dfx" / "perf" / "tests"
+            perf.mkdir(parents=True)
+            for name, items in files.items():
+                (perf / name).write_text(json.dumps(items), encoding="utf-8")
+            care = root / "care.json"
+            care.write_text(
+                Path(__file__).resolve().parents[1].joinpath("references", "model_care_scenarios.json").read_text(),
+                encoding="utf-8",
+            )
+            scored = {
+                "qwen-omni": {"gpu": set(), "npu": set(), "rel": False},
+                "minicpm": {"gpu": set(), "npu": set(), "rel": False},
+            }
+            attach_quality_percentages(
+                scored,
+                root,
+                has_rel=frozenset(),
+                single_mode=frozenset(),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+                model_care_path=care,
+            )
+        for model_id in ("qwen-omni", "minicpm"):
+            perf_block = scored[model_id]["pct"]["perf"]
+            self.assertEqual(perf_block["gpu"]["pct"], 100, model_id)
+            self.assertEqual(perf_block["npu"]["pct"], 100, model_id)
+            self.assertGreater(perf_block["gpu"]["total"], 0)
+            self.assertEqual(perf_block["gpu"]["covered"], perf_block["gpu"]["total"])
+            self.assertEqual(perf_block["npu"]["covered"], perf_block["npu"]["total"])
+        qwen_gpu_rows = scored["qwen-omni"]["pct"]["perf"]["gpu"]["rows"]
+        qwen_npu_rows = scored["qwen-omni"]["pct"]["perf"]["npu"]["rows"]
+
+        def joined(rows, dataset):
+            return " ".join(row["by"] for row in rows if row["dataset"] == dataset)
+
+        self.assertIn("default-seed-tts-c64", joined(qwen_gpu_rows, "seed-tts"))
+        self.assertIn("async-prefix-seed-tts-c64", joined(qwen_gpu_rows, "seed-tts"))
+        self.assertIn("async-prefix-daily-omni-c8", joined(qwen_gpu_rows, "daily-omni"))
+        self.assertIn("omni_duplex_eval.json", joined(qwen_gpu_rows, "duplexEval-OmniInteract"))
+        self.assertIn("omniinteract.json", joined(qwen_gpu_rows, "duplexEval-OmniInteract"))
+        self.assertIn("default-seed-tts-c32", joined(qwen_npu_rows, "seed-tts"))
+        self.assertIn("async-prefix-seed-tts-c32", joined(qwen_npu_rows, "seed-tts"))
+        self.assertIn("c8_accuracy_response_stats_npu", joined(qwen_npu_rows, "duplexEval"))
+        mini_npu_rows = scored["minicpm"]["pct"]["perf"]["npu"]["rows"]
+        self.assertTrue(all(row["covered"] for row in mini_npu_rows))
+        self.assertTrue(any("async-prefix-seed-tts-c16" in row["by"] for row in mini_npu_rows))
 
     def test_svg_bakes_percent_fill_and_leaves_other_axes_binary(self) -> None:
         lit = {
