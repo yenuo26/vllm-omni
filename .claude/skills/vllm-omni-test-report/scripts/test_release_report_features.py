@@ -1029,6 +1029,172 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         # Binary axes are unchanged by the percentage attachment.
         self.assertEqual(scored["qwen-omni"]["gpu"], {"func"})
 
+    def test_scenario_class_reliability_scan(self) -> None:
+        """One-line scenario tests follow the class, the signal spec, and at_* names."""
+        import tempfile
+
+        library = "\n".join(
+            [
+                "CRASH_SIGNALS = ((\"SIGKILL\", None),)",
+                "",
+                "class ProcessKillWorkerNoLoad:",
+                "    signals_attr = \"worker_signals\"",
+                "    def run(self, model, server, client, signal_name=None):",
+                "        model.assert_fast_fail(client, server)",
+                "        _assert_health_503()",
+                "",
+                "def _assert_health_503():",
+                "    assert status == 503, \"expected /health 503 after fatal fault\"",
+                "",
+                "class ProcessKillWorkerWithLoad:",
+                "    signals_attr = \"worker_signals\"",
+                "    def run(self, model, server, client, signal_name=None):",
+                "        model.assert_fast_fail(client, server)",
+                "        assert_no_server_tree_process_residual_and_gpu_release(server)",
+                "",
+                "class ProcessKillServeRootNoLoad:",
+                "    signals_attr = \"serve_root_signals\"",
+                "    def run(self, model, server, client, signal_name=None):",
+                "        model.assert_fast_fail(client, server)",
+                "        assert_no_server_tree_process_residual_and_gpu_release(server)",
+                "",
+                "class GpuOomAtLaunch:",
+                "    def run(self, model, server):",
+                "        assert_launch_failure_observable(exc)",
+                "        pytest.fail(\"server became ready while GPU memory was exhausted\")",
+                "",
+                "def assert_launch_failure_observable(exc):",
+                "    assert hint, \"startup failure was not observable\"",
+                "",
+                "class PartialCrashAtExit:",
+                "    def run(self, model, server, client, signal_name=None):",
+                "        _shutdown_with_killed_targets()",
+                "        model.assert_fast_fail(client, server)",
+                "",
+                "def _shutdown_with_killed_targets():",
+                "    signal_name = \"SIGKILL\"",
+                "    deadline = time.monotonic() + 60",
+                "    assert_no_server_tree_process_residual_and_gpu_release(server)",
+                "",
+                "class GracefulShutdown:",
+                "    \"\"\"Does not verify restart recovery.\"\"\"",
+                "    def run(self, model, server, client, signal_name=None):",
+                "        make_server_root_kill_fault_injector(signal_name=\"SIGTERM\")(server)",
+                "        deadline = time.monotonic() + 60",
+                "        assert_no_server_tree_process_residual_and_gpu_release(server)",
+                "        assert_post_fault_api_unreachable(client)",
+                "",
+                "def assert_post_fault_api_unreachable(client):",
+                "    status = client.send_health_http_request()",
+                "    pytest.fail(\"health stayed reachable\")",
+                "",
+            ]
+        )
+        qwen = "\n".join(
+            [
+                "QWEN_SERVE_ROOT_SIGNALS = ((\"SIGKILL\", \"https://github.com/vllm-project/vllm/issues/43060\"),)",
+                "",
+                "class Qwen3Omni:",
+                "    serve_root_signals = QWEN_SERVE_ROOT_SIGNALS",
+                "",
+                "MODEL = Qwen3Omni()",
+                "",
+                "@scenario_params(MODEL, ProcessKillWorkerNoLoad)",
+                "def test_stage_crash_at_idle(omni_server_function, online_client_function, signal_name):",
+                "    ProcessKillWorkerNoLoad().run(MODEL, omni_server_function, online_client_function, signal_name)",
+                "",
+                "@scenario_params(MODEL, ProcessKillWorkerWithLoad, skip_reason=\"issue#8912\")",
+                "def test_stage_crash_at_load(omni_server_function, online_client_function, signal_name):",
+                "    ProcessKillWorkerWithLoad().run(MODEL, omni_server_function, online_client_function, signal_name)",
+                "",
+                "@scenario_params(MODEL, ProcessKillServeRootNoLoad)",
+                "def test_serve_root_crash_at_idle(omni_server_function, online_client_function, signal_name):",
+                "    ProcessKillServeRootNoLoad().run(MODEL, omni_server_function, online_client_function, signal_name)",
+                "",
+                "@launch_scenario_params(MODEL, GpuOomAtLaunch)",
+                "def test_gpu_oom_at_launch(launch_params):",
+                "    \"\"\"This case alone does not verify restart recovery.\"\"\"",
+                "    GpuOomAtLaunch().run(MODEL, launch_params)",
+                "",
+                "@scenario_params(MODEL, PartialCrashAtExit)",
+                "def test_stage_crash_at_exit(omni_server_function, online_client_function):",
+                "    PartialCrashAtExit().run(MODEL, omni_server_function, online_client_function)",
+                "",
+                "@scenario_params(MODEL, GracefulShutdown)",
+                "def test_graceful_shutdown(omni_server_function, online_client_function):",
+                "    GracefulShutdown().run(MODEL, omni_server_function, online_client_function)",
+                "",
+            ]
+        )
+        replica = "\n".join(
+            [
+                "MODEL = Qwen3Omni()",
+                "",
+                "@scenario_params(MODEL, GracefulShutdown)",
+                "def test_graceful_shutdown(omni_server_function, online_client_function):",
+                "    GracefulShutdown().run(MODEL, omni_server_function, online_client_function)",
+                "",
+            ]
+        )
+        decoy = "\n".join(
+            [
+                "def test_process_tree_crash_at_launch():",
+                "    signal_name = \"SIGKILL\"",
+                "    assert_fault_exception(\"tree\")",
+                "    assert_no_server_tree_process_residual_and_gpu_release()",
+                "",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rel = root / "tests" / "dfx" / "reliability"
+            (rel / "scenarios").mkdir(parents=True)
+            (rel / "unit").mkdir()
+            (rel / "invalid_param_test").mkdir()
+            (rel / "scenarios" / "library.py").write_text(library, encoding="utf-8")
+            (rel / "helpers.py").write_text(
+                "def test_gpu_oom_at_launch():\n    pytest.fail('helpers must not be scanned')\n",
+                encoding="utf-8",
+            )
+            (rel / "conftest.py").write_text(decoy, encoding="utf-8")
+            (rel / "test_qwen3_omni.py").write_text(qwen, encoding="utf-8")
+            (rel / "test_qwen3_omni_replica.py").write_text(replica, encoding="utf-8")
+            (rel / "unit" / "test_qwen3_omni.py").write_text(decoy, encoding="utf-8")
+            (rel / "invalid_param_test" / "test_qwen3_omni.py").write_text(decoy, encoding="utf-8")
+            scored = {"qwen-omni": {"gpu": set(), "npu": set(), "rel": False}}
+            attach_quality_percentages(
+                scored,
+                root,
+                has_rel=frozenset({"qwen-omni"}),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+            )
+        rel_pct = scored["qwen-omni"]["pct"]["rel"]
+        hits = set(rel_pct["hits"])
+        self.assertEqual(
+            hits,
+            {
+                "stage_idle:detect",
+                "stage_idle:respond",
+                "oom_startup:detect",
+                "oom_startup:respond",
+                "stage_during_exit:detect",
+                "stage_during_exit:respond",
+                "stage_during_exit:recover",
+                "exit_single:detect",
+                "exit_single:respond",
+                "exit_single:recover",
+                "exit_multi:detect",
+                "exit_multi:respond",
+                "exit_multi:recover",
+            },
+        )
+        self.assertNotIn("stage_under_load:detect", hits)
+        self.assertNotIn("root_idle:detect", hits)
+        self.assertNotIn("tree_startup:detect", hits)
+        self.assertNotIn("oom_startup:recover", hits)
+        self.assertEqual(rel_pct["covered"], 13)
+        self.assertEqual(rel_pct["total"], 54)
+
     def test_live_repo_fractions(self) -> None:
         cov = _compute_quality_defense_coverage(_qd_repo_root())
         qwen = cov["qwen-omni"]["pct"]

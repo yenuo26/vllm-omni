@@ -48,13 +48,19 @@ issue says an idle case does not cover startup. Host memory, SIGSTOP
 hang, overload, and dependency faults are out of scope and are not in
 the denominator.
 
-Numerator: non-skipped tests under ``tests/dfx/reliability/test_reliability_*.py``.
-An unconditional ``@pytest.mark.skip`` (or a skipped ``pytest.param`` for
-the required signal) does not count. Crash cells require an active
-SIGKILL parameter; SIGTERM / SIGINT do not count as crash coverage.
-``no_load`` cases map to 空闲 (the server fixture is already up), not
-拉起. Graceful-exit cells require a test whose name is the dedicated
-SIGTERM exit scenario; a multi-signal kill matrix is not that scenario.
+Numerator: non-skipped ``test_*.py`` files under
+``tests/dfx/reliability/`` (not ``conftest.py``, ``helpers.py``,
+``unit/``, or ``invalid_param_test/``). An unconditional
+``@pytest.mark.skip``, a ``skip_reason`` on ``@scenario_params`` /
+``@launch_scenario_params``, or a skipped signal spec does not count.
+Crash cells require an active SIGKILL; SIGTERM / SIGINT do not count as
+crash coverage. ``at_launch`` is 拉起, ``at_load`` / ``with_load`` is
+带载, ``at_idle`` / ``no_load`` is 空闲, and ``at_exit`` is 退出过程.
+``test_graceful_shutdown`` in a ``*_replica.py`` file is the multi-replica
+exit cell; the same name elsewhere is the single-replica exit.
+Scenario classes (and the helpers they call) supply the signal and the
+detect / respond / recover evidence when the test body is only a
+``Scenario().run(...)`` line.
 """
 
 from __future__ import annotations
@@ -105,6 +111,36 @@ _DEF_RE = re.compile(r"^def\s+(test_[A-Za-z0-9_]+)\(", re.M)
 _ANY_DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\(", re.M)
 _PARAM_LIST_RE = re.compile(
     r"""@pytest\.mark\.parametrize\(\s*['"](\w+)['"]\s*,\s*([A-Z][A-Z0-9_]*)"""
+)
+_SCENARIO_CLASS_RE = re.compile(
+    r"(?:scenario_params|launch_scenario_params)\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+_RUN_CLASS_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\(\)\.run\b")
+_SKIP_REASON_RE = re.compile(r"""skip_reason\s*=\s*(['"])([^'"]+)\1""")
+_SIGNALS_ATTR_RE = re.compile(r"""^\s+signals_attr\s*=\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]""", re.M)
+_SIGNAL_SPEC_START_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*(?::[^\n=]+)?=\s*", re.M)
+_SIGNAL_PAIR_RE = re.compile(
+    r"""\(\s*['"](SIG(?:KILL|TERM|INT))['"]\s*,\s*(None|['"][^'"]*['"])"""
+)
+_TOP_LEVEL_BLOCK_RE = re.compile(r"^(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+_RELIABILITY_SKIP_DIRS = frozenset({"unit", "invalid_param_test", "__pycache__"})
+_RELIABILITY_SKIP_FILES = frozenset({"conftest.py", "helpers.py"})
+# Generic harness helpers. Their default arguments mention SIGKILL even when
+# the scenario calls them with SIGTERM, and their bodies are not the fault
+# assertion the cell is scoring.
+_RELIABILITY_SKIP_EXPAND = frozenset(
+    {
+        "start_server_from_params",
+        "inject_gpu_oom",
+        "stop_gpu_oom_hogs",
+        "client_for_server",
+        "post_json_raw",
+        "escalate_live_pids",
+        "make_server_root_kill_fault_injector",
+        "make_server_tree_kill_fault_injector",
+        "make_process_kill_fault_injector",
+        "run_fault_injection_with_rate_load",
+    }
 )
 _ASYNC_TRUE_RE = re.compile(r"async_chunk[\"']?\s*[:=]\s*true\b")
 _ASYNC_FALSE_RE = re.compile(r"async_chunk[\"']?\s*[:=]\s*false\b")
@@ -493,7 +529,11 @@ def _iter_test_functions(text: str) -> list[tuple[str, str, str]]:
 
 
 def _function_skipped(decorators: str) -> bool:
-    return re.search(r"@pytest\.mark\.skip\(", decorators) is not None
+    if re.search(r"@pytest\.mark\.skip\(", decorators):
+        return True
+    # @scenario_params / @launch_scenario_params(..., skip_reason="...") skips
+    # every parameter of that test. An empty or missing reason still runs.
+    return _SKIP_REASON_RE.search(decorators) is not None
 
 
 def _active_signals(decorators: str, body: str, lists: dict[str, set[str]]) -> set[str]:
@@ -506,11 +546,17 @@ def _active_signals(decorators: str, body: str, lists: dict[str, set[str]]) -> s
 
 
 def _timing(name: str) -> str:
-    if "with_load" in name or "under_load" in name:
-        return "under_load"
-    if any(token in name for token in ("startup", "bringup", "before_ready", "during_launch")):
+    """Map a test or scenario name onto one fault-library timing.
+
+    ``at_launch`` is checked before ``at_load`` so the two tokens stay
+    distinct. ``at_idle`` and ``no_load`` both mean the server fixture is
+    already up.
+    """
+    if "at_launch" in name or any(token in name for token in ("startup", "bringup", "before_ready", "during_launch")):
         return "startup"
-    if "during_exit" in name or "on_exit" in name:
+    if "at_load" in name or "with_load" in name or "under_load" in name:
+        return "under_load"
+    if "at_exit" in name or "during_exit" in name or "on_exit" in name:
         return "during_exit"
     return "idle"
 
@@ -558,10 +604,17 @@ def _dimensions(body: str) -> set[str]:
     return dims
 
 
-def _cells_for_test(name: str, body: str, signals: set[str]) -> set[tuple[str, str]]:
+def _cells_for_test(
+    name: str,
+    body: str,
+    signals: set[str],
+    *,
+    filename: str = "",
+    scenario_style: bool = False,
+) -> set[tuple[str, str]]:
     """Map one active test to ``(scenario_id, dimension)`` cells."""
     lname = name.lower()
-    dims = _dimensions(body)
+    dims = _scenario_dimensions(body) if scenario_style else _dimensions(body)
     if not dims:
         return set()
     crash_ok = "SIGKILL" in signals
@@ -576,7 +629,11 @@ def _cells_for_test(name: str, body: str, signals: set[str]) -> set[tuple[str, s
     if "graceful" in lname or "normal_exit" in lname:
         if "SIGTERM" not in signals and "sigterm" not in lname:
             return set()
-        scenario = "exit_multi" if ("multi" in lname or "replica" in lname) else "exit_single"
+        # ``test_graceful_shutdown`` is the same name in the single-server
+        # file and the ``*_replica.py`` file. The file, not the function
+        # name, decides exit_single vs exit_multi.
+        replica_file = filename.endswith("_replica.py")
+        scenario = "exit_multi" if ("multi" in lname or "replica" in lname or replica_file) else "exit_single"
         return pack(scenario)
 
     if not crash_ok:
@@ -598,6 +655,285 @@ def _file_matches_model(filename: str, keywords: tuple[str, ...]) -> bool:
     return any(_norm(kw) and _norm(kw) in blob for kw in keywords)
 
 
+def _scenario_dimensions(body: str) -> set[str]:
+    """Detect / respond / recover for a scenario class and the helpers it calls.
+
+    The older function-body keywords still apply. Scenario modules state the
+    same three checks with ``observable``, an HTTP 500 contract, a deadline,
+    and ``pytest.fail`` instead of ``assert_fault``.
+    """
+    dims = _dimensions(body)
+    low = body.lower()
+    if (
+        "observable" in low
+        or "status in (500" in low
+        or "err_code=(500" in low
+        or "err_code=500" in low
+        or "must fail" in low
+    ):
+        dims.add("detect")
+    if (
+        "deadline" in low
+        or "grace_sec" in low
+        or "grace period" in low
+        or "did not terminate" in low
+        or "did not fail" in low
+        or "pytest.fail" in low
+    ):
+        dims.add("respond")
+    return dims
+
+
+def _code_for_dims(text: str) -> str:
+    """Drop docstrings, comments, and prints before the dimension scan.
+
+    Scenario docstrings say a case does *not* verify recovery, and several
+    prints log "restart required" on the path that returns without a
+    recovery assertion. Those words must not fill the recover cell.
+    """
+    text = _strip_docstrings(text)
+    kept: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        kept.append(re.sub(r"\s+#.*", "", line))
+    return _strip_call("\n".join(kept), "print")
+
+
+def _strip_call(text: str, name: str) -> str:
+    """Remove ``name(...)`` call expressions, including nested parentheses."""
+    needle = name + "("
+    out: list[str] = []
+    cursor = 0
+    while True:
+        found = text.find(needle, cursor)
+        if found < 0:
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor:found])
+        depth = 0
+        index = found + len(name)
+        while index < len(text):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    index += 1
+                    break
+            index += 1
+        cursor = index
+    return "".join(out)
+
+
+def _top_level_classes(text: str) -> dict[str, str]:
+    matches = list(_TOP_LEVEL_BLOCK_RE.finditer(text))
+    found: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        if not text.startswith("class ", match.start()):
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        found[match.group(1)] = text[match.start() : end]
+    return found
+
+
+def _top_level_functions(text: str) -> dict[str, str]:
+    matches = list(_TOP_LEVEL_BLOCK_RE.finditer(text))
+    found: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        if not text.startswith("def ", match.start()):
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        found[match.group(1)] = text[match.start() : end]
+    return found
+
+
+def _read_reliability_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _iter_reliability_test_files(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for path in sorted(root.rglob("test_*.py")):
+        if path.name in _RELIABILITY_SKIP_FILES:
+            continue
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            parts = path.parts
+        if any(part in _RELIABILITY_SKIP_DIRS for part in parts):
+            continue
+        found.append(path)
+    return found
+
+
+def _reliability_sources(root: Path) -> tuple[dict[str, str], dict[str, str], dict[str, list[tuple[str, bool]]]]:
+    """Class bodies, helper bodies, and signal specs under the reliability tree."""
+    classes: dict[str, str] = {}
+    functions: dict[str, str] = {}
+    specs: dict[str, list[tuple[str, bool]]] = {}
+    files: list[Path] = []
+    scenario_dir = root / "scenarios"
+    if scenario_dir.is_dir():
+        files.extend(sorted(scenario_dir.glob("*.py")))
+    helpers = root / "helpers.py"
+    if helpers.is_file():
+        files.append(helpers)
+    files.extend(_iter_reliability_test_files(root))
+    for path in files:
+        text = _read_reliability_text(path)
+        if not text:
+            continue
+        classes.update(_top_level_classes(text))
+        functions.update(_top_level_functions(text))
+        specs.update(_signal_specs(text))
+    return classes, functions, specs
+
+
+def _signal_specs(text: str) -> dict[str, list[tuple[str, bool]]]:
+    """``NAME = (("SIGKILL", None), ...)`` → signal, skipped-when-reason-set."""
+    found: dict[str, list[tuple[str, bool]]] = {}
+    for match in _SIGNAL_SPEC_START_RE.finditer(text):
+        window = text[match.end() : match.end() + 600]
+        if not window.lstrip().startswith("("):
+            continue
+        pairs = _SIGNAL_PAIR_RE.findall(window)
+        if not pairs:
+            continue
+        found[match.group(1)] = [(signal, reason != "None") for signal, reason in pairs]
+    return found
+
+
+def _class_bases(name: str, source: str) -> list[str]:
+    match = re.search(r"^class\s+" + re.escape(name) + r"\(([^)]*)\)", source, re.M)
+    if not match:
+        return []
+    bases: list[str] = []
+    for part in match.group(1).split(","):
+        base = part.strip().split(".")[-1].split("[")[0].strip()
+        if base and base != name:
+            bases.append(base)
+    return bases
+
+
+def _walk_class_attr(name: str, classes: dict[str, str], pattern: re.Pattern[str]) -> str | None:
+    seen: set[str] = set()
+    stack = [name]
+    while stack:
+        current = stack.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        source = classes.get(current, "")
+        if not source:
+            continue
+        match = pattern.search(source)
+        if match:
+            return match.group(1) if match.lastindex == 1 else match.group(match.lastindex)
+        stack.extend(_class_bases(current, source))
+    return None
+
+
+def _scenario_source(name: str, classes: dict[str, str]) -> str:
+    """Class body, plus the inherited ``run`` when this class does not define one."""
+    seen: set[str] = set()
+    parts: list[str] = []
+    current = name
+    while current and current not in seen:
+        seen.add(current)
+        source = classes.get(current, "")
+        if not source:
+            break
+        parts.append(source)
+        if re.search(r"^\s+def run\(", source, re.M):
+            break
+        bases = _class_bases(current, source)
+        current = bases[0] if bases else ""
+    return "\n".join(parts)
+
+
+def _scenario_class_names(decorators: str, body: str) -> list[str]:
+    names: list[str] = []
+    for name in _SCENARIO_CLASS_RE.findall(decorators) + _RUN_CLASS_RE.findall(body):
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _expand_callees_limited(source: str, functions: dict[str, str]) -> str:
+    """Include helpers the scenario calls, two levels deep, skipping harness code."""
+    seen: set[str] = set()
+    parts = [source]
+
+    def walk(text: str, depth: int) -> None:
+        if depth > 1:
+            return
+        for name, body in functions.items():
+            if name in seen or name in _RELIABILITY_SKIP_EXPAND or name.startswith("test_"):
+                continue
+            if re.search(rf"\b{re.escape(name)}\(", text) is None:
+                continue
+            seen.add(name)
+            parts.append(body)
+            walk(body, depth + 1)
+
+    walk(source, 0)
+    return "\n".join(parts)
+
+
+def _model_class_name(text: str) -> str:
+    match = re.search(r"^MODEL\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", text, re.M)
+    return match.group(1) if match else ""
+
+
+def _active_scenario_signals(
+    class_names: list[str],
+    *,
+    classes: dict[str, str],
+    functions: dict[str, str],
+    specs: dict[str, list[tuple[str, bool]]],
+    model_class: str,
+) -> set[str]:
+    """Signals the scenario actually runs.
+
+    A ``signals_attr`` uses the model spec (``("SIGKILL", None)`` runs;
+    ``("SIGKILL", "reason")`` is skipped). A scenario that kills inside
+    ``run`` uses the literal in that class or in the kill helper it calls.
+    """
+    active: set[str] = set()
+    for name in class_names:
+        source = _scenario_source(name, classes)
+        if not source:
+            continue
+        attr = _walk_class_attr(name, classes, _SIGNALS_ATTR_RE)
+        if attr:
+            spec_name = ""
+            if model_class:
+                spec_name = _walk_class_attr(model_class, classes, re.compile(
+                    rf"^\s+{re.escape(attr)}\s*(?::[^\n=]+)?=\s*([A-Za-z_][A-Za-z0-9_]*)",
+                    re.M,
+                )) or ""
+            pairs = specs.get(spec_name) if spec_name else None
+            if pairs is None:
+                active.add("SIGKILL")
+            else:
+                active.update(signal for signal, skipped in pairs if not skipped)
+            continue
+        kill_text = source
+        for func_name, func_body in functions.items():
+            if not func_name.startswith(("_kill", "_shutdown", "kill_")):
+                continue
+            if re.search(rf"\b{re.escape(func_name)}\(", source):
+                kill_text += "\n" + func_body
+        active.update(_SIG_RE.findall(_strip_docstrings(kill_text)))
+    return active
+
+
 def scan_reliability_cells(
     repo_root: Path | None,
     *,
@@ -611,20 +947,41 @@ def scan_reliability_cells(
     if not root.is_dir():
         return found
     known = {scenario_id for scenario_id, _label in _RELIABILITY_SCENARIOS}
-    for path in sorted(root.glob("test_reliability_*.py")):
+    classes, functions, specs = _reliability_sources(root)
+    for path in _iter_reliability_test_files(root):
         owners = [mid for mid, kws in keywords.items() if _file_matches_model(path.name, kws)]
         if not owners:
             continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+        text = _read_reliability_text(path)
+        if not text:
             continue
         lists = _signal_lists(text)
+        model_class = _model_class_name(text)
         for func_name, decorators, body in _iter_test_functions(text):
             if _function_skipped(decorators):
                 continue
-            signals = _active_signals(decorators, body, lists)
-            cells = {(sid, dim) for sid, dim in _cells_for_test(func_name, body, signals) if sid in known}
+            class_names = [name for name in _scenario_class_names(decorators, body) if name in classes]
+            if class_names:
+                signals = _active_scenario_signals(
+                    class_names,
+                    classes=classes,
+                    functions=functions,
+                    specs=specs,
+                    model_class=model_class,
+                )
+                evidence = "\n".join(_scenario_source(name, classes) for name in class_names)
+                evidence = _expand_callees_limited(evidence + "\n" + body, functions)
+                cells = _cells_for_test(
+                    func_name,
+                    _code_for_dims(evidence),
+                    signals,
+                    filename=path.name,
+                    scenario_style=True,
+                )
+            else:
+                signals = _active_signals(decorators, body, lists)
+                cells = _cells_for_test(func_name, body, signals, filename=path.name)
+            cells = {(sid, dim) for sid, dim in cells if sid in known}
             for model_id in owners:
                 found[model_id] |= cells
     return found
