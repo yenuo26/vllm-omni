@@ -1457,6 +1457,68 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         qwen_perf = scored["qwen-omni"]["pct"]["perf"]["npu"]["rows"]
         self.assertFalse(qwen_perf[0]["covered"])
 
+    def test_serial_case_wording_covers_recover_but_skips_do_not(self) -> None:
+        import tempfile
+
+        library = "\n".join(
+            [
+                "class GpuOomAtLaunch:",
+                '    """Subsequent serial cases start fresh instances, providing suite-level restart coverage."""',
+                "    def run(self, model, server):",
+                "        assert_launch_failure_observable(exc)",
+                "        pytest.fail('server became ready')",
+                "",
+                "class ProcessKillWorkerWithLoad:",
+                "    signals_attr = 'worker_signals'",
+                "    def run(self, model, server, client, signal_name=None):",
+                "        model.assert_fast_fail(client, server)",
+                "",
+                "def assert_launch_failure_observable(exc):",
+                "    assert hint, 'startup failure was not observable'",
+                "",
+            ]
+        )
+        tests = "\n".join(
+            [
+                "CRASH_SIGNALS = (('SIGKILL', None),)",
+                "class Model:",
+                "    worker_signals = CRASH_SIGNALS",
+                "MODEL = Model()",
+                "",
+                "@launch_scenario_params(MODEL, GpuOomAtLaunch)",
+                "def test_gpu_oom_at_launch(launch_params):",
+                '    """A later start serves."""',
+                "    GpuOomAtLaunch().run(MODEL, launch_params)",
+                "",
+                "@scenario_params(MODEL, ProcessKillWorkerWithLoad, skip_reason='issue#8912')",
+                "def test_stage_crash_at_load(omni_server_function, online_client_function, signal_name):",
+                '    """Later serial cases cover fresh startup and service."""',
+                "    ProcessKillWorkerWithLoad().run(MODEL, omni_server_function, online_client_function, signal_name)",
+                "",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rel = root / "tests" / "dfx" / "reliability"
+            (rel / "scenarios").mkdir(parents=True)
+            (rel / "scenarios" / "library.py").write_text(library, encoding="utf-8")
+            (rel / "test_qwen3_omni.py").write_text(tests, encoding="utf-8")
+            scored = {"qwen-omni": {"gpu": set(), "npu": set(), "rel": False}}
+            attach_quality_percentages(
+                scored,
+                root,
+                has_rel=frozenset({"qwen-omni"}),
+                keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
+            )
+        hits = set(scored["qwen-omni"]["pct"]["rel"]["hits"])
+        skipped = set(scored["qwen-omni"]["pct"]["rel"]["skipped"])
+        self.assertIn("oom_startup:recover", hits)
+        self.assertNotIn("stage_under_load:recover", hits)
+        self.assertIn("stage_under_load:detect", skipped)
+        self.assertTrue(any(item.startswith("hang_") for item in scored["qwen-omni"]["pct"]["rel"]["missing"]))
+        self.assertTrue(any(item.startswith("overload_") for item in scored["qwen-omni"]["pct"]["rel"]["missing"]))
+        self.assertTrue(any(item.startswith("dependency_") for item in scored["qwen-omni"]["pct"]["rel"]["missing"]))
+
     def test_wan_and_hunyuan_replica_cells_are_planned(self) -> None:
         from quality_defense_coverage import reliability_scenarios_for, score_reliability
 

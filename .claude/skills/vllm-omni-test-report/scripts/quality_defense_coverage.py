@@ -645,6 +645,30 @@ def _timing(name: str) -> str:
     return "idle"
 
 
+def _documents_serial_recover(text: str) -> bool:
+    """True when comments or docstrings say later serial cases cover recovery.
+
+    A negative sentence such as "this case alone does not verify restart
+    recovery" does not block the credit when the same text also says a later
+    serial case provides that coverage.
+    """
+    low = text.lower()
+    patterns = (
+        r"later serial cases",
+        r"subsequent(?: selected)? serial cases",
+        r"serial suite cases",
+        r"suite-level (?:whole-instance )?restart coverage",
+        r"suite-level recovery coverage",
+        r"fresh-start recovery",
+        r"fresh startup and service",
+        r"later successful serial cases",
+        r"next selected case starts a fresh",
+        r"covered only by later",
+        r"a later start serves",
+    )
+    return any(re.search(pattern, low) for pattern in patterns)
+
+
 def _dimensions(body: str) -> set[str]:
     low = body.lower()
     detect = (
@@ -1086,6 +1110,10 @@ def scan_reliability_cells(
                 scenario_style=scenario_style,
             )
             cells = {(sid, dim) for sid, dim in cells if sid in known}
+            if not forced_skip and cells and _documents_serial_recover(
+                body + "\n" + "\n".join(_scenario_source(name, classes) for name in class_names)
+            ):
+                cells |= {(sid, "recover") for sid, _dim in cells}
             target = skipped if forced_skip else found
             for model_id in owners:
                 target[model_id] |= cells
