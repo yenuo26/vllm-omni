@@ -2634,14 +2634,13 @@ def _upgrade_resource_usage_block(html_fragment: str) -> str:
 
 
 # ── Quality Defense Radar ──────────────────────────────────────────────
-# Per-model N-axis coverage radar. Ten flagship models are rendered as a
+# Per-model N-axis coverage radar. Nine flagship models are rendered as a
 # 3-column grid of small N-gon SVGs. Each radar carries up to 13 clickable
 # segments across 7 axes (Functionality / Performance / Documentation /
 # Precision / Stability / Reliability / Gate). Six axes are split into GPU
 # + NPU halves that share one circle (GPU half turns green, NPU half turns
 # blue); the Reliability axis is a single circle (green). Models without a
-# Reliability axis render a 6-axis hexagon; Cosmos renders all axes as
-# single circles (GPU-only, no split). Click any segment to toggle gray ↔
+# Reliability axis render a 6-axis hexagon. Click any segment to toggle gray ↔
 # green/blue; state is mirrored to a ``data-quality-on`` attribute on the
 # ``<g class="qd-segment">`` (so a Save-Page-As download preserves the
 # toggled state) **and** to ``localStorage["quality-defense:<model>:<axis>"]``
@@ -2670,7 +2669,6 @@ _QUALITY_DEFENSE_MODELS = (
     ("HunyuanVideo",  "HunyuanVideo"),
     ("Wan",           "Wan"),
     ("MinimaxH3",     "MinimaxH3"),
-    ("Cosmos",        "Cosmos"),
     ("lingbot",       "LingBot"),
 )
 
@@ -2690,10 +2688,6 @@ _QUALITY_DEFENSE_AXIS_LABELS = {
 # Models that include the Reliability axis (7-axis heptagon). All other
 # models render a 6-axis hexagon (no Reliability).
 _QUALITY_DEFENSE_HAS_REL = frozenset({"qwen-omni", "minicpm", "HunyuanImage", "Wan"})
-
-# Models that render every axis as a single circle (no GPU/NPU split).
-# Cosmos is GPU-only and uses single-circle axes.
-_QUALITY_DEFENSE_SINGLE_MODE = frozenset({"Cosmos"})
 
 
 def _qd_axes_for(model_id: str) -> list[str]:
@@ -2724,7 +2718,6 @@ _QUALITY_DEFENSE_MODEL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "HunyuanVideo": ("hunyuanvideo15", "hunyuanvideo", "hunyuan_video"),
     "Wan":          ("wan22", "wan2_2", "wan2"),
     "MinimaxH3":    ("minimax_h3", "minimax"),
-    "Cosmos":       ("cosmos3", "cosmos"),
     "lingbot":      ("lingbot",),
 }
 
@@ -2906,7 +2899,6 @@ def _qd_attach_percentages(coverage: dict[str, dict], repo_root: Path | None) ->
         coverage,
         repo_root,
         has_rel=_QUALITY_DEFENSE_HAS_REL,
-        single_mode=_QUALITY_DEFENSE_SINGLE_MODE,
         keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
     )
 
@@ -2955,15 +2947,11 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
 
     Axis layout is a regular N-gon (N = 6 for models without Reliability, 7
     with). Six axes are split into GPU + NPU halves of one circle (GPU half
-    sweep=0, NPU half sweep=1); Reliability is a single circle. In
-    ``_QUALITY_DEFENSE_SINGLE_MODE`` (Cosmos) every axis renders as a single
-    circle. Binary single circles light when either lane has evidence.
-    Percentage single circles use the combined GPU+NPU fraction.
+    sweep=0, NPU half sweep=1); Reliability is a single circle.
     """
     lit = lit or {"gpu": set(), "npu": set(), "rel": False}
     gpu_axes = lit.get("gpu", set())
     npu_axes = lit.get("npu", set())
-    single_mode = model_id in _QUALITY_DEFENSE_SINGLE_MODE
 
     axes = _qd_axes_for(model_id)
     angles = _qd_axis_angles(axes)
@@ -3029,15 +3017,10 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
 
         if a in ("perf", "prec", "rel"):
             block = _qd_axis_numbers(lit, a)
-            if a == "rel" or single_mode:
-                if a == "rel":
-                    percent = int(block.get("pct") or 0)
-                    covered = int(block.get("covered") or 0)
-                    total = int(block.get("total") or 0)
-                else:
-                    percent = int(block.get("single") if block.get("single") is not None else block.get("pct") or 0)
-                    covered = int(block.get("covered") or 0)
-                    total = int(block.get("total") or 0)
+            if a == "rel":
+                percent = int(block.get("pct") or 0)
+                covered = int(block.get("covered") or 0)
+                total = int(block.get("total") or 0)
                 segment_parts.append(_pct_circle(a, percent, covered, total, ax_label))
             else:
                 gpu_pct, gpu_cov, gpu_tot = _qd_side_percent(block, "gpu")
@@ -3049,19 +3032,6 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
                     f'<text class="qd-pct qd-pct-caption" x="{cap_x:.1f}" y="{cap_y:.1f}" '
                     f'text-anchor="middle">{gpu_pct}%/{npu_pct}%</text>'
                 )
-            continue
-
-        if single_mode:
-            on = a in gpu_axes or a in npu_axes
-            on_attr = ' data-quality-on="1"' if on else ""
-            pressed = "true" if on else "false"
-            segment_parts.append(
-                f'<g class="qd-segment" data-quality-key="{model_id}:{a}"{on_attr} '
-                f'tabindex="0" role="button" '
-                f'aria-label="{model_id} {ax_label}" aria-pressed="{pressed}">'
-                f'<circle class="qd-circle" cx="{mx:.1f}" cy="{my:.1f}" r="18"/>'
-                f"</g>"
-            )
             continue
 
         # Split axis: GPU half (sweep=0) then NPU half (sweep=1).
@@ -3111,16 +3081,12 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
 def _qd_segment_count(model_id: str) -> int:
     """Total clickable segments for ``model_id``'s radar."""
     axes = _qd_axes_for(model_id)
-    if model_id in _QUALITY_DEFENSE_SINGLE_MODE:
-        return len(axes)
     rel = 1 if "rel" in axes else 0
     return (len(axes) - rel) * 2 + rel
 
 
 def _qd_lit_count(model_id: str, cov: dict) -> int:
     """Lit segment count for ``model_id`` given a coverage dict ``cov``."""
-    if model_id in _QUALITY_DEFENSE_SINGLE_MODE:
-        return len(set(cov.get("gpu", set())) | set(cov.get("npu", set())))
     # Reliability only renders (and counts) for HAS_REL models.
     rel_lit = 1 if (cov.get("rel") and model_id in _QUALITY_DEFENSE_HAS_REL) else 0
     return len(cov.get("gpu", set())) + len(cov.get("npu", set())) + rel_lit
@@ -3129,7 +3095,7 @@ def _qd_lit_count(model_id: str, cov: dict) -> int:
 def _quality_defense_block_html() -> str:
     """Assemble the full Quality Defense Radar block — intro + grid + legend.
 
-    The grid is rendered as ten ``<div class="qd-cell">`` cards in a 3-column
+    The grid is rendered as nine ``<div class="qd-cell">`` cards in a 3-column
     grid; each card carries its own ``<svg class="qd-radar">`` so click
     handlers remain isolated per model (and per segment). The
     ``data-quality-key`` namespace is ``<model-id>:<axis>[-gpu|-npu]`` (or
@@ -3161,7 +3127,7 @@ def _quality_defense_block_html() -> str:
     return (
         '<div class="qd-radar-wrap">'
         '<p class="qd-intro">Per-model 7-axis coverage radar across '
-        '<strong>10 flagship models</strong> (Functionality / Performance / '
+        '<strong>9 flagship models</strong> (Functionality / Performance / '
         'Documentation / Precision / Stability / Reliability / Gate). '
         '<strong>Performance</strong> and <strong>Precision</strong> show the '
         'share of '
@@ -3176,8 +3142,7 @@ def _quality_defense_block_html() -> str:
         'issue 133</a> covered by a non-skipped test under '
         '<code>tests/dfx/reliability/</code>. The fill radius and the percent '
         'label are that coverage. GPU halves are green, NPU halves are blue. '
-        'Models without a Reliability axis render a 6-axis hexagon; '
-        '<strong>Cosmos</strong> renders every axis as one circle. ' + lit_note +
+        'Models without a Reliability axis render a 6-axis hexagon. ' + lit_note +
         'Clicking still stores a confirmation outline in <code>localStorage</code> '
         'and does not replace the computed percent.</p>'
         f'<div class="qd-grid">\n      {cells_xml}\n    </div>'

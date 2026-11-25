@@ -1894,7 +1894,7 @@ td.oi-followup-cell[data-oi-state="set"] .oi-followup-select {
   margin: 0.15rem 0;
 }
 
-/* ── Quality Defense Radar — 9 models × 5 axes ──────────────────── */
+/* ── Quality Defense Radar — 9 models ───────────────────────────── */
 .release-doc .qd-radar-wrap {
   display: flex;
   flex-direction: column;
@@ -2054,7 +2054,7 @@ td.oi-followup-cell[data-oi-state="set"] .oi-followup-select {
 <body>
   <div class="release-doc">
     <h2>Quality Defense Radar</h2>
-<div class="qd-radar-wrap"><p class="qd-intro">Per-model 7-axis coverage radar across <strong>10 flagship models</strong> (Functionality / Performance / Documentation / Precision / Stability / Reliability / Gate). <strong>Performance</strong> and <strong>Precision</strong> show the share of <a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> Model care rows (<code>kind</code> performance or accuracy, split by GPU / NPU) that have a matching test case in this repo. A model with no Model care rows for an axis is <strong>100%</strong> on a hardware side only when this repo has a test of that type there, and <strong>0%</strong> when it does not. <strong>Reliability</strong> shows the share of in-scope detect / respond / recover cells from <a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">issue 133</a> covered by a non-skipped test under <code>tests/dfx/reliability/</code>. The fill radius and the percent label are that coverage. GPU halves are green, NPU halves are blue. Models without a Reliability axis render a 6-axis hexagon; <strong>Cosmos</strong> renders every axis as one circle. Functionality, Documentation, Stability, and Gate stay click-to-confirm. Clicking still stores a confirmation outline in <code>localStorage</code> and does not replace the computed percent.</p><div class="qd-grid">
+<div class="qd-radar-wrap"><p class="qd-intro">Per-model 7-axis coverage radar across <strong>9 flagship models</strong> (Functionality / Performance / Documentation / Precision / Stability / Reliability / Gate). <strong>Performance</strong> and <strong>Precision</strong> show the share of <a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> Model care rows (<code>kind</code> performance or accuracy, split by GPU / NPU) that have a matching test case in this repo. A model with no Model care rows for an axis is <strong>100%</strong> on a hardware side only when this repo has a test of that type there, and <strong>0%</strong> when it does not. <strong>Reliability</strong> shows the share of in-scope detect / respond / recover cells from <a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">issue 133</a> covered by a non-skipped test under <code>tests/dfx/reliability/</code>. The fill radius and the percent label are that coverage. GPU halves are green, NPU halves are blue. Models without a Reliability axis render a 6-axis hexagon. Functionality, Documentation, Stability, and Gate stay click-to-confirm. Clicking still stores a confirmation outline in <code>localStorage</code> and does not replace the computed percent.</p><div class="qd-grid">
       <div class="qd-cell" data-qd-model="qwen-omni"><h3 class="qd-cell-title">Qwen3-Omni</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="qwen-omni quality defense radar">
       <g class="qd-grid" aria-hidden="true">
         <polygon class="qd-pentagon-outer" points="150.0,45.0 232.1,84.5 252.4,173.4 195.6,244.6 104.4,244.6 47.6,173.4 67.9,84.5"/>
@@ -2316,31 +2316,6 @@ td.oi-followup-cell[data-oi-state="set"] .oi-followup-select {
       <g class="qd-segment" data-quality-key="MinimaxH3:gate-npu" data-qd-side="npu" tabindex="0" role="button" aria-label="MinimaxH3 Gate NPU" aria-pressed="false"><g transform="translate(85.0 112.5) rotate(210.0000)"><path class="qd-half qd-half--npu" d="M 0 18 A 18 18 0 0 1 0 -18 Z"/></g></g>
       <text class="qd-pct qd-pct-caption" x="235.7" y="100.5" text-anchor="middle">0%/0%</text>
       <text class="qd-pct qd-pct-caption" x="150.0" y="249.0" text-anchor="middle">0%/0%</text>
-      <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
-      <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
-      <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>
-      <text class="qd-axis-label" x="150.0" y="267.0" text-anchor="middle">Precision</text>
-      <text class="qd-axis-label" x="48.7" y="208.5" text-anchor="middle">Stability</text>
-      <text class="qd-axis-label" x="48.7" y="91.5" text-anchor="middle">Gate</text>
-    </svg></div>
-      <div class="qd-cell" data-qd-model="Cosmos"><h3 class="qd-cell-title">Cosmos</h3><svg class="qd-radar" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cosmos quality defense radar">
-      <g class="qd-grid" aria-hidden="true">
-        <polygon class="qd-pentagon-outer" points="150.0,45.0 240.9,97.5 240.9,202.5 150.0,255.0 59.1,202.5 59.1,97.5"/>
-        <polygon class="qd-pentagon-inner" points="150.0,100.0 193.3,125.0 193.3,175.0 150.0,200.0 106.7,175.0 106.7,125.0"/>
-        <line x1="150" y1="150" x2="150.0" y2="45.0"/>
-        <line x1="150" y1="150" x2="240.9" y2="97.5"/>
-        <line x1="150" y1="150" x2="240.9" y2="202.5"/>
-        <line x1="150" y1="150" x2="150.0" y2="255.0"/>
-        <line x1="150" y1="150" x2="59.1" y2="202.5"/>
-        <line x1="150" y1="150" x2="59.1" y2="97.5"/>
-      </g>
-      <g class="qd-segment" data-quality-key="Cosmos:func" tabindex="0" role="button" aria-label="Cosmos Functionality" aria-pressed="false"><circle class="qd-circle" cx="150.0" cy="75.0" r="18"/></g>
-      <g class="qd-segment" data-quality-key="Cosmos:perf" data-quality-pct="0" data-quality-covered="0" data-quality-total="0" data-quality-label="Cosmos Performance 0%" tabindex="0" role="button" aria-label="Cosmos Performance 0%" aria-pressed="false"><title>Cosmos Performance 0%</title><circle class="qd-circle qd-track" cx="215.0" cy="112.5" r="18"/><text class="qd-pct" x="215.0" y="115.0" text-anchor="middle">0%</text></g>
-      <g class="qd-segment" data-quality-key="Cosmos:doc" tabindex="0" role="button" aria-label="Cosmos Documentation" aria-pressed="false"><circle class="qd-circle" cx="215.0" cy="187.5" r="18"/></g>
-      <g class="qd-segment" data-quality-key="Cosmos:prec" data-quality-pct="100" data-quality-covered="1" data-quality-total="1" data-quality-label="Cosmos Precision 100% (1/1)" tabindex="0" role="button" aria-label="Cosmos Precision 100% (1/1)" aria-pressed="false"><title>Cosmos Precision 100% (1/1)</title><circle class="qd-circle qd-track" cx="150.0" cy="225.0" r="18"/><circle class="qd-fill" cx="150.0" cy="225.0" r="18.00"/><text class="qd-pct" x="150.0" y="227.5" text-anchor="middle">100%</text></g>
-      <g class="qd-segment" data-quality-key="Cosmos:stab" tabindex="0" role="button" aria-label="Cosmos Stability" aria-pressed="false"><circle class="qd-circle" cx="85.0" cy="187.5" r="18"/></g>
-      <g class="qd-segment" data-quality-key="Cosmos:gate" tabindex="0" role="button" aria-label="Cosmos Gate" aria-pressed="false"><circle class="qd-circle" cx="85.0" cy="112.5" r="18"/></g>
-      
       <text class="qd-axis-label" x="150.0" y="33.0" text-anchor="middle">Functionality</text>
       <text class="qd-axis-label" x="251.3" y="91.5" text-anchor="middle">Performance</text>
       <text class="qd-axis-label" x="251.3" y="208.5" text-anchor="middle">Documentation</text>

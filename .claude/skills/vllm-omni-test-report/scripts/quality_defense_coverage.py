@@ -994,7 +994,6 @@ def attach_quality_percentages(
     repo_root: Path | None,
     *,
     has_rel: frozenset[str] | set[str],
-    single_mode: frozenset[str] | set[str],
     keywords: dict[str, tuple[str, ...]],
     model_care_path: Path | str | None = None,
 ) -> dict[str, dict]:
@@ -1009,12 +1008,8 @@ def attach_quality_percentages(
     rel_cells = scan_reliability_cells(repo_root, keywords=keywords)
     for model_id, cov in coverage.items():
         care = score_model_care(scenarios, cases, model_id=model_id, keywords=keywords.get(model_id, ()))
-        if model_id in single_mode:
-            for axis in ("perf", "prec"):
-                care[axis]["display"] = "single"
-        else:
-            for axis in ("perf", "prec"):
-                care[axis]["display"] = "split"
+        for axis in ("perf", "prec"):
+            care[axis]["display"] = "split"
         block = {"perf": care["perf"], "prec": care["prec"], "model_care": str(care_path or "")}
         if model_id in has_rel:
             block["rel"] = score_reliability(rel_cells.get(model_id, set()))

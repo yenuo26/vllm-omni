@@ -25,7 +25,6 @@ from quality_defense_coverage import (  # noqa: E402
 from release_md_to_html import (  # noqa: E402
     _QUALITY_DEFENSE_HAS_REL,
     _QUALITY_DEFENSE_MODEL_KEYWORDS,
-    _QUALITY_DEFENSE_SINGLE_MODE,
     _compute_quality_defense_coverage,
     _qd_model_radar_svg,
     _qd_repo_root,
@@ -853,7 +852,6 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                 scored,
                 root,
                 has_rel=frozenset(),
-                single_mode=frozenset(),
                 keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
                 model_care_path=root / "missing-care.json",
             )
@@ -899,7 +897,6 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                 scored,
                 Path(tmp),
                 has_rel=frozenset(),
-                single_mode=frozenset(),
                 keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
                 model_care_path=path,
             )
@@ -1000,7 +997,6 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                 scored,
                 root,
                 has_rel=frozenset({"qwen-omni", "minicpm"}),
-                single_mode=frozenset(),
                 keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
                 model_care_path=care_path,
             )
@@ -1100,9 +1096,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual(cov["MinimaxH3"]["pct"]["prec"]["single"], 0)
         self.assertEqual(cov["lingbot"]["pct"]["perf"]["single"], 0)
         self.assertEqual(cov["lingbot"]["pct"]["prec"]["single"], 0)
-        # Cosmos is a single circle: accuracy tests exist, performance tests do not.
-        self.assertEqual(cov["Cosmos"]["pct"]["perf"]["single"], 0)
-        self.assertEqual(cov["Cosmos"]["pct"]["prec"]["single"], 100)
+        self.assertNotIn("Cosmos", cov)
         # Percentage axes are not stuffed back into the binary lit-sets.
         self.assertNotIn("perf", cov["qwen-omni"]["gpu"])
         self.assertNotIn("prec", cov["qwen-omni"]["gpu"])
@@ -1219,7 +1213,6 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                 scored,
                 root,
                 has_rel=frozenset(),
-                single_mode=frozenset(),
                 keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
                 model_care_path=care,
             )
@@ -1289,22 +1282,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         doc = svg.split('data-quality-key="qwen-omni:doc-gpu"', 1)[1].split("</g>", 1)[0]
         self.assertNotIn("data-quality-on", doc)
         self.assertNotIn("data-quality-pct", doc)
-
-        cosmos = _qd_model_radar_svg(
-            "Cosmos",
-            {
-                "gpu": set(),
-                "npu": set(),
-                "rel": False,
-                "pct": {
-                    "perf": {"single": 100, "pct": 100, "covered": 0, "total": 0, "basis": "no-model-care"},
-                    "prec": {"single": 100, "pct": 100, "covered": 0, "total": 0, "basis": "no-model-care"},
-                },
-            },
-        )
-        self.assertIn('data-quality-key="Cosmos:perf"', cosmos)
-        self.assertIn('data-quality-pct="100"', cosmos)
-        self.assertNotIn("Cosmos:rel", cosmos)
+        self.assertNotIn("Cosmos", svg)
 
     def test_generator_modules_stay_stdlib_only(self) -> None:
         import ast

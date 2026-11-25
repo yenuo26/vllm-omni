@@ -3510,7 +3510,7 @@ td.oi-followup-cell[data-oi-state="set"] .oi-followup-select {
   margin: 0.15rem 0;
 }
 
-/* ── Quality Defense Radar — 9 models × 5 axes ──────────────────── */
+/* ── Quality Defense Radar — 9 models ───────────────────────────── */
 .release-doc .qd-radar-wrap {
   display: flex;
   flex-direction: column;
