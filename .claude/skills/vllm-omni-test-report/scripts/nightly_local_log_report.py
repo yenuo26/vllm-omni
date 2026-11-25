@@ -48,6 +48,23 @@ from pytest_log_parse import (  # noqa: E402
     parse_pytest_log,
 )
 from report_html_theme import EDITORIAL_THEME_CSS  # noqa: E402
+from issue_close_confirm import (  # noqa: E402
+    STATUS_CLOSABLE,
+    attach_clean_streaks,
+    collect_confirmations,
+    fetch_open_ci_failure_issues,
+    fetch_scheduled_nightly_history,
+    snapshots_from_bk_results,
+)
+from issue_section import (  # noqa: E402
+    IssueContext,
+    assemble_issue_section,
+    collect_bare_job_failures,
+    issue_apply_commands,
+    issue_section_stylesheet,
+    render_issue_section_body,
+    write_issue_actions,
+)
 from report_naming import (  # noqa: E402
     default_nightly_html_path,
     nightly_report_title,
@@ -2178,6 +2195,26 @@ def _github_issue_submit_script() -> str:
     window.open(url, "_blank", "noopener,noreferrer");
   }}
 
+  function copyReadyComment(el) {{
+    var id = el.getAttribute("data-ready-comment-id");
+    if (!id) return;
+    var node = document.getElementById(id);
+    if (!node) return;
+    var text = node.textContent || "";
+    var status = document.getElementById(id + "-status");
+    function mark(msg) {{ if (status) status.textContent = msg; }}
+    if (!text) return;
+    if (navigator.clipboard && window.isSecureContext) {{
+      navigator.clipboard.writeText(text).then(function () {{
+        mark("Copied. Paste it on the GitHub page that just opened. This report does not write to GitHub.");
+      }}, function () {{
+        mark("Could not copy. Copy the ready-to-paste text above, then submit it on the GitHub page.");
+      }});
+    }} else {{
+      mark("Clipboard is unavailable here. Copy the ready-to-paste text above, then submit it on the GitHub page.");
+    }}
+  }}
+
   function gatherRow(btn) {{
     var tr = btn.closest("tr");
     if (!tr || !tr.cells || tr.cells.length < 5) return null;
@@ -2204,11 +2241,19 @@ def _github_issue_submit_script() -> str:
 
   document.addEventListener("click", function (ev) {{
     var b = ev.target.closest && ev.target.closest(".btn-github-issue");
-    if (b) {{
-      ev.preventDefault();
-      var d = gatherRow(b);
-      if (d) submitIssue(d);
+    if (!b) return;
+    // Row confirms stay per-item links. 一键操作 is handled by its own listener.
+    if (b.classList.contains("btn-issue-bulk")) return;
+    // 开单确认 opens the prefilled new-issue form. 关闭确认 / 更新评论 open
+    // the issue and copy a comment. Do not preventDefault for those links.
+    if (b.classList.contains("btn-issue-confirm-close") || b.classList.contains("btn-issue-confirm-update")) {{
+      copyReadyComment(b);
+      return;
     }}
+    if (b.classList.contains("btn-issue-confirm-file")) return;
+    ev.preventDefault();
+    var d = gatherRow(b);
+    if (d) submitIssue(d);
   }});
 
   var logExcerptModal = document.getElementById("log-excerpt-modal");
@@ -3478,7 +3523,6 @@ def _render_failures_table_html(
         _th_labeled(_SVG_MSG, "Log reason"),
         _th_labeled(_SVG_SPARK, "Analysis"),
         _th_labeled(_SVG_LOG, "Full log", col_class="excerpt-col"),
-        _th_labeled(_SVG_PLUS_ISSUE, "GitHub Issue"),
         '<th class="status-col"><span class="th-lbl">Status</span></th>',
         "</tr></thead>",
         "<tbody>",
@@ -3499,7 +3543,6 @@ def _render_failures_table_html(
                 f'<td class="excerpt-cell">'
                 f"{_excerpt_cell_html(log_content, storage_id=storage_id, title=node, button_label='View full log')}"
                 f"</td>",
-                _github_issue_button_cell(),
                 _fail_status_cell_html(row_id),
                 "</tr>",
             ]
@@ -3521,7 +3564,6 @@ def _render_failures_table_html(
                 f'<td class="excerpt-cell">'
                 f"{_excerpt_cell_html(log_content, storage_id=storage_id, title=label, button_label='View full log')}"
                 f"</td>",
-                _github_issue_button_cell(),
                 _fail_status_cell_html(row_id),
                 "</tr>",
             ]
@@ -3547,14 +3589,13 @@ def _render_buildkite_section_html(
 
     Each chapter (CUDA / NPU nightly, CUDA weekly builds) is wrapped in its
     own ``<details>`` element so the user can fold or expand the whole
-    chapter independently. Inner sub-cards (Summary / Failure
-    analysis) retain their existing per-section collapsibility.
+    chapter independently. The chapter keeps the per-job Summary only.
+    Failure filing, closing, and updating live in the Issue section.
     ``chapter_title`` / ``chapter_sub`` / ``report_kind`` /
     ``details_class_suffix`` customize the weekly-build variants; the
     defaults reproduce the scheduled-nightly CUDA/NPU chapters.
     """
     summary_inner: list[str] = []
-    fail_inner = '<p class="note">No data: Buildkite step logs were not loaded.</p>'
 
     if note:
         summary_inner.append(f'<p class="note">{html.escape(note)}</p>')
@@ -3587,73 +3628,6 @@ def _render_buildkite_section_html(
             )
         )
 
-        fail_blocks: list[str] = []
-        for rec in job_records:
-            if rec.get("log_error"):
-                bits_bk_err = [
-                    '<details class="job-fail-details job-fail-details-bk">',
-                    '<summary class="job-fail-details-summary job-fail-details-summary-bk">',
-                    _heading_html(
-                        "h2",
-                        _SVG_ALERT,
-                        html.escape(f"Buildkite step: {rec['name']}"),
-                    ),
-                    '<p class="meta"><strong>Step link:</strong> '
-                    f'<a href="{html.escape(rec["step_link"])}">open</a></p>',
-                    "</summary>",
-                    '<div class="job-fail-details-body">',
-                    f'<p class="note"><strong>Log fetch failed:</strong> {html.escape(rec["log_error"][:600])}</p>',
-                    "</div></details>",
-                ]
-                fail_blocks.append("\n".join(bits_bk_err))
-                continue
-            info = rec.get("info")
-            if not info or _job_is_clean(info):
-                continue
-            bits_bk = [
-                '<details class="job-fail-details job-fail-details-bk">',
-                '<summary class="job-fail-details-summary job-fail-details-summary-bk">',
-                _heading_html(
-                    "h2",
-                    _SVG_ALERT,
-                    html.escape(f"Buildkite step: {rec['name']}"),
-                ),
-                f'<p class="meta"><strong>Step link:</strong> <a href="{html.escape(rec["step_link"])}">open</a></p>',
-                "</summary>",
-                '<div class="job-fail-details-body">',
-                _heading_html(
-                    "h3",
-                    _SVG_LIST,
-                    html.escape("Failures & errors"),
-                    klass="section-failures",
-                ),
-                _render_failures_table_html(
-                    info,
-                    report_context=(
-                        f"Buildkite ({target.label}) {report_kind} · build #{bn} · step: {rec['name']}"
-                    ),
-                    issue_env="ci",
-                    issue_vllm_version=(rec.get("ci_versions") or {}).get("vllm", ""),
-                    issue_vllm_omni_version=(rec.get("ci_versions") or {}).get("vllm_omni", ""),
-                    issue_build_commit=(rec.get("build_commit_short") or ""),
-                    buildkite_build_url=build_url,
-                    buildkite_step_url=str(rec.get("step_link") or ""),
-                    buildkite_step_name=str(rec.get("name") or ""),
-                    full_log_text=(rec.get("raw_log") or ""),  # NEW: pass complete step log
-                ),
-                "</div></details>",
-            ]
-            fail_blocks.append("\n".join(bits_bk))
-
-        if fail_blocks:
-            fail_inner = (
-                '<p class="hint">Click each step title to expand or collapse failure details. '
-                "Use <strong>View full log</strong> to open the complete step log in a dialog.</p>\n"
-                + "\n".join(fail_blocks)
-            )
-        else:
-            fail_inner = '<p class="note">No failed steps currently, or no failure/error excerpts for any job.</p>'
-
     chapter_heading = _heading_html(
         "h3",
         _SVG_CLOUD,
@@ -3668,13 +3642,6 @@ def _render_buildkite_section_html(
             open_default=False,
             details_class="report-subcard--bk",
             icon_paths=_SVG_LIST,
-        ),
-        _details_subcard(
-            "Failure analysis",
-            fail_inner,
-            open_default=False,
-            details_class="report-subcard--bk-fail",
-            icon_paths=_SVG_ALERT,
         ),
     ]
     chapter_body = "\n".join(sub_cards)
@@ -3708,13 +3675,6 @@ def _render_buildkite_note_html(note: str, target: BkTarget | None = None) -> st
                 open_default=False,
                 details_class="report-subcard--bk",
                 icon_paths=_SVG_LIST,
-            ),
-            _details_subcard(
-                "Failure analysis",
-                '<p class="note">No data: Buildkite step logs were not loaded.</p>',
-                open_default=False,
-                details_class="report-subcard--bk-fail",
-                icon_paths=_SVG_ALERT,
             ),
             "</section>",
         ]
@@ -3772,6 +3732,13 @@ class _IssueAlertGroup:
     steps: list[str] = field(default_factory=list)
     nodes: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    links: list[tuple[str, str]] = field(default_factory=list)
+    analyses: list[str] = field(default_factory=list)
+    excerpts: list[str] = field(default_factory=list)
+    issue_envs: list[str] = field(default_factory=list)
+    vllm_versions: list[str] = field(default_factory=list)
+    omni_versions: list[str] = field(default_factory=list)
+    build_commits: list[str] = field(default_factory=list)
     best_issue: dict[str, Any] | None = None
     best_score: int = 0
     related: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
@@ -4031,7 +3998,35 @@ def _collect_issue_alert_groups(
 ) -> list[_IssueAlertGroup]:
     groups: dict[tuple[str, str, str], _IssueAlertGroup] = {}
 
-    def _add(source: str, step: str, node: str, reason: str, excerpt: str, env_text: str = "") -> None:
+    def _remember(seq: list[str], value: str) -> None:
+        text = (value or "").strip()
+        if text and text not in seq:
+            seq.append(text)
+
+    def _remember_link(seq: list[tuple[str, str]], label: str, url: str) -> None:
+        url = (url or "").strip()
+        if not url:
+            return
+        if any(existing == url for _label, existing in seq):
+            return
+        seq.append((label, url))
+
+    def _add(
+        source: str,
+        step: str,
+        node: str,
+        reason: str,
+        excerpt: str,
+        env_text: str = "",
+        *,
+        analysis: str = "",
+        build_url: str = "",
+        step_url: str = "",
+        issue_env: str = "",
+        vllm_version: str = "",
+        omni_version: str = "",
+        build_commit: str = "",
+    ) -> None:
         stem, func, _param = _issue_alert_node_parts(node)
         if not stem:
             return
@@ -4059,8 +4054,24 @@ def _collect_issue_alert_groups(
             g.nodes.append(node)
         if reason and reason not in g.reasons:
             g.reasons.append(reason)
+        _remember(g.analyses, analysis)
+        _remember(g.excerpts, (excerpt or "")[:4000])
+        _remember(g.issue_envs, issue_env)
+        _remember(g.vllm_versions, vllm_version)
+        _remember(g.omni_versions, omni_version)
+        _remember(g.build_commits, build_commit)
+        if build_url:
+            _remember_link(g.links, f"Build · {source}", build_url)
+        if step_url:
+            _remember_link(g.links, f"Step {step}" if step else "Step", step_url)
 
-    def _add_info(source: str, step: str, info: dict[str, Any] | None, env_text: str = "") -> None:
+    def _add_info(
+        source: str,
+        step: str,
+        info: dict[str, Any] | None,
+        env_text: str = "",
+        **meta: str,
+    ) -> None:
         if not info:
             return
         for node in info.get("failed_nodes") or []:
@@ -4071,6 +4082,8 @@ def _collect_issue_alert_groups(
                 (info.get("failed_reasons") or {}).get(node, ""),
                 (info.get("failure_excerpts") or {}).get(node, ""),
                 env_text,
+                analysis=(info.get("failure_analyses") or {}).get(node, ""),
+                **meta,
             )
         for node in info.get("error_nodes") or []:
             _add(
@@ -4080,26 +4093,43 @@ def _collect_issue_alert_groups(
                 (info.get("error_reasons") or {}).get(node, ""),
                 (info.get("error_excerpts") or {}).get(node, ""),
                 env_text,
+                analysis=(info.get("error_analyses") or {}).get(node, ""),
+                **meta,
             )
+
+    def _ci_meta(rec: dict[str, Any], build_url: str) -> dict[str, str]:
+        versions = rec.get("ci_versions") or {}
+        return {
+            "build_url": build_url,
+            "step_url": str(rec.get("step_link") or ""),
+            "issue_env": "ci",
+            "vllm_version": str(versions.get("vllm") or ""),
+            "omni_version": str(versions.get("vllm_omni") or ""),
+            "build_commit": str(rec.get("build_commit_short") or ""),
+        }
 
     for target in ALL_BK_TARGETS:
         build, jobs, _note = (bk_results or {}).get(target) or (None, None, None)
         if not build or not jobs:
             continue
         source = f"Buildkite ({target.label}) nightly · #{build.get('number')}"
+        build_url = _buildkite_build_url(build, target)
         for rec in jobs:
             if rec.get("log_error"):
                 continue
-            _add_info(source, str(rec.get("name") or ""), rec.get("info"))
+            _add_info(source, str(rec.get("name") or ""), rec.get("info"), **_ci_meta(rec, build_url))
     for kind, wk_label, _pattern in WEEKLY_BUILD_KINDS:
         build, jobs, _note = (weekly_results or {}).get(kind) or (None, None, None)
         if not build or not jobs:
             continue
         source = f"Buildkite (CUDA) {wk_label} · #{build.get('number')}"
+        build_url = _buildkite_build_url(build, CUDA_TARGET)
         for rec in jobs:
             if rec.get("log_error"):
                 continue
-            _add_info(source, str(rec.get("name") or ""), rec.get("info"))
+            _add_info(source, str(rec.get("name") or ""), rec.get("info"), **_ci_meta(rec, build_url))
+    cuda_build_for_local, _, _ = (bk_results or {}).get(CUDA_TARGET) or (None, None, None)
+    local_build_url = _buildkite_build_url(cuda_build_for_local, CUDA_TARGET)
     for job_name, paths, info in job_rows or []:
         if _job_is_clean(info):
             continue
@@ -4113,7 +4143,14 @@ def _collect_issue_alert_groups(
                 env_text += p.read_text(encoding="utf-8", errors="replace")[:500_000]
             except OSError:
                 pass
-        _add_info(f"Local nightly_jobs · {job_name}", job_name, info, env_text=env_text)
+        _add_info(
+            f"Local nightly_jobs · {job_name}",
+            job_name,
+            info,
+            env_text=env_text,
+            build_url=local_build_url,
+            issue_env="local",
+        )
 
     return sorted(groups.values(), key=lambda g: (g.stem, g.exc_class))
 
@@ -4200,6 +4237,12 @@ def _issue_alert_issue_link(issue: dict[str, Any], *, with_state: bool = True) -
 
 
 def _render_issue_alert_html(groups: list[_IssueAlertGroup], *, note: str | None = None) -> str:
+    """Legacy Issue Alert chapter. Not emitted.
+
+    ``emit_report_html`` renders the Issue section (Summary / 待新增 / 待关闭 /
+    待更新) instead. Keep this helper only so the classifier's previous
+    presentation can be compared; do not append it next to the Issue section.
+    """
     counts: dict[str, int] = {}
     for g in groups:
         counts[g.verdict] = counts.get(g.verdict, 0) + 1
@@ -4399,6 +4442,24 @@ def _render_issue_alert_html(groups: list[_IssueAlertGroup], *, note: str | None
     )
 
 
+def _load_issue_context(bk_results: dict[Any, Any]) -> IssueContext:
+    """Fetch open ci-failure issues and confirm them. Network; tests pass a context instead."""
+    pipelines = snapshots_from_bk_results(bk_results)
+    issues, note = fetch_open_ci_failure_issues(_resolve_github_token())
+    loaded = not (note and not issues)
+    rows = collect_confirmations(issues, pipelines) if loaded else []
+    if any(row.status == STATUS_CLOSABLE for row in rows):
+        histories = {label: fetch_scheduled_nightly_history(snap) for label, snap in pipelines.items()}
+        attach_clean_streaks(rows, histories)
+    return IssueContext(
+        issues=issues if loaded else [],
+        pipelines=pipelines,
+        confirmations=rows,
+        issues_loaded=loaded,
+        note=note,
+    )
+
+
 def emit_report_html(
     *,
     title: str,
@@ -4408,6 +4469,8 @@ def emit_report_html(
     bk_results: dict[BkTarget, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]] | None = None,
     weekly_results: dict[str, tuple[dict[str, Any] | None, list[dict[str, Any]] | None, str | None]] | None = None,
     issue_alert: bool = True,
+    issue_context: IssueContext | None = None,
+    issue_actions_path: Path | None = None,
 ) -> None:
     # Manifest-driven job list: ``timing_summary.log`` is the source of truth
     # for the job list + status; ``.log`` files are only parsed for FAILED
@@ -4483,7 +4546,7 @@ def emit_report_html(
         + "  background: var(--dashboard-link, #1d4ed8);\n"
         + "  color: #fff;\n"
         + "}\n"
-        + _ISSUE_ALERT_CSS
+        + issue_section_stylesheet()
     )
 
     body_parts: list[str] = [
@@ -4514,25 +4577,67 @@ def emit_report_html(
         )
     )
 
-    # 🚨 Issue-dedup alert chapter: group all failures across Buildkite
-    # nightly/weekly chapters + local jobs, match each group against the
-    # repo's GitHub issues (read-only search), and classify tracked /
-    # recurred / new / env-local. Skipped with --no-issue-alert or when
-    # no GITHUB_TOKEN is available (chapter then renders as a plain
-    # failure-grouping view with an explanatory note).
-    if issue_alert:
-        alert_groups = _collect_issue_alert_groups(bk_results, weekly_results, job_rows)
-        alert_note = None
+    # Issue section replaces the old Issue Alert chapter and the unmerged
+    # Issue close confirmation chapter. Search still classifies failure
+    # groups; closable / still-failing rows come from open ci-failure issues.
+    # --no-issue-alert skips the search (待新增 stays empty) but the section
+    # still renders.
+    alert_groups = _collect_issue_alert_groups(bk_results, weekly_results, job_rows)
+    search_ran = False
+    search_note = None
+    if not alert_groups:
+        search_ran = True
+    elif not issue_alert:
+        search_note = (
+            "Issue search was skipped (--no-issue-alert), so node-level failures "
+            "were not classified as new issues."
+        )
+    else:
         gh_token = _resolve_github_token()
-        if alert_groups:
-            if gh_token:
-                _analyze_issue_alert_groups(alert_groups, gh_token)
-            else:
-                alert_note = (
-                    "GITHUB_TOKEN / GH_TOKEN not detected - GitHub issue matching skipped; "
-                    "the table below is a plain failure-signature clustering (all marked No match)."
-                )
-        body_parts.append(_render_issue_alert_html(alert_groups, note=alert_note))
+        if gh_token:
+            _analyze_issue_alert_groups(alert_groups, gh_token)
+            search_ran = True
+        else:
+            search_note = (
+                "GITHUB_TOKEN / GH_TOKEN not detected — GitHub issue search was skipped, "
+                "so node-level failures were not classified as new issues."
+            )
+    if issue_context is None:
+        issue_context = _load_issue_context(bk_results)
+    note_bits = [bit for bit in (issue_context.note, search_note) if bit]
+    issue_model = assemble_issue_section(
+        groups=alert_groups,
+        bare_jobs=collect_bare_job_failures(bk_results, weekly_results),
+        context=IssueContext(
+            issues=issue_context.issues,
+            pipelines=issue_context.pipelines,
+            confirmations=issue_context.confirmations,
+            issues_loaded=issue_context.issues_loaded,
+            note=" ".join(note_bits) if note_bits else None,
+        ),
+        search_ran=search_ran,
+    )
+    if issue_actions_path is not None:
+        write_issue_actions(issue_actions_path, issue_model)
+    apply_command, serve_command = issue_apply_commands(issue_actions_path)
+    body_parts.append(
+        '<details class="bk-section panel nightly-root nightly-root--issue" open>'
+        '<summary class="bk-section-summary">'
+        + _heading_html(
+            "h2",
+            _SVG_ALERT,
+            html.escape("Issue"),
+            sub=html.escape("File, close, or update — 一键操作 runs only after you click it"),
+        )
+        + "</summary>"
+        '<div class="bk-section-body">'
+        + render_issue_section_body(
+            issue_model,
+            apply_command=apply_command,
+            serve_command=serve_command,
+        )
+        + "</div></details>"
+    )
     body_parts.append(
         '<details class="bk-section panel nightly-root nightly-root--buildkite"><summary class="bk-section-summary">'
     )
@@ -4540,7 +4645,7 @@ def emit_report_html(
         _heading_html(
             "h2",
             _SVG_CLOUD,
-            html.escape("Buildkite Test"),
+            html.escape("Buildkite"),
             sub=html.escape("Scheduled nightly & weekly — CUDA & NPU chapters (click to expand)"),
         )
     )
@@ -4587,7 +4692,7 @@ def emit_report_html(
         _heading_html(
             "h2",
             _SVG_SERVER,
-            html.escape("Local Test"),
+            html.escape("Local test"),
         ),
     ]
     if not groups:
@@ -4911,7 +5016,11 @@ def main() -> None:
     parser.add_argument(
         "--no-issue-alert",
         action="store_true",
-        help="Skip the issue-dedup alert chapter (GitHub issue search for failure groups).",
+        help=(
+            "Skip GitHub issue-search classification in the Issue section "
+            "(node-level 待新增 and search-based tracked updates). "
+            "The Issue section still renders; open ci-failure close/update confirmation still runs."
+        ),
     )
     args = parser.parse_args()
 
@@ -4943,6 +5052,7 @@ def main() -> None:
     if args.html_report:
         out = args.html_report
         out.parent.mkdir(parents=True, exist_ok=True)
+        actions_path = out.with_name(out.stem + ".issue-actions.json")
         with out.open("w", encoding="utf-8") as fp:
             emit_report_html(
                 title=title,
@@ -4952,8 +5062,15 @@ def main() -> None:
                 bk_results=bk_results,
                 weekly_results=weekly_results,
                 issue_alert=not args.no_issue_alert,
+                issue_actions_path=actions_path,
             )
         print(f"Wrote {out}")
+        print(f"Wrote {actions_path}")
+        print(
+            "一键操作: python3 "
+            f"{Path(__file__).resolve().parent / 'apply_nightly_issue_actions.py'} --serve"
+        )
+        print(f"or: python3 {Path(__file__).resolve().parent / 'apply_nightly_issue_actions.py'} --payload {actions_path} --apply")
     else:
         emit_report_html(
             title=title,
