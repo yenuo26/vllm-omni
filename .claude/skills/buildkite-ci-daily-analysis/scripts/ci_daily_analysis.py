@@ -79,6 +79,7 @@ PIPELINE_DISPLAY = {
     "vllm-omni": "vllm-omni (GPU)",
     "vllm-omni-npu-ci": "vllm-omni-npu-ci (NPU)",
     "vllm-omni-amd-ci": "vllm-omni-amd-ci (AMD)",
+    "router": "router",
 }
 
 # CI bucket names — used for the CI Aggregate panel and as `data-ci-bucket`
@@ -2259,12 +2260,18 @@ def render_html(
     ci_cards_parts: list[str] = []
     for b in CI_BUCKET_ORDER:
         for p in pipelines_listed:
+            job_agg = by_ci_pipeline.get((b, p), AggregateStats())
+            build_agg = by_ci_pipeline_build.get((b, p), AggregateStats())
+            # Skip empty bucket×pipeline cards (e.g. weekly when the pipeline
+            # has no weekly CI, or NPU/AMD when only `router` was requested).
+            if job_agg.job_count == 0 and build_agg.job_count == 0:
+                continue
             ci_cards_parts.append(
                 _aggregate_card_html(
                     f"{CI_BUCKET_DISPLAY.get(b, b)} · {PIPELINE_DISPLAY.get(p, p)}",
-                    by_ci_pipeline.get((b, p), AggregateStats()),
+                    job_agg,
                     data_ci_bucket=f"{b}-{p}",
-                    build_stats=by_ci_pipeline_build.get((b, p), AggregateStats()),
+                    build_stats=build_agg,
                 )
             )
     ci_cards_html = "\n".join(ci_cards_parts)
@@ -2284,10 +2291,13 @@ def render_html(
             # Latest mode only shows job-level data — build-level stats
             # are not meaningful when each card represents a single build,
             # so we intentionally omit build_stats here.
+            latest_agg = latest_by_ci_pipeline.get((b, p), AggregateStats())
+            if latest_agg.job_count == 0:
+                continue
             latest_ci_cards_parts.append(
                 _aggregate_card_html(
                     f"{CI_BUCKET_DISPLAY.get(b, b)} · {PIPELINE_DISPLAY.get(p, p)}",
-                    latest_by_ci_pipeline.get((b, p), AggregateStats()),
+                    latest_agg,
                     data_ci_bucket=f"latest-{b}-{p}",
                 )
             )
@@ -2352,7 +2362,7 @@ def render_html(
         '<div class="legend">\n'
         "<dl>\n"
         "  <dt>Pipeline</dt>\n"
-        "  <dd>Buildkite pipeline slug (<code>vllm-omni</code>, <code>vllm-omni-npu-ci</code>, <code>vllm-omni-amd-ci</code>).</dd>\n"
+        "  <dd>Buildkite pipeline slug (<code>vllm-omni</code>, <code>vllm-omni-npu-ci</code>, <code>vllm-omni-amd-ci</code>, <code>router</code>).</dd>\n"
         "  <dt>Branch</dt>\n"
         "  <dd>Source branch from the parent build, e.g. <code>main</code>, "
         "<code>alice/add-thing</code>. All branches from the date range are listed; "
@@ -2778,35 +2788,37 @@ def main() -> int:
 
             skipped_summary = dict(Counter(name for name, _ in all_skipped).most_common())
 
-        # ── Latest omni release build duration metric
+        # ── Latest omni release build duration metric (omni pipelines only)
         latest_metric: tuple[LatestBuildByNameMetric, str, str] | None = None
-        try:
-            omni_release_pipeline = "omni-release"
-            omni_release_pattern = "omni release"
-            omni_metric = collect_latest_build_by_name(
-                token,
-                omni_release_pipeline,
-                omni_release_pattern,
-            )
-            if omni_metric is not None:
-                latest_metric = (omni_metric, omni_release_pattern, omni_release_pipeline)
-                print(
-                    f"omni-release latest build #{omni_metric.build_number}: "
-                    f"state={omni_metric.state}, "
-                    f"duration={format_duration(omni_metric.duration_seconds)}, "
-                    f"matched_via={omni_metric.matched_field}, "
-                    f"url={omni_metric.build_url}",
-                    file=sys.stderr,
+        omni_pipeline_slugs = {"vllm-omni", "vllm-omni-npu-ci", "vllm-omni-amd-ci"}
+        if omni_pipeline_slugs.intersection(pipeline_slugs):
+            try:
+                omni_release_pipeline = "omni-release"
+                omni_release_pattern = "omni release"
+                omni_metric = collect_latest_build_by_name(
+                    token,
+                    omni_release_pipeline,
+                    omni_release_pattern,
                 )
-            else:
-                print(
-                    f"omni-release: no build matching {omni_release_pattern!r} in the recent builds window",
-                    file=sys.stderr,
-                )
-        except requests.RequestException as e:
-            print(f"omni-release latest build query failed: {e}", file=sys.stderr)
-            if hasattr(e, "response") and e.response is not None:
-                print(f"HTTP status: {e.response.status_code}", file=sys.stderr)
+                if omni_metric is not None:
+                    latest_metric = (omni_metric, omni_release_pattern, omni_release_pipeline)
+                    print(
+                        f"omni-release latest build #{omni_metric.build_number}: "
+                        f"state={omni_metric.state}, "
+                        f"duration={format_duration(omni_metric.duration_seconds)}, "
+                        f"matched_via={omni_metric.matched_field}, "
+                        f"url={omni_metric.build_url}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"omni-release: no build matching {omni_release_pattern!r} in the recent builds window",
+                        file=sys.stderr,
+                    )
+            except requests.RequestException as e:
+                print(f"omni-release latest build query failed: {e}", file=sys.stderr)
+                if hasattr(e, "response") and e.response is not None:
+                    print(f"HTTP status: {e.response.status_code}", file=sys.stderr)
 
         html_content = render_html(
             all_records,

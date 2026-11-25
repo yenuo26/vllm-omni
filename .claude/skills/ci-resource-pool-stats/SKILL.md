@@ -1,6 +1,6 @@
 ---
 name: ci-resource-pool-stats
-description: "Fetch Buildkite build data for vllm-omni and vllm-omni-npu-ci pipelines and compute per-resource-pool queue wait time and occupancy statistics for the previous day in **Beijing Time (CST, UTC+8)**. The **Per-Pool Detail** section is computed statically from the local vllm-omni git repo (after `git pull`) by parsing `.buildkite/test-*.yml` against `.buildkite/common/ci_mirror_hardwares.yml` — no Buildkite API calls for that section. **Default output is always an HTML file** unless the user explicitly asks for Markdown or JSON. When the user explicitly says '归档报告', archive the generated report ONLY to omni-reviewbot kanban/data/vllm_omni/pool_stats_report/ via the shared ../vllm-omni-test-report/scripts/archive_to_omni_review.sh (sole target since 2026-10-21 — kanban pushes stopped). Use when the user says 'resource pool stats', 'pool occupancy', 'queue time', 'CI pool stats', 'wait time stats', or 'resource pool report'."
+description: "Fetch Buildkite build data for vllm-omni / vllm-omni-npu-ci / vllm-omni-amd-ci (default), or a single pipeline such as `router` via `--pipeline` and compute per-resource-pool queue wait time and occupancy statistics for the previous day in **Beijing Time (CST, UTC+8)**. The **Per-Pool Detail** section is computed statically from the local vllm-omni git repo (after `git pull`) by parsing `.buildkite/test-*.yml` against `.buildkite/common/ci_mirror_hardwares.yml` — no Buildkite API calls for that section. **Default output is always an HTML file** unless the user explicitly asks for Markdown or JSON. When the user explicitly says '归档报告', archive the generated report to omni-reviewbot `kanban/data/vllm_omni/pool_stats_report/` (default omni) or `kanban/data/vllm_router/pool_stats_report/` when the run is for `router`, via the shared ../vllm-omni-test-report/scripts/archive_to_omni_review.sh (sole target since 2026-10-21 — kanban pushes stopped). Use when the user says 'resource pool stats', 'pool occupancy', 'queue time', 'CI pool stats', 'wait time stats', or 'resource pool report'."
 ---
 
 # CI Resource Pool Statistics
@@ -221,6 +221,25 @@ The report supports **dark mode** via `prefers-color-scheme: dark`.
 | `pool-stats-2026-07-22.html` (date from `--from`) | `pool-stats-20260722.html` (no hyphens) |
 | Let the script default to `pool-stats-YYYY-MM-DD.html` | Manually pick a different date for the filename |
 
+
+### Router pipeline only (`vllm/router`)
+
+Router has **one** Buildkite pipeline (`router`), with **no** weekly CI and **no** dedicated NPU/AMD pipelines. Do not invent empty weekly/NPU/AMD chapters. Pass a local clone of `vllm-project/router` via `--repo-path` so Per-Pool Detail can parse `.buildkite/test-*.yml` against `.buildkite/ci_mirror_hardwares.yml` (router layout; not under `.buildkite/common/`).
+
+```bash
+python scripts/resource_pool_stats.py --from 2026-11-22 --to 2026-11-22 \
+  --pipeline router --repo-path /workspace/vllm-project-router \
+  --output /workspace/pool-stats-router-2026-11-22.html
+```
+
+Archive dest for router:
+
+```bash
+../vllm-omni-test-report/scripts/archive_to_omni_review.sh \
+  /workspace/pool-stats-router-2026-11-22.html \
+  data/vllm_router/pool_stats_report/pool-stats-2026-11-22.html
+```
+
 ## Report archival (`归档报告`)
 
 Only activate this behavior when the user explicitly says **`归档报告`**:
@@ -233,8 +252,13 @@ Only activate this behavior when the user explicitly says **`归档报告`**:
 2. On the bridge box run:
 
    ```bash
+   # omni (default):
    ../vllm-omni-test-report/scripts/archive_to_omni_review.sh \
      ./pool-stats-YYYY-MM-DD.html data/pool_stats_report/pool-stats-YYYY-MM-DD.html
+   # router:
+   ../vllm-omni-test-report/scripts/archive_to_omni_review.sh \
+     ./pool-stats-router-YYYY-MM-DD.html \
+     data/vllm_router/pool_stats_report/pool-stats-YYYY-MM-DD.html
    ```
 
    The shared archive script lives in the sibling **vllm-omni-test-report**

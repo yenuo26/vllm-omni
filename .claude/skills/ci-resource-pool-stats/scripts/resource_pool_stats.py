@@ -100,6 +100,14 @@ PIPELINE_YAML_MAP: dict[str, list[tuple[str, str]]] = {
         ("merge", ".buildkite/amd/test-amd-merge.yml"),
         ("nightly", ".buildkite/amd/test-amd-nightly.yml"),
     ],
+    # vllm/router — single pipeline, no dedicated NPU/AMD pipeline and no weekly CI.
+    # YAML lives at the .buildkite/ root (not under cuda/); Per-Pool Detail needs
+    # --repo-path pointing at a local clone of vllm-project/router.
+    "router": [
+        ("ready", ".buildkite/test-ready.yml"),
+        ("merge", ".buildkite/test-merge.yml"),
+        ("nightly", ".buildkite/test-nightly.yml"),
+    ],
 }
 
 CATEGORY_ORDER: list[tuple[str, str, str]] = [
@@ -1114,7 +1122,7 @@ def git_pull_local_repo(repo_path: Path) -> tuple[bool, str]:
 
 
 def _load_mirror_hardwares_registry(repo_path: Path) -> dict[str, dict]:
-    """Load `.buildkite/common/ci_mirror_hardwares.yml` from the local repo.
+    """Load ``ci_mirror_hardwares.yml`` from the local repo (omni or router layout).
 
     Returns the ``mirror_hardwares`` mapping: preset name → preset dict
     (which contains ``agents.queue`` etc.).  Empty dict on missing/invalid
@@ -1122,7 +1130,8 @@ def _load_mirror_hardwares_registry(repo_path: Path) -> dict[str, dict]:
     """
     _ensure_pyyaml()
     assert yaml is not None
-    path = repo_path / MIRROR_HARDWARES_REL_PATH
+    mirror_rel, _, _ = _detect_buildkite_layout(repo_path)
+    path = repo_path / mirror_rel
     if not path.is_file():
         print(f"missing {path}; mirror_hardwares preset resolution disabled", file=sys.stderr)
         return {}
@@ -1149,6 +1158,41 @@ def _load_mirror_hardwares_registry(repo_path: Path) -> dict[str, dict]:
 # queue wiring.
 UPLOAD_PIPELINE_REL_PATH = ".buildkite/common/scripts/upload_pipeline.py"
 
+# Router (and similarly structured repos) keep ci_mirror_hardwares.yml and
+# upload_pipeline.py directly under .buildkite/ rather than .buildkite/common/.
+ROUTER_MIRROR_HARDWARES_REL_PATH = ".buildkite/ci_mirror_hardwares.yml"
+ROUTER_UPLOAD_PIPELINE_REL_PATH = ".buildkite/scripts/upload_pipeline.py"
+
+
+def _detect_buildkite_layout(repo_path: Path) -> tuple[str, str, Path]:
+    """Return ``(mirror_rel, upload_rel, scripts_dir)`` for ``repo_path``.
+
+    Prefers the vllm-omni ``.buildkite/common/`` layout when present; falls
+    back to the flatter router layout (``.buildkite/ci_mirror_hardwares.yml``
+    + ``.buildkite/scripts/upload_pipeline.py``). Defaults to the omni paths
+    when neither layout's mirror file exists so existing callers keep working.
+    """
+    repo_path = Path(repo_path)
+    omni_mirror = repo_path / MIRROR_HARDWARES_REL_PATH
+    router_mirror = repo_path / ROUTER_MIRROR_HARDWARES_REL_PATH
+    if omni_mirror.is_file():
+        return (
+            MIRROR_HARDWARES_REL_PATH,
+            UPLOAD_PIPELINE_REL_PATH,
+            repo_path / ".buildkite" / "common" / "scripts",
+        )
+    if router_mirror.is_file():
+        return (
+            ROUTER_MIRROR_HARDWARES_REL_PATH,
+            ROUTER_UPLOAD_PIPELINE_REL_PATH,
+            repo_path / ".buildkite" / "scripts",
+        )
+    return (
+        MIRROR_HARDWARES_REL_PATH,
+        UPLOAD_PIPELINE_REL_PATH,
+        repo_path / ".buildkite" / "common" / "scripts",
+    )
+
 
 def _render_yaml_with_upload_pipeline(repo_path: Path, rel_yaml_path: str) -> str | None:
     """Render a category YAML via ``upload_pipeline.py --all`` and return the text.
@@ -1164,7 +1208,8 @@ def _render_yaml_with_upload_pipeline(repo_path: Path, rel_yaml_path: str) -> st
     a missing uploader, an import error in its dependencies, or a non-zero
     exit all trigger the raw-YAML fallback.
     """
-    uploader = repo_path / UPLOAD_PIPELINE_REL_PATH
+    _, upload_rel, _ = _detect_buildkite_layout(repo_path)
+    uploader = repo_path / upload_rel
     if not uploader.is_file():
         return None
     target = repo_path / rel_yaml_path
@@ -1296,7 +1341,7 @@ _UPLOAD_PIPELINE_MOD = None  # cached module handle
 
 
 def _import_upload_pipeline(repo_path: Path):
-    """Import the vllm-omni ``upload_pipeline`` module and cache it.
+    """Import the repo's ``upload_pipeline`` module (omni or router layout).
 
     Returns the module object, or ``None`` on any failure (missing file,
     import error in its ``skip_ci`` / pytest-mark dependencies).  Callers
@@ -1305,7 +1350,7 @@ def _import_upload_pipeline(repo_path: Path):
     global _UPLOAD_PIPELINE_MOD
     if _UPLOAD_PIPELINE_MOD is not None:
         return _UPLOAD_PIPELINE_MOD
-    scripts_dir = repo_path / ".buildkite" / "common" / "scripts"
+    _, _, scripts_dir = _detect_buildkite_layout(repo_path)
     if not (scripts_dir / "upload_pipeline.py").is_file():
         return None
     if str(scripts_dir) not in sys.path:
@@ -1362,18 +1407,31 @@ def _resolve_preset_for_raw_step(step: dict, uploader) -> str:
             # Uploader rejects mirror_hardwares + agents together; this step
             # is unchanged by the uploader, so it has no preset to recover.
             return ""
-        name = uploader._resolve_mirror_hardware_name(
-            step.get("mirror_hardwares"), step_label=step_label
-        )
-        return name or ""
+        mh = step.get("mirror_hardwares")
+        # Omni uploader exposes ``_resolve_mirror_hardware_name``; router
+        # upload_pipeline does not — there an explicit string preset is
+        # used as-is (list-style Jinja filters already handled above via
+        # agent_pool).
+        resolve = getattr(uploader, "_resolve_mirror_hardware_name", None)
+        if callable(resolve):
+            name = resolve(mh, step_label=step_label)
+            return name or ""
+        if isinstance(mh, str) and mh.strip():
+            return mh.strip()
+        return ""
     if has_pool:
         return ""
-    chips, cards = uploader._parse_pytest_marks(step)
+    parse_marks = getattr(uploader, "_parse_pytest_marks", None)
+    compose = getattr(uploader, "_compose_mirror_hardware_name", None)
+    if not callable(parse_marks) or not callable(compose):
+        # Router (and other non-omni uploaders) do not infer presets from
+        # pytest ``-m`` marks; without those helpers there is nothing left
+        # to recover for steps that omit ``mirror_hardwares``.
+        return ""
+    chips, cards = parse_marks(step)
     if not chips and cards is None:
         return ""
-    preset = uploader._compose_mirror_hardware_name(
-        chips, cards, step_label=step_label
-    )
+    preset = compose(chips, cards, step_label=step_label)
     return preset or ""
 
 
@@ -2128,6 +2186,9 @@ def compute_static_pool_data(
     _ensure_pyyaml()
     assert yaml is not None
 
+    global _UPLOAD_PIPELINE_MOD
+    _UPLOAD_PIPELINE_MOD = None  # layout/API differ per repo (omni vs router)
+
     repo_path = Path(repo_path).expanduser()
 
     if skip_git_pull:
@@ -2211,7 +2272,7 @@ def compute_static_pool_data(
                             label_to_preset = _walk_raw_steps_for_presets(
                                 raw_steps, uploader
                             )
-                except (yaml.YAMLError, OSError) as e:
+                except (yaml.YAMLError, OSError, AttributeError, TypeError) as e:
                     print(
                         f"failed to parse raw {path} for preset recovery: {e}",
                         file=sys.stderr,
@@ -2953,7 +3014,7 @@ def _render_latest_builds_by_category_html(
     return (
         '<div class="cat-stats">'
         '<h3 class="cat-stats-title">Pool Usage by CI Category — Static YAML '
-        "(from local vllm-omni repo)</h3>"
+        "(from local repo)</h3>"
         f'<div class="cat-stats-grid">{"".join(cards_parts)}</div>'
         "</div>"
     )
@@ -3571,7 +3632,11 @@ def _render_job_level_card(
     # right side, scoped to this card only.  All four are checked by
     # default (everything visible).  JS reads the input state and
     # hides any outer group row whose union of CI categories has no
-    # intersection with the checked set.
+    # intersection with the checked set. Only offer categories that this
+    # pipeline actually wires in PIPELINE_YAML_MAP (e.g. router has no weekly).
+    mapped_cats = {cat for cat, _rel in PIPELINE_YAML_MAP.get(pipeline_slug, [])}
+    if not mapped_cats:
+        mapped_cats = {"ready", "merge", "nightly", "weekly"}
     filter_chips = "".join(
         f'<label class="filter-chip filter-chip--{cat}">'
         f'<input type="checkbox" data-ci-filter="{cat}" checked>'
@@ -3583,6 +3648,7 @@ def _render_job_level_card(
             ("nightly", "nightly"),
             ("weekly", "weekly"),
         )
+        if cat in mapped_cats
     )
     filter_html = (
         '<div class="job-level-filter" role="group" '
