@@ -2173,6 +2173,78 @@ RELEASE_MARKDOWN_DOC_CSS = """
   font-weight: 800;
   letter-spacing: 0.02em;
 }
+.release-conclusion-table th:last-child,
+.release-conclusion-table td.conc-evidence-cell {
+  min-width: 14rem;
+  vertical-align: top;
+}
+.conc-evidence-list {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.conc-evidence-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+.conc-evidence-item a {
+  overflow-wrap: anywhere;
+}
+.conc-evidence-thumb {
+  display: block;
+  max-width: 10rem;
+  max-height: 6rem;
+  object-fit: contain;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 6px;
+  background: var(--dashboard-badge-bg);
+}
+.conc-evidence-remove {
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  border: 0;
+  background: transparent;
+  color: var(--dashboard-muted);
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+.conc-evidence-remove:hover { color: #b91c1c; }
+.conc-evidence-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+.conc-evidence-input {
+  width: 100%;
+  min-width: 12rem;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--dashboard-border);
+  border-radius: 6px;
+  background: var(--dashboard-panel-bg);
+  color: var(--dashboard-text);
+  resize: vertical;
+}
+.conc-evidence-upload {
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--accent);
+  cursor: pointer;
+}
+.conc-evidence-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
 
 /* UT coverage editable cell — sits inline inside the Result column of the
    Development Metrics overview. The cell renders **only the value** (no

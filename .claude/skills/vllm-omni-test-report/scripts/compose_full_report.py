@@ -7,11 +7,10 @@ Agents and users should **emit HTML by default**.
 Two report kinds (``--kind``):
 
   - ``release`` (default): full release layout.
-      - Test conclusion: interactive checklist (HTML) / static MD; auto rows: "Latest GPU CI(L1-L5)…" = latest
-        finished **ready** + **merge** (same buckets as metrics) have no failed/broken jobs;
-        "critical issues…" = no open ``critical``;
-        "Remaining DI…" = open ``bug`` in stats window weighted by priority labels < 30;
-        "bug assignees…" = open ``bug`` all have assignee
+      - Test conclusion: interactive checklist (HTML) / static MD; release rows for
+        "Latest GPU CI(L1-L5)…", "Remaining DI < 30", and "No remaining critical issues"
+        are **manual** operator Pass/Fail (critical starts unfilled; no GitHub auto-scan
+        for that item). Preview/demo paths may still pass auto values.
       - Metrics overview: ``buildkite_build_stats.py --markdown``; only the **bugs (first
         response)** row is rendered — the CI-category buckets (``ready`` / `merge` /
         ``nightly`` / ``weekly``) and the ``ut`` / ``ut (exclude models)`` rows are dropped
@@ -77,6 +76,14 @@ from skip_issue_monitor import (  # noqa: E402
     render_skip_issue_monitor_preview_section,
     render_skip_issue_monitor_section,
 )
+from perf_accuracy_summary import (  # noqa: E402
+    render_perf_accuracy_summary_section,
+)
+from omni_review_results import (  # noqa: E402
+    maybe_ff_pull_omni_review,
+    perf_acc_log_dirs_from_omni_review,
+    resolve_omni_review_repo,
+)
 
 CI_FAILURE_LABEL = "ci-failure"  # matches GitHub label on vllm-project/vllm-omni
 
@@ -89,6 +96,7 @@ BUG_DI_THRESHOLD_TENTHS = 300
 
 ORG = "vllm"
 PIPELINE = "vllm-omni"
+PIPELINE_NPU = "vllm-omni-npu-ci"
 BRANCH = "main"
 UPLOAD_PIPELINE_RE = re.compile(r"^Upload .+ Pipeline$", re.IGNORECASE)
 
@@ -197,14 +205,89 @@ def http_json(url: str, token: str | None = None) -> object:
     return http_get_json(url, headers=headers, timeout=120)
 
 
-def latest_scheduled_nightly_number(token: str) -> int:
-    url = f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}/builds?branch={BRANCH}&per_page=50"
-    builds = http_json(url, token)
-    assert isinstance(builds, list)
-    for b in builds:
-        if re.search(r"scheduled\s+nightly", (b.get("message") or ""), re.I):
-            return int(b["number"])
-    sys.exit("No scheduled nightly build found on main (per_page=50).")
+def release_ci_branch(version: str | None) -> str | None:
+    """Buildkite branch for a versioned release report.
+
+    ``0.34.0`` / ``v0.34.0`` / ``release/v0.34.0`` all map to
+    ``release/v0.34.0``. Returns ``None`` when no version is given so
+    callers fall back to :data:`BRANCH` (``main``).
+    """
+    if not version or not str(version).strip():
+        return None
+    # Inline the same stem rules as ``_normalize_release_version`` so this
+    # helper can live above that function without a forward-reference cycle.
+    v = str(version).strip().lower()
+    if v.startswith("release/"):
+        v = v[len("release/"):]
+    stem = v.lstrip("v")
+    if not stem:
+        return None
+    return f"release/v{stem}"
+
+
+def latest_build_number_matching(
+    token: str,
+    *,
+    branch: str,
+    pattern: str,
+    per_page: int = 50,
+    max_pages: int = 1,
+    pipeline: str | None = None,
+) -> int | None:
+    """Return the latest build number on ``branch`` whose message matches ``pattern``."""
+    rx = re.compile(pattern, re.I)
+    quoted = urllib.parse.quote(branch, safe="")
+    pipe = pipeline or PIPELINE
+    for page in range(1, max_pages + 1):
+        url = (
+            f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{pipe}"
+            f"/builds?branch={quoted}&per_page={per_page}&page={page}"
+        )
+        builds = http_json(url, token)
+        assert isinstance(builds, list)
+        if not builds:
+            break
+        for b in builds:
+            if rx.search(b.get("message") or ""):
+                return int(b["number"])
+    return None
+
+
+def latest_scheduled_nightly_number(
+    token: str,
+    *,
+    required: bool = True,
+    branch: str | None = None,
+    pipeline: str | None = None,
+) -> int | None:
+    """Return the latest ``Scheduled nightly`` build number on ``branch`` (default ``main``)."""
+    br = branch or BRANCH
+    pipe = pipeline or PIPELINE
+    no = latest_build_number_matching(
+        token,
+        branch=br,
+        pattern=r"scheduled\s+nightly",
+        per_page=50,
+        max_pages=3,
+        pipeline=pipe,
+    )
+    if no is not None:
+        return no
+    msg = f"No scheduled nightly build found on {br} in {pipe} (up to 3 pages of 50)."
+    if required:
+        sys.exit(msg)
+    return None
+
+
+def latest_scheduled_weekly_number(token: str, *, branch: str) -> int | None:
+    """Latest ``Scheduled weekly build`` on ``branch`` (excludes non-critical weekly)."""
+    return latest_build_number_matching(
+        token,
+        branch=branch,
+        pattern=r"^scheduled\s+weekly\s+build$",
+        per_page=50,
+        max_pages=3,
+    )
 
 
 def _issue_created_date_utc(issue: dict) -> str | None:
@@ -1014,7 +1097,7 @@ OPEN_ISSUE_ACTION_CELLS: list[str] = ["\u2014", "\u2014"]
 #: unlabelled-priority bugs \u2014 are dropped by
 #: :func:`github_open_bug_rows_in_range` when ``priority_filter=`` is set.
 OPEN_ISSUES_RELEASE_PRIORITIES: frozenset[str] = frozenset(
-    {"critical", "high priority", "medium priority"}
+    {"critical", "high priority"}
 )
 
 
@@ -1041,8 +1124,8 @@ def github_open_bug_rows_in_range(
     (via :func:`_bug_di_priority_label`) is not in the set are dropped after
     the ``created_at`` window filter and before sorting/rendering. The
     release variant passes :data:`OPEN_ISSUES_RELEASE_PRIORITIES` to
-    narrow the table to ``critical`` / ``high priority`` /
-    ``medium priority`` issues; the conclusion-row total (computed by
+    narrow the table to ``critical`` / ``high priority`` issues;
+    the conclusion-row total (computed by
     :func:`slo_open_bug_di_total`) is intentionally **not** narrowed.
 
     When ``milestone_filter`` is supplied (release variant with
@@ -1223,8 +1306,8 @@ def render_open_issues_section_with_di(
         body_intro = (
             f"Open issues labeled **bug**, state **open**, excluding PRs, with GitHub "
             f"milestone **{milestone_filter}** (release version), filtered to issues whose "
-            f"highest-priority label is `critical` / `high priority` / `medium priority` "
-            f"(drops `low priority`, `invalid`, and unlabelled-priority bugs): "
+            f"highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs): "
             f"**{open_range_n}** (total open `bug` issues when fetched: "
             f"**{open_total}**). DI uses priority labels: `critical` = 10, `high priority` = 3, "
             f"`medium priority` = 1, `low priority` = 0.1, `invalid` = 0.{github_open_note}"
@@ -1565,7 +1648,7 @@ def render_execution_results_section(
     chunks.extend(
         [
             "",
-            "### H100 (CI — Buildkite scheduled nightly)",
+            "### H100/L4 (CI — Buildkite scheduled nightly + weekly)",
             "",
         ]
     )
@@ -1617,6 +1700,42 @@ def render_performance_data_comparison_section(
     return intro + "\n".join(chunks)
 
 
+def _render_named_buildkite_failure_section(
+    *,
+    anchor: str,
+    heading: str,
+    empty_note: str,
+    intro_prefix: str,
+    build_no: int | None,
+    build_url: str | None,
+    failed_steps: list[tuple[str, str, str]],
+) -> str:
+    """Shared Failure Analysis block for a Buildkite scheduled build."""
+    if not failed_steps:
+        return f'<a id="{anchor}"></a>\n{heading}\n\n{empty_note}\n'
+    chunks: list[str] = [
+        f'<a id="{anchor}"></a>',
+        heading,
+        "",
+    ]
+    if build_no is not None and build_url:
+        chunks.append(f"- {intro_prefix}: build [{build_no}]({build_url}).")
+        chunks.append("")
+    chunks.append(f"{len(failed_steps)} failed step(s):")
+    chunks.append("")
+    rows: list[list[str]] = []
+    for name, state, link in failed_steps:
+        rows.append([name, state, f"[open]({link})" if link else "—", "—", "Filed / Not an issue"])
+    chunks.append(
+        render_markdown_table(
+            ["Step / Job", "State", "Step link", "Submit Issue", "Status"],
+            rows,
+        )
+    )
+    chunks.append("")
+    return "\n".join(chunks)
+
+
 def _render_buildkite_step_failure_section(
     *,
     build_no: int | None,
@@ -1632,33 +1751,15 @@ def _render_buildkite_step_failure_section(
     pipeline and intentionally omitted here to keep the Summary read-only against
     cached build metadata.
     """
-    if not failed_steps:
-        return (
-            '<a id="failure-analysis-h100"></a>\n'
-            "#### H100 (CI — Buildkite scheduled nightly) failures\n\n"
-            "*No failed Buildkite steps in the latest finished scheduled nightly.*\n"
-        )
-    chunks: list[str] = [
-        '<a id="failure-analysis-h100"></a>',
-        "#### H100 (CI — Buildkite scheduled nightly) failures",
-        "",
-    ]
-    if build_no is not None and build_url:
-        chunks.append(f"- Latest finished scheduled nightly: build [{build_no}]({build_url}).")
-        chunks.append("")
-    chunks.append(f"{len(failed_steps)} failed step(s):")
-    chunks.append("")
-    rows: list[list[str]] = []
-    for name, state, link in failed_steps:
-        rows.append([name, state, f"[open]({link})" if link else "—", "—", "Filed / Not an issue"])
-    chunks.append(
-        render_markdown_table(
-            ["Step / Job", "State", "Step link", "Submit Issue", "Status"],
-            rows,
-        )
+    return _render_named_buildkite_failure_section(
+        anchor="failure-analysis-h100",
+        heading="#### H100/L4 (CI — Buildkite scheduled nightly + weekly) failures",
+        empty_note="*No failed Buildkite steps in the latest H100/L4 scheduled nightly/weekly builds.*",
+        intro_prefix="Latest H100/L4 scheduled nightly",
+        build_no=build_no,
+        build_url=build_url,
+        failed_steps=failed_steps,
     )
-    chunks.append("")
-    return "\n".join(chunks)
 
 
 def _render_b200_step_failure_section(
@@ -1705,6 +1806,42 @@ def _render_b200_step_failure_section(
     )
     chunks.append("")
     return "\n".join(chunks)
+
+
+def _render_weekly_step_failure_section(
+    *,
+    build_no: int | None,
+    build_url: str | None,
+    failed_steps: list[tuple[str, str, str]],
+) -> str:
+    """Failure Analysis block for the Buildkite scheduled weekly build."""
+    return _render_named_buildkite_failure_section(
+        anchor="failure-analysis-weekly",
+        heading="#### Weekly (CI — Buildkite scheduled weekly) failures",
+        empty_note="*No failed Buildkite steps in the latest scheduled weekly build.*",
+        intro_prefix="Latest scheduled weekly",
+        build_no=build_no,
+        build_url=build_url,
+        failed_steps=failed_steps,
+    )
+
+
+def _render_a3a2_step_failure_section(
+    *,
+    build_no: int | None,
+    build_url: str | None,
+    failed_steps: list[tuple[str, str, str]],
+) -> str:
+    """Failure Analysis block for the NPU (A3/A2) Buildkite scheduled nightly."""
+    return _render_named_buildkite_failure_section(
+        anchor="failure-analysis-a3a2",
+        heading="#### A3/A2 (CI — Buildkite NPU scheduled nightly) failures",
+        empty_note="*No failed Buildkite steps in the latest A3/A2 NPU scheduled nightly.*",
+        intro_prefix="Latest A3/A2 NPU scheduled nightly",
+        build_no=build_no,
+        build_url=build_url,
+        failed_steps=failed_steps,
+    )
 
 
 def render_failure_summary_md(
@@ -1763,6 +1900,14 @@ def _render_failure_summary_blocks(
     b200_build_url=None,
     b200_failed_steps=None,
     include_b200: bool = True,
+    weekly_build_no=None,
+    weekly_build_url=None,
+    weekly_failed_steps=None,
+    include_weekly: bool = False,
+    a3_build_no=None,
+    a3_build_url=None,
+    a3_failed_steps=None,
+    include_a3_ci: bool = False,
 ) -> str:
     """Per-GPU failure detail blocks (no top-level heading).
 
@@ -1778,7 +1923,6 @@ def _render_failure_summary_blocks(
         ("H200", log_h200),
         ("H800", log_h800),
         ("A100", log_a100),
-        ("A3", log_a3),
     ]
     gpu_blocks: list[str] = []
     for gpu, log_dir in local_pairs:
@@ -1786,14 +1930,47 @@ def _render_failure_summary_blocks(
             gpu_blocks.append(_render_local_gpu_failure_section(gpu, log_dir))
         else:
             gpu_blocks.append(_render_local_gpu_failure_placeholder(gpu))
+    if include_a3_ci:
+        gpu_blocks.append(
+            _render_a3a2_step_failure_section(
+                build_no=a3_build_no,
+                build_url=a3_build_url,
+                failed_steps=a3_failed_steps or [],
+            )
+        )
+    else:
+        # Keep A3/A2 label even for the local-log / empty placeholder path.
+        if log_a3:
+            # Re-title local section as A3/A2 while preserving contents.
+            block = _render_local_gpu_failure_section("A3", log_a3)
+            block = block.replace("#### A3 failures", "#### A3/A2 failures", 1)
+            block = block.replace('id="failure-analysis-a3"', 'id="failure-analysis-a3a2"', 1)
+            gpu_blocks.append(block)
+        else:
+            ph = _render_local_gpu_failure_placeholder("A3")
+            ph = ph.replace("#### A3 failures", "#### A3/A2 failures", 1)
+            ph = ph.replace('id="failure-analysis-a3"', 'id="failure-analysis-a3a2"', 1)
+            ph = ph.replace("--log-dir-a3", "--log-dir-a3 (A3/A2)", 1)
+            gpu_blocks.append(ph)
     if include_h100:
+        # Weekly failures belong to the H100/L4 pool — merge into one FA block.
+        merged_steps: list[tuple[str, str, str]] = list(h100_failed_steps or [])
+        if include_weekly:
+            for name, state, link in weekly_failed_steps or []:
+                merged_steps.append((f"[weekly] {name}", state, link))
         gpu_blocks.append(
             _render_buildkite_step_failure_section(
                 build_no=h100_build_no,
                 build_url=h100_build_url,
-                failed_steps=h100_failed_steps or [],
+                failed_steps=merged_steps,
             )
         )
+        if include_weekly and weekly_build_no is not None and weekly_build_url:
+            # Keep a pointer to the weekly build under the same H100/L4 section.
+            gpu_blocks.append(
+                f"- Latest H100/L4 scheduled weekly: "
+                f"build [{weekly_build_no}]({weekly_build_url}).\n"
+            )
     if include_b200:
         gpu_blocks.append(
             _render_b200_step_failure_section(
@@ -1861,45 +2038,47 @@ def _b200_is_reportable_job(name: str) -> bool:
     return True
 
 
-def latest_scheduled_release_b200_number(token: str) -> int:
-    """Return the latest ``Scheduled Release B200 build`` number on ``main``.
+def latest_scheduled_release_b200_number(token: str, *, branch: str | None = None) -> int:
+    """Return the latest ``Scheduled Release B200 build`` number on ``branch``.
 
-    The B200 release build runs infrequently (~monthly), so a single
-    ``per_page=50`` page (as :func:`latest_scheduled_nightly_number` uses) is
-    not enough — page through up to :data:`_B200_MAX_PAGES` pages of 100 builds
+    Defaults to ``main``. The B200 release build runs infrequently (~monthly),
+    so page through up to :data:`_B200_MAX_PAGES` pages of 100 builds
     (~75-day window) and return the first build whose message matches
     ``scheduled release b200``.
     """
-    pattern = re.compile(r"scheduled\s+release\s+b200", re.I)
-    for page in range(1, _B200_MAX_PAGES + 1):
-        url = (
-            f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}"
-            f"/builds?branch={BRANCH}&per_page=100&page={page}"
-        )
-        builds = http_json(url, token)
-        assert isinstance(builds, list)
-        if not builds:
-            break
-        for b in builds:
-            if pattern.search((b.get("message") or "")):
-                return int(b["number"])
+    br = branch or BRANCH
+    no = latest_build_number_matching(
+        token,
+        branch=br,
+        pattern=r"scheduled\s+release\s+b200",
+        per_page=100,
+        max_pages=_B200_MAX_PAGES,
+    )
+    if no is not None:
+        return no
     raise RuntimeError(
-        "No 'Scheduled Release B200 build' found on main within "
+        f"No 'Scheduled Release B200 build' found on {br} within "
         f"{_B200_MAX_PAGES * 100} recent builds. Pin one explicitly with --b200-build."
     )
 
 
-def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
-    """Fetch the latest (or pinned) Scheduled Release B200 build + reportable-job summary.
+def fetch_build_job_summary(
+    token: str,
+    build_no: int,
+    *,
+    label: str,
+    pipeline: str | None = None,
+) -> dict:
+    """Fetch one Buildkite build and summarize its reportable jobs.
 
-    Single Buildkite API call (``GET .../builds/{n}`` with jobs embedded).
-    Returns a dict: ``build_no``, ``branch``, ``commit``, ``state``,
-    ``created_at``, ``passed``, ``failed``, ``broken``, ``failed_steps``
-    (list of ``(name, state, link)``). ``broken`` is counted separately and
-    excluded from ``failed`` (matches the H100 rule at the dev-path walk).
+    Returns ``build_no``, ``branch``, ``commit``, ``state``, ``created_at``,
+    ``passed``, ``failed``, ``broken``, ``failed_steps`` (list of
+    ``(name, state, link)``), and ``jobs``. ``broken`` is counted separately
+    and excluded from ``failed``.
     """
-    no = build_no if build_no else latest_scheduled_release_b200_number(token)
-    url = f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{PIPELINE}/builds/{no}"
+    no = int(build_no)
+    pipe = pipeline or PIPELINE
+    url = f"https://api.buildkite.com/v2/organizations/{ORG}/pipelines/{pipe}/builds/{no}"
     build = http_json(url, token)
     assert isinstance(build, dict)
     jobs = build.get("jobs") or []
@@ -1912,7 +2091,7 @@ def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
         if (j.get("state") or "").lower() == "failed":
             name = (j.get("name") or "").replace("|", "/")
             jid = j.get("id") or ""
-            link = f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{no}#{jid}"
+            link = f"https://buildkite.com/{ORG}/{pipe}/builds/{no}#{jid}"
             failed_steps.append((name, (j.get("state") or "").lower(), link))
     return {
         "build_no": int(no),
@@ -1924,7 +2103,64 @@ def fetch_b200_build_summary(token: str, build_no: int | None = None) -> dict:
         "failed": failed,
         "broken": broken,
         "failed_steps": failed_steps,
+        "pipeline": pipe,
+        "jobs": reportable_buildkite_jobs(
+            build,
+            build_no=int(no),
+            label=label,
+            b200_filter=True,
+            pipeline=pipe,
+        ),
+        "raw_build": build,
     }
+
+
+def fetch_b200_build_summary(
+    token: str,
+    build_no: int | None = None,
+    *,
+    branch: str | None = None,
+) -> dict:
+    """Fetch the latest (or pinned) Scheduled Release B200 build + reportable-job summary.
+
+    When ``branch`` is set (a versioned release report uses
+    ``release/vX.Y.Z``), resolve the latest matching build on that branch
+    instead of ``main``. A pinned ``build_no`` skips the branch search.
+    """
+    no = build_no if build_no else latest_scheduled_release_b200_number(token, branch=branch)
+    return fetch_build_job_summary(token, int(no), label="B200 (scheduled release)")
+
+
+def reportable_buildkite_jobs(
+    build: dict,
+    *,
+    build_no: int,
+    label: str,
+    b200_filter: bool = False,
+    pipeline: str | None = None,
+) -> list[dict[str, str]]:
+    """Normalize reportable Buildkite jobs into ``name`` / ``state`` / ``url`` / ``build`` dicts."""
+    pipe = pipeline or PIPELINE
+    jobs: list[dict[str, str]] = []
+    for j in build.get("jobs") or []:
+        name = (j.get("name") or "").strip()
+        if not name:
+            continue
+        if b200_filter:
+            if not _b200_is_reportable_job(name):
+                continue
+        elif UPLOAD_PIPELINE_RE.match(name):
+            continue
+        jid = j.get("id") or ""
+        jobs.append(
+            {
+                "name": name.replace("|", "/"),
+                "state": (j.get("state") or "").lower(),
+                "url": f"https://buildkite.com/{ORG}/{pipe}/builds/{build_no}#{jid}",
+                "build": f"{label} #{build_no}",
+            }
+        )
+    return jobs
 
 
 def build_b200_ci_markdown_body(
@@ -1937,17 +2173,16 @@ def build_b200_ci_markdown_body(
     passed: int,
     failed: int,
     broken: int,
+    pipeline: str | None = None,
 ) -> str:
-    """Render the B200 (CI — Buildkite scheduled release) chapter body.
+    """Render a Buildkite CI chapter body (B200 / H100/L4 / A3/A2).
 
     Lightweight: build metadata + reportable-job summary. No per-job log
-    download (matches the H100 chapter precedent). The failed-step detail
-    lives in the **Failure Analysis** section (``_render_b200_step_failure_section``),
-    not in this Test Result chapter — so only the Build + Summary blocks are
-    emitted here.
+    download. The failed-step detail lives in **Failure Analysis**.
     """
     short = commit[:7] if len(commit) >= 7 else commit
-    build_link = f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{build_no}"
+    pipe = pipeline or PIPELINE
+    build_link = f"https://buildkite.com/{ORG}/{pipe}/builds/{build_no}"
     created_short = (created_at or "").replace("T", " ")[:19] or "—"
     total = passed + failed + broken
     commit_cell = (
@@ -1988,16 +2223,22 @@ def render_overall_test_execution_summary_table(
     b200_passed: int | None = None,
     b200_failed: int | None = None,
     b200_broken: int | None = None,
+    weekly_passed: int | None = None,
+    weekly_failed: int | None = None,
+    weekly_broken: int | None = None,
+    a3_passed: int | None = None,
+    a3_failed: int | None = None,
+    a3_broken: int | None = None,
 ) -> str:
     """Emit the combined Total / Passed / Failed table at the top of Test Result.
 
     Includes one row per local GPU (H200, H800, A100, A3) plus a B200 row when
     ``b200_passed`` / ``b200_failed`` are supplied (Buildkite scheduled release
-    counts) and an H100 row when ``h100_passed`` / ``h100_failed`` are supplied
-    (Buildkite scheduled nightly counts; ``broken`` steps are excluded so the
-    totals stay aligned with the per-GPU failure detail). H100 totals stay
-    blank in the development variant — see ``buildkite_build_stats.py`` for the
-    same rule.
+    counts) and an **H100/L4** row when scheduled-nightly and/or scheduled-weekly
+    counts are supplied (weekly belongs to the H100/L4 pool and is folded into
+    that single row; ``broken`` / ``skipped`` still count toward Total). H100/L4
+    totals stay blank in the development variant — see ``buildkite_build_stats.py``
+    for the same rule.
 
     The *Failed* column links to ``#failure-analysis-hXXX`` (the matching
     subsection inside the top-level Failure Analysis section).
@@ -2018,8 +2259,25 @@ def render_overall_test_execution_summary_table(
         _row("H200", log_h200),
         _row("H800", log_h800),
         _row("A100", log_a100),
-        _row("A3", log_a3),
     ]
+    if a3_passed is not None or a3_failed is not None:
+        total = (a3_passed or 0) + (a3_failed or 0) + (a3_broken or 0)
+        rows.append(
+            [
+                "A3/A2",
+                str(total),
+                str(a3_passed or 0),
+                f"[{a3_failed or 0}](#failure-analysis-a3a2)",
+            ]
+        )
+    else:
+        # Local A3/A2 logs (rare); keep the renamed label even when empty.
+        total_s = passed_s = failed_s = "—"
+        if log_a3:
+            total, failed_count = _render_local_gpu_job_counts(log_a3)
+            passed = max(total - failed_count, 0)
+            total_s, passed_s, failed_s = str(total), str(passed), str(failed_count)
+        rows.append(["A3/A2", total_s, passed_s, f"[{failed_s}](#failure-analysis-a3a2)"])
     if b200_passed is not None or b200_failed is not None:
         total = (b200_passed or 0) + (b200_failed or 0) + (b200_broken or 0)
         rows.append(
@@ -2030,14 +2288,29 @@ def render_overall_test_execution_summary_table(
                 f"[{b200_failed or 0}](#failure-analysis-b200)",
             ]
         )
-    if h100_passed is not None or h100_failed is not None:
-        total = (h100_passed or 0) + (h100_failed or 0) + (h100_skipped or 0)
+    if (
+        h100_passed is not None
+        or h100_failed is not None
+        or weekly_passed is not None
+        or weekly_failed is not None
+    ):
+        # Weekly scheduled CI runs on the same H100/L4 pool — fold into one row.
+        total = (
+            (h100_passed or 0)
+            + (h100_failed or 0)
+            + (h100_skipped or 0)
+            + (weekly_passed or 0)
+            + (weekly_failed or 0)
+            + (weekly_broken or 0)
+        )
+        passed = (h100_passed or 0) + (weekly_passed or 0)
+        failed = (h100_failed or 0) + (weekly_failed or 0)
         rows.append(
             [
-                "H100",
+                "H100/L4",
                 str(total),
-                str(h100_passed or 0),
-                f"[{h100_failed or 0}](#failure-analysis-h100)",
+                str(passed),
+                f"[{failed}](#failure-analysis-h100)",
             ]
         )
     return render_markdown_table(
@@ -2061,6 +2334,14 @@ def render_test_result_section(
     b200_passed=None,
     b200_failed=None,
     b200_broken=None,
+    weekly_ci_markdown: str = "",
+    weekly_passed=None,
+    weekly_failed=None,
+    weekly_broken=None,
+    a3_ci_markdown: str = "",
+    a3_passed=None,
+    a3_failed=None,
+    a3_broken=None,
     dev_perf_h200=None,
     dev_perf_h800=None,
     dev_perf_a100=None,
@@ -2104,6 +2385,12 @@ def render_test_result_section(
             b200_passed=b200_passed,
             b200_failed=b200_failed,
             b200_broken=b200_broken,
+            weekly_passed=weekly_passed,
+            weekly_failed=weekly_failed,
+            weekly_broken=weekly_broken,
+            a3_passed=a3_passed,
+            a3_failed=a3_failed,
+            a3_broken=a3_broken,
         )
 
     chunks: list[str] = [
@@ -2112,15 +2399,21 @@ def render_test_result_section(
         "### Overall test execution summary",
         "",
         "Combined Total / Passed / Failed across the local machine types "
-        "(H200 / H800 / A100 / A3)"
+        "(H200 / H800 / A100 / A3/A2)"
         + (" **and the B200 Buildkite scheduled release build**" if b200_ci_markdown else "")
-        + (" **and the H100 Buildkite scheduled nightly build**" if h100_ci_markdown else "")
+        + (
+            " **and the H100/L4 Buildkite scheduled nightly"
+            + (" + weekly" if weekly_ci_markdown else "")
+            + " build(s)**"
+            if h100_ci_markdown or weekly_ci_markdown
+            else ""
+        )
         + (
             ". Buildkite-sourced counts exclude `Upload * Pipeline` and "
             "orchestration-only steps (e.g. `Nightly Collection&Email`) from "
-            "both Total and Failed; the B200/H100 Failed cell links to the "
+            "both Total and Failed; the B200/H100/L4 Failed cell links to the "
             "matching chapter below."
-            if (b200_ci_markdown or h100_ci_markdown)
+            if (b200_ci_markdown or h100_ci_markdown or weekly_ci_markdown)
             else ". The Failed cell links to the matching subsection under the next Failure Analysis section."
         ),
         "",
@@ -2152,8 +2445,17 @@ def render_test_result_section(
     chunks.append(markdown_local_summary_from_log_dir(log_a100) if log_a100 else _gpu_log_placeholder("--log-dir-a100"))
     if dev_perf_a100:
         chunks.extend(["", dev_perf_a100.rstrip(), ""])
-    chunks.extend(["", "### A3", ""])
-    chunks.append(markdown_local_summary_from_log_dir(log_a3) if log_a3 else _gpu_log_placeholder("--log-dir-a3"))
+    if a3_ci_markdown:
+        chunks.extend(["", "### A3/A2 (CI — Buildkite NPU scheduled nightly)", ""])
+        chunks.append(a3_ci_markdown.rstrip())
+        chunks.append("")
+    else:
+        chunks.extend(["", "### A3/A2", ""])
+        chunks.append(
+            markdown_local_summary_from_log_dir(log_a3)
+            if log_a3
+            else _gpu_log_placeholder("--log-dir-a3")
+        )
     if dev_perf_a3:
         chunks.extend(["", dev_perf_a3.rstrip(), ""])
     # B200 (CI — Buildkite scheduled release). Only emit the panel when the caller
@@ -2170,10 +2472,24 @@ def render_test_result_section(
     # actually passes a non-empty `h100_ci_markdown` body (release path). The
     # development path passes ``""`` so the entire H100 chapter is dropped from
     # the development Test Result section.
-    if h100_ci_markdown:
-        chunks.extend(["", "### H100 (CI — Buildkite scheduled nightly)", ""])
-        chunks.append(h100_ci_markdown.rstrip())
-        chunks.append("")
+    if h100_ci_markdown or weekly_ci_markdown:
+        chunks.extend(
+            [
+                "",
+                "### H100/L4 (CI — Buildkite scheduled nightly + weekly)",
+                "",
+            ]
+        )
+        if h100_ci_markdown:
+            chunks.append("#### Scheduled nightly")
+            chunks.append("")
+            chunks.append(h100_ci_markdown.rstrip())
+            chunks.append("")
+        if weekly_ci_markdown:
+            chunks.append("#### Scheduled weekly")
+            chunks.append("")
+            chunks.append(weekly_ci_markdown.rstrip())
+            chunks.append("")
     return "\n".join(chunks)
 
 
@@ -2191,6 +2507,14 @@ def render_failure_analysis_section(
     b200_build_url=None,
     b200_failed_steps=None,
     include_b200: bool = True,
+    weekly_build_no=None,
+    weekly_build_url=None,
+    weekly_failed_steps=None,
+    include_weekly: bool = False,
+    a3_build_no=None,
+    a3_build_url=None,
+    a3_failed_steps=None,
+    include_a3_ci: bool = False,
 ) -> str:
     """Emit a top-level ## Failure Analysis section.
 
@@ -2224,6 +2548,14 @@ def render_failure_analysis_section(
         b200_build_url=b200_build_url,
         b200_failed_steps=b200_failed_steps,
         include_b200=include_b200,
+        weekly_build_no=weekly_build_no,
+        weekly_build_url=weekly_build_url,
+        weekly_failed_steps=weekly_failed_steps,
+        include_weekly=include_weekly,
+        a3_build_no=a3_build_no,
+        a3_build_url=a3_build_url,
+        a3_failed_steps=a3_failed_steps,
+        include_a3_ci=include_a3_ci,
     )
 
 
@@ -2306,6 +2638,53 @@ def _resolve_perf_assets_dir(
         if candidate.is_dir():
             return candidate
     return None
+
+
+
+def collect_release_perf_acc_log_dirs(args, *, update_repo: bool = True) -> tuple[list[tuple[str, Path | None]], list[str]]:
+    """Assemble Performance / Accuracy log dirs (Buildkite archives only).
+
+    Operator ``--log-dir-h*`` trees still feed **Test Result** / Failure Analysis;
+    they are intentionally **not** mixed into the Performance / Accuracy chapters.
+    Local ``manual_*`` archives are also omitted — those chapters are Buildkite-only.
+    """
+    log_dirs: list[tuple[str, Path | None]] = []
+    source_notes: list[str] = []
+    if not getattr(args, "no_omni_review_results", False):
+        repo = resolve_omni_review_repo(getattr(args, "omni_review_repo", None))
+        if repo is None:
+            print(
+                "omni-reviewbot checkout not found; Performance / Accuracy "
+                "will not include archived Buildkite results",
+                file=sys.stderr,
+            )
+        else:
+            if update_repo:
+                maybe_ff_pull_omni_review(repo)
+            archive_dirs = perf_acc_log_dirs_from_omni_review(repo)
+            if not archive_dirs:
+                print(
+                    f"omni-reviewbot at {repo} has no vllm-omni Buildkite "
+                    "result archives",
+                    file=sys.stderr,
+                )
+            for label, path in archive_dirs:
+                if label != "Buildkite":
+                    continue
+                log_dirs.append((label, path))
+                rel = path
+                try:
+                    rel = path.resolve().relative_to(repo.resolve())
+                except ValueError:
+                    pass
+                source_notes.append(f"{label} `{rel}`")
+                print(
+                    f"Performance / Accuracy {label} source: {path}",
+                    file=sys.stderr,
+                )
+    if not log_dirs:
+        log_dirs = [("Buildkite", None)]
+    return log_dirs, source_notes
 
 
 def render_test_conclusion_section() -> str:
@@ -2806,8 +3185,8 @@ def preview_report_markdown(
             f"## Open issues (milestone: {release_version})\n\n"
             f"Open issues labeled **bug**, state **open**, excluding PRs, with GitHub "
             f"milestone **{release_version}** (release version), filtered to issues whose "
-            f"highest-priority label is `critical` / `high priority` / `medium priority` "
-            f"(drops `low priority`, `invalid`, and unlabelled-priority bugs). "
+            f"highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs). "
             "*Preview placeholder data; live report uses paginated GitHub results.*\n\n"
         )
     else:
@@ -2815,7 +3194,7 @@ def preview_report_markdown(
             "## Open issues (stats window)\n\n"
             f"Open issues labeled **bug**, state **open**, excluding PRs, with `created_at` "
             f"(UTC date) in **{stats_from}** … **{stats_to}**, filtered to issues whose highest-priority "
-            f"label is `critical` / `high priority` / `medium priority` (drops `low priority`, `invalid`, "
+            f"label is `critical` / `high priority` (drops `medium priority`, `low priority`, `invalid`, "
             f"and unlabelled-priority bugs). "
             "*Preview placeholder data; live report uses paginated GitHub results.*\n\n"
         )
@@ -2834,20 +3213,8 @@ def preview_report_markdown(
                     "@alice-preview",
                     *OPEN_ISSUE_ACTION_CELLS,
                 ],
-                [
-                    "[#10042](https://github.com/vllm-project/vllm-omni/issues/10042)",
-                    "Intermittent timeout on L2 diffusion accuracy",
-                    stats_to,
-                    "medium priority",
-                    "1",
-                    "open",
-                    "@bob-preview",
-                    *OPEN_ISSUE_ACTION_CELLS,
-                ],
-                # Note: a `low priority` row was previously hardcoded here to demonstrate
-                # the full priority range; it is intentionally omitted now that the release
-                # Open issues table is narrowed to ``critical`` / ``high priority`` /
-                # ``medium priority`` via ``OPEN_ISSUES_RELEASE_PRIORITIES``.
+                # Note: medium/low priority preview rows are omitted — release Open issues
+                # keeps only ``critical`` / ``high priority`` (OPEN_ISSUES_RELEASE_PRIORITIES).
                 [
                     "[#10061](https://github.com/vllm-project/vllm-omni/issues/10061)",
                     "Tokenizer hangs on multi-byte UTF-8 input",
@@ -2875,6 +3242,11 @@ def preview_report_markdown(
     metric_analysis_section = render_metric_analysis_section()
 
     version_info_block = render_version_info_section(release_version, release_commit)
+    perf_acc_block = render_perf_accuracy_summary_section(
+        log_dirs=[("H200", None), ("H800", None), ("A100", None), ("A3", None)],
+        report_date=stats_to,
+        buildkite_sources=[],
+    )
 
     return f"""# vLLM-Omni Test Report - Scheduled Nightly
 
@@ -2883,6 +3255,8 @@ def preview_report_markdown(
 {metric_analysis_section}
 
 {quality_defense_block}
+
+{perf_acc_block}
 
 {test_result}
 
@@ -2894,12 +3268,15 @@ def preview_report_markdown(
 - **Version Info:** operator-supplied via `--release-version` / `--release-commit` (shown
   only when provided; drives the Open issues milestone filter and the default filename tag).
 - **Mode:** `compose_full_report.py --preview` (sample tables only)
+- **Performance Summary** and **Accuracy Summary:** preview renders both chapters with
+  no log dirs and no Buildkite fetch (honest empty notes). The live report fills the
+  metric-value tables from local result files.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
   `--log-dir-*`; H100 is Buildkite block
 - **Failure Analysis:** Per-GPU failure detail. Interactive **Status** column
   (Filed / Not an issue) backed by `localStorage`.
-- **Open issues:** Preview narrows the table to `critical` / `high priority` / `medium priority`
-  (matches live report via ``OPEN_ISSUES_RELEASE_PRIORITIES``); `low priority` / `invalid` / unlabelled
+- **Open issues:** Preview narrows the table to `critical` / `high priority`
+  (matches live report via ``OPEN_ISSUES_RELEASE_PRIORITIES``); `medium priority` / `low priority` / `invalid` / unlabelled
   rows are dropped.
 - **Next Steps (Outstanding Items):** manual-entry action table — see H2 between Open issues and Data
   source. HTML upgrade adds **Add Item** button and `localStorage`-backed editing (same as Development).
@@ -2965,7 +3342,7 @@ def main() -> None:
             "each release-report generation. Renders the "
             "``## Version Info`` chapter (with --release-commit), retargets the Open "
             "issues section to the milestone whose title matches this version "
-            "(open + label:bug + critical/high/medium priority + milestone == version, "
+            "(open + label:bug + critical/high priority + milestone == version, "
             "replacing the created_at stats-window filter), and tags the default "
             "--out filename (vllm-omni-release-test-report-v<version>-<commit>-<date>.html). "
             "Ignored by --kind development."
@@ -3046,6 +3423,27 @@ def main() -> None:
         type=Path,
         default=None,
         help="Optional. Log root for **Test Result → A3** (same layout as --log-dir-h200).",
+    )
+    parser.add_argument(
+        "--omni-review-repo",
+        type=Path,
+        default=None,
+        help=(
+            "Optional. Path to the JiusiServe/omni-reviewbot checkout. When omitted, "
+            "the script looks at $OMNI_REVIEW_REPO_ROOT, /workspace/omni-reviewbot, "
+            "/home/wy/omni-reviewbot, then ~/omni-reviewbot. The release Performance "
+            "and Accuracy chapters read the latest "
+            "kanban/data/vllm_omni/buildkite_nightly_raw/<YYYYMMDD> and "
+            "local_nightly_raw/manual_<YYYYMMDD> trees from that repo."
+        ),
+    )
+    parser.add_argument(
+        "--no-omni-review-results",
+        action="store_true",
+        help=(
+            "Optional. Do not load Performance / Accuracy rows from the omni-reviewbot "
+            "vllm-omni archives; only --log-dir-h* (if given) is used."
+        ),
     )
     parser.add_argument(
         "--b200-build",
@@ -3463,20 +3861,25 @@ def main() -> None:
     l2_l3_row_ok = None
     l2_l3_row_detail = ""
 
-    critical_row_ok, critical_row_detail = no_open_critical_labeled_issues(gh_token)
+    # "No remaining critical issues" is a **manual** user-selectable Pass/Fail
+    # row (like Remaining DI / NPU). Do **not** call
+    # ``no_open_critical_labeled_issues`` here — that scan filled Pass/Fail from
+    # open ``bug``+``critical`` issues and is no longer used for this conclusion
+    # item. The Open issues chapter still lists critical/high-priority bugs for
+    # the operator to judge against; only this conclusion-row auto-judgement is
+    # detached. Passing ``critical_row_ok=None`` leaves the widget unfilled
+    # (neither Pass nor Fail selected) until the operator picks.
+    critical_row_ok = None
+    critical_row_detail = ""
 
-    # H100 (Buildkite scheduled nightly) data is intentionally NOT fetched or
-    # rendered in the release Test Result / Failure Analysis sections anymore.
-    # Operators requested removing Buildkite CI roll-up content from the report
-    # — only local-machine test execution (H200/H800/A100/A3) remains. The
-    # Buildkite API call + reportable-job walk (previously used to populate
-    # the H100 chapter + the H100 failed-step block) is therefore skipped.
-    #
-    # B200 (Buildkite scheduled release) is the one Buildkite CI chapter kept in
-    # the release Test Result. Fetch the latest "Scheduled Release B200 build"
-    # (or a pinned --b200-build), walk its reportable jobs, and build a
-    # lightweight metadata + summary + failed-step body. Failures degrade
-    # gracefully (empty body) so a Buildkite hiccup never aborts the report.
+    # With --release-version, Buildkite scheduled nightly, scheduled weekly,
+    # and scheduled release B200 are resolved on the matching release/vX.Y.Z
+    # branch (not main). Without a version, B200 still resolves on main and
+    # the nightly/weekly Test Result chapters stay omitted.
+    ci_branch = release_ci_branch(args.release_version)
+    if ci_branch:
+        print(f"Release Buildkite branch: {ci_branch}", file=sys.stderr)
+
     b200_body = ""
     b200_passed: int | None = None
     b200_failed: int | None = None
@@ -3484,14 +3887,18 @@ def main() -> None:
     b200_build_no: int | None = None
     b200_build_url: str | None = None
     b200_failed_steps: list[tuple[str, str, str]] | None = None
+    b200_jobs: list[dict[str, str]] = []
     try:
-        b200 = fetch_b200_build_summary(token, build_no=args.b200_build)
+        b200 = fetch_b200_build_summary(
+            token, build_no=args.b200_build, branch=ci_branch
+        )
         b200_passed = b200["passed"]
         b200_failed = b200["failed"]
         b200_broken = b200["broken"]
         b200_build_no = b200["build_no"]
         b200_build_url = f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{b200_build_no}"
         b200_failed_steps = b200["failed_steps"]
+        b200_jobs = list(b200.get("jobs") or [])
         b200_body = build_b200_ci_markdown_body(
             build_no=b200["build_no"],
             branch=b200["branch"],
@@ -3511,47 +3918,196 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001 — graceful degradation
         print(f"B200: fetch failed — {e}; chapter omitted", file=sys.stderr)
 
+    def _ci_body(summary: dict, *, pipeline: str | None = None) -> str:
+        return build_b200_ci_markdown_body(
+            build_no=summary["build_no"],
+            branch=summary["branch"],
+            commit=summary["commit"],
+            state=summary["state"],
+            created_at=summary["created_at"],
+            passed=summary["passed"],
+            failed=summary["failed"],
+            broken=summary["broken"],
+            pipeline=pipeline or summary.get("pipeline"),
+        )
+
+    # Scheduled nightly (H100) on the release branch (or main when no version).
+    nightly_jobs: list[dict[str, str]] = []
+    h100_body = ""
+    h100_passed: int | None = None
+    h100_failed: int | None = None
+    h100_skipped: int | None = None
+    h100_build_no: int | None = None
+    h100_build_url: str | None = None
+    h100_failed_steps: list[tuple[str, str, str]] | None = None
+    try:
+        n_branch = ci_branch or BRANCH
+        nno = latest_scheduled_nightly_number(token, required=False, branch=n_branch)
+        if nno is None:
+            print(
+                f"Scheduled nightly: none found on {n_branch}; skipped",
+                file=sys.stderr,
+            )
+        else:
+            nsum = fetch_build_job_summary(
+                token, int(nno), label="H100 (scheduled nightly)"
+            )
+            nightly_jobs = list(nsum.get("jobs") or [])
+            print(
+                f"Scheduled nightly: build #{nsum['build_no']} [{nsum['state']}] "
+                f"on {nsum['branch']} ({(nsum['created_at'] or '')[:10]}) — "
+                f"{nsum['passed']} passed / {nsum['failed']} failed / "
+                f"{nsum['broken']} broken",
+                file=sys.stderr,
+            )
+            if ci_branch:
+                h100_body = _ci_body(nsum)
+                h100_passed = nsum["passed"]
+                h100_failed = nsum["failed"]
+                h100_skipped = nsum["broken"]
+                h100_build_no = nsum["build_no"]
+                h100_build_url = (
+                    f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{h100_build_no}"
+                )
+                h100_failed_steps = nsum["failed_steps"]
+    except Exception as e:  # noqa: BLE001 — graceful degradation
+        print(f"Scheduled nightly: fetch failed — {e}", file=sys.stderr)
+
+    weekly_jobs: list[dict[str, str]] = []
+    weekly_body = ""
+    weekly_passed: int | None = None
+    weekly_failed: int | None = None
+    weekly_broken: int | None = None
+    weekly_build_no: int | None = None
+    weekly_build_url: str | None = None
+    weekly_failed_steps: list[tuple[str, str, str]] | None = None
+    if ci_branch:
+        try:
+            wno = latest_scheduled_weekly_number(token, branch=ci_branch)
+            if wno is None:
+                print(
+                    f"Scheduled weekly: none found on {ci_branch}; skipped",
+                    file=sys.stderr,
+                )
+            else:
+                wsum = fetch_build_job_summary(
+                    token, int(wno), label="Weekly (scheduled weekly)"
+                )
+                weekly_jobs = list(wsum.get("jobs") or [])
+                weekly_body = _ci_body(wsum)
+                weekly_passed = wsum["passed"]
+                weekly_failed = wsum["failed"]
+                weekly_broken = wsum["broken"]
+                weekly_build_no = wsum["build_no"]
+                weekly_build_url = (
+                    f"https://buildkite.com/{ORG}/{PIPELINE}/builds/{weekly_build_no}"
+                )
+                weekly_failed_steps = wsum["failed_steps"]
+                print(
+                    f"Scheduled weekly: build #{wsum['build_no']} [{wsum['state']}] "
+                    f"on {wsum['branch']} ({(wsum['created_at'] or '')[:10]}) — "
+                    f"{wsum['passed']} passed / {wsum['failed']} failed / "
+                    f"{wsum['broken']} broken",
+                    file=sys.stderr,
+                )
+        except Exception as e:  # noqa: BLE001 — graceful degradation
+            print(f"Scheduled weekly: fetch failed — {e}", file=sys.stderr)
+
+    # A3/A2 = NPU CI scheduled nightly on the release branch (vllm-omni-npu-ci).
+    a3_body = ""
+    a3_passed: int | None = None
+    a3_failed: int | None = None
+    a3_broken: int | None = None
+    a3_build_no: int | None = None
+    a3_build_url: str | None = None
+    a3_failed_steps: list[tuple[str, str, str]] | None = None
+    if ci_branch:
+        try:
+            ano = latest_scheduled_nightly_number(
+                token,
+                required=False,
+                branch=ci_branch,
+                pipeline=PIPELINE_NPU,
+            )
+            if ano is None:
+                print(
+                    f"A3/A2 NPU scheduled nightly: none found on {ci_branch} "
+                    f"in {PIPELINE_NPU}; skipped",
+                    file=sys.stderr,
+                )
+            else:
+                asum = fetch_build_job_summary(
+                    token,
+                    int(ano),
+                    label="A3/A2 (NPU scheduled nightly)",
+                    pipeline=PIPELINE_NPU,
+                )
+                a3_body = _ci_body(asum, pipeline=PIPELINE_NPU)
+                a3_passed = asum["passed"]
+                a3_failed = asum["failed"]
+                a3_broken = asum["broken"]
+                a3_build_no = asum["build_no"]
+                a3_build_url = (
+                    f"https://buildkite.com/{ORG}/{PIPELINE_NPU}/builds/{a3_build_no}"
+                )
+                a3_failed_steps = asum["failed_steps"]
+                print(
+                    f"A3/A2 NPU scheduled nightly: build #{asum['build_no']} "
+                    f"[{asum['state']}] on {asum['branch']} "
+                    f"({(asum['created_at'] or '')[:10]}) — "
+                    f"{asum['passed']} passed / {asum['failed']} failed / "
+                    f"{asum['broken']} broken",
+                    file=sys.stderr,
+                )
+        except Exception as e:  # noqa: BLE001 — graceful degradation
+            print(f"A3/A2 NPU scheduled nightly: fetch failed — {e}", file=sys.stderr)
+
     conclusion = render_test_conclusion_section()
-    # H100 (Buildkite scheduled nightly) chapter is intentionally omitted from
-    # the release Test Result — the operator requested dropping that Buildkite
-    # CI roll-up; only local-machine execution (H200/H800/A100/A3) plus the
-    # **B200 Buildkite scheduled release** chapter remain. ``h100_ci_markdown=""``
-    # suppresses the H100 chapter and H100 row in the Overall summary table;
-    # ``b200_*`` carries the fetched B200 build's body + counts.
     test_result = render_test_result_section(
         skill_dir,
         log_h200=args.log_dir_h200,
         log_h800=args.log_dir_h800,
         log_a100=args.log_dir_a100,
         log_a3=args.log_dir_a3,
-        h100_ci_markdown="",
-        h100_passed=None,
-        h100_failed=None,
-        h100_skipped=None,
+        h100_ci_markdown=h100_body,
+        h100_passed=h100_passed,
+        h100_failed=h100_failed,
+        h100_skipped=h100_skipped,
         b200_ci_markdown=b200_body,
         b200_passed=b200_passed,
         b200_failed=b200_failed,
         b200_broken=b200_broken,
+        weekly_ci_markdown=weekly_body,
+        weekly_passed=weekly_passed,
+        weekly_failed=weekly_failed,
+        weekly_broken=weekly_broken,
+        a3_ci_markdown=a3_body,
+        a3_passed=a3_passed,
+        a3_failed=a3_failed,
+        a3_broken=a3_broken,
     )
 
-    # Failure Analysis: top-level section, one collapsible subsection per
-    # local GPU (H200/H800/A100 from local logs). H100 (Buildkite) is
-    # intentionally omitted from the release report. B200 (Buildkite scheduled
-    # release) failed steps are rendered here (the Test Result B200 chapter
-    # carries only Build + Summary).
     failure_analysis = render_failure_analysis_section(
         log_h200=args.log_dir_h200,
         log_h800=args.log_dir_h800,
         log_a100=args.log_dir_a100,
         log_a3=args.log_dir_a3,
-        h100_build_no=None,
-        h100_build_url=None,
-        h100_failed_steps=None,
-        include_h100=False,
+        h100_build_no=h100_build_no,
+        h100_build_url=h100_build_url,
+        h100_failed_steps=h100_failed_steps,
+        include_h100=bool(h100_body),
         b200_build_no=b200_build_no,
         b200_build_url=b200_build_url,
         b200_failed_steps=b200_failed_steps,
-        include_b200=True,
+        include_b200=bool(b200_body),
+        weekly_build_no=weekly_build_no,
+        weekly_build_url=weekly_build_url,
+        weekly_failed_steps=weekly_failed_steps,
+        include_weekly=bool(weekly_body),
+        a3_build_no=a3_build_no,
+        a3_build_url=a3_build_url,
+        a3_failed_steps=a3_failed_steps,
+        include_a3_ci=bool(a3_body),
     )
 
     # Issue tracking section is intentionally omitted from the release
@@ -3576,7 +4132,7 @@ def main() -> None:
         priority_filter=OPEN_ISSUES_RELEASE_PRIORITIES,
         # With --release-version the Open issues section retargets from the
         # created_at stats window to the milestone matching the release version
-        # (open + label:bug + critical/high/medium priority + milestone == version).
+        # (open + label:bug + critical/high priority + milestone == version).
         milestone_filter=args.release_version,
     )
     version_info_block = render_version_info_section(
@@ -3605,18 +4161,36 @@ def main() -> None:
     # ``oi-followup`` / ``ns-outstanding`` / ``fail-status``).
     quality_defense_block = render_quality_defense_section()
     metric_analysis_section = render_metric_analysis_section()
+    perf_acc_log_dirs, perf_acc_archive_notes = collect_release_perf_acc_log_dirs(args)
+    # When omni-reviewbot archives supply Buildkite metric JSON, do not also
+    # attach the API job-list note (those payloads have no metric values).
+    archive_has_buildkite = any(label == "Buildkite" for label, _ in perf_acc_log_dirs)
+    perf_acc_block = render_perf_accuracy_summary_section(
+        log_dirs=perf_acc_log_dirs,
+        report_date=report_date,
+        buildkite_sources=(
+            []
+            if archive_has_buildkite
+            else [
+                ("B200 (scheduled release)", b200_jobs),
+                ("H100 (scheduled nightly)", nightly_jobs),
+                ("Weekly (scheduled weekly)", weekly_jobs),
+            ]
+        ),
+        source_notes=perf_acc_archive_notes,
+    )
     if args.release_version:
         open_issues_source_note = (
             f"REST `label:bug`, state `open`, milestone matching release version "
             f"`{args.release_version}` (created_at stats window **not** applied), "
-            f"filtered to issues whose highest-priority label is `critical` / `high priority` / "
-            f"`medium priority` (drops `low priority`, `invalid`, and unlabelled-priority bugs)."
+            f"filtered to issues whose highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs)."
         )
     else:
         open_issues_source_note = (
             f"REST `label:bug`, `created_at` UTC date in `{stats_from}`..`{stats_to}`, "
-            f"filtered to issues whose highest-priority label is `critical` / `high priority` / "
-            f"`medium priority` (drops `low priority`, `invalid`, and unlabelled-priority bugs)."
+            f"filtered to issues whose highest-priority label is `critical` / `high priority` "
+            f"(drops `medium priority`, `low priority`, `invalid`, and unlabelled-priority bugs)."
         )
     # "Remaining DI < 30" is a **manual** user-selectable Pass/Fail row (like
     # the NPU row) — the operator judges it against the SLO-escalating
@@ -3624,10 +4198,10 @@ def main() -> None:
     # `created_at` ≤ stats_to; threshold ≤ 30). Passing ``di_row_ok=None``
     # renders the row as a clickable toggle (see ``release_conclusion_widget_html``:
     # ``is_auto = auto_ok is not None``) and never overrides the operator's
-    # selection with an auto-judgement. The Open issues section below still
-    # lists the bugs the operator would judge against
-    # (``render_open_issues_section`` is unchanged) — only the conclusion-row
-    # auto-judgement is dropped.
+    # selection with an auto-judgement. "No remaining critical issues" is the
+    # same pattern (``critical_row_ok=None``, unfilled until clicked) — the
+    # Open issues section below still lists critical/high-priority bugs for
+    # reference; only the conclusion-row auto-judgement for that item is dropped.
 
     md = f"""# vLLM-Omni Test Report - Scheduled Nightly
 
@@ -3636,6 +4210,8 @@ def main() -> None:
 {metric_analysis_section}
 
 {quality_defense_block}
+
+{perf_acc_block}
 
 {test_result}
 
@@ -3654,14 +4230,25 @@ def main() -> None:
   `label:bug` whose `created_at` ≤ `{stats_to}` (start date unbounded; issues created
   after the stats window are excluded); threshold ≤ 30 (Pass when total ≤ 30,
   Fail when > 30). No longer auto-calculated — the operator's selection is authoritative;
-  (3) no open
-  `label:bug` + `label:critical`; (4) `UT coverage meets this iteration requirement
+  (3) **No remaining critical issues** is a **manual** user-selectable Pass/Fail
+  row (unfilled until the operator picks) — not auto-scanned from open
+  `label:bug` + `label:critical` (the Open issues chapter still lists
+  critical/high-priority bugs separately for reference); (4) `UT coverage meets this iteration requirement
   (Guide), Performance regression < 10% (Guide)` is a manual user-selectable
   row that does **not** influence the final Go / Rejected verdict.
+- **Performance Summary** and **Accuracy Summary:** metric-value tables (no filename
+  column) from the latest
+  vllm-omni archives in omni-reviewbot (`kanban/data/vllm_omni/buildkite_nightly_raw/<YYYYMMDD>`
+  and `local_nightly_raw/manual_<YYYYMMDD>`), plus any extra `--log-dir-h*` trees.
+  Values are quoted only from those JSON files (`result_test_*` /
+  `diffusion_result_*` / `benchmark_results_*` / `result_acc_*.json`).
+  Performance and Accuracy are each one table per shared metric schema.
 - **Test Result:** Common stack from `references/local-test-matrix.md`; H200/H800/A100 via
-  `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`; H100 chapter intentionally omitted
-  (Buildkite scheduled nightly roll-up no longer rendered in the release report).
-- **Failure Analysis:** Per-GPU failure detail (H200/H800/A100 from local nightly logs; H100 from
+  `--log-dir-h200` / `--log-dir-h800` / `--log-dir-a100`. With `--release-version`,
+  also the latest scheduled nightly, scheduled weekly, and scheduled release B200
+  builds on `release/vX.Y.Z`.
+- **Failure Analysis:** Per-GPU failure detail (H200/H800/A100/A3 from local nightly
+  logs; H100 scheduled nightly, B200 scheduled release, and scheduled weekly from
   Buildkite `failed` steps — `broken` is treated as a transient state, not a failure).
   Interactive **Status** column (Filed / Not an issue) backed by `localStorage`.
 - **Version Info:** operator-supplied via `--release-version` / `--release-commit`
@@ -3693,8 +4280,10 @@ def main() -> None:
             # manual Pass/Fail toggle (operator-selectable), not an auto-judgement.
             di_row_ok=None,
             di_row_detail="",
-            critical_row_ok=critical_row_ok,
-            critical_row_detail=critical_row_detail,
+            # critical_row_ok=None ⇒ "No remaining critical issues" is a manual
+            # Pass/Fail toggle left unfilled (operator fills; no GitHub scan).
+            critical_row_ok=None,
+            critical_row_detail="",
         ),
         encoding="utf-8",
     )

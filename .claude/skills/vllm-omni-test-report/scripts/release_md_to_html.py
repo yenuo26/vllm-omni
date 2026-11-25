@@ -37,7 +37,8 @@ RELEASE_CONCLUSION_ITEMS: tuple[str, ...] = (
     #     the same way as the Development report). Threshold rule: DI ≤ 30 → Pass,
     #     DI > 30 → Fail.
     "Remaining DI < 30",
-    # 6 — auto: compose checks for open issues labeled ``critical``
+    # 6 — manual (user-selectable): operator fills Pass/Fail; release compose
+    # does not scan GitHub for this row (Open issues chapter stays separate).
     "No remaining critical issues",
 )
 
@@ -52,7 +53,7 @@ CONCLUSION_L2_L3_ROW_INDEX = 2
 CONCLUSION_NPU_ROW_INDEX = 3
 # "Remaining DI < 30": auto-computed cumulative Outstanding DI; threshold ≤ 30 ⇒ Pass.
 CONCLUSION_DI_ROW_INDEX = 5
-# "No remaining critical issues": compose checks for open issues labeled ``critical``
+# "No remaining critical issues": manual Pass/Fail (operator-filled; no GitHub scan).
 CONCLUSION_CRITICAL_ROW_INDEX = 6
 
 
@@ -132,6 +133,12 @@ def _release_section_theme(title_plain: str) -> tuple[str, str]:
         return "version", _RELEASE_SVG_TAG
     if "test conclusion" in low:
         return "conclusion", _RELEASE_SVG_CHECK
+    if (
+        "performance and accuracy" in low
+        or "performance summary" in low
+        or "accuracy summary" in low
+    ):
+        return "metrics", _RELEASE_SVG_CHART
     if "metrics" in low:
         return "metrics", _RELEASE_SVG_CHART
     if "metric analysis" in low:
@@ -167,16 +174,22 @@ def release_conclusion_widget_html(
     """Interactive table + verdict (Go / Rejected) for ``.release-doc`` HTML.
 
     Automatic rows (non-clickable when ``*_row_ok`` is not ``None``):
-    **Latest GPU CI(L1-L5)**, **critical issues**.
-    The **Latest NPU CI(L1-L4)** row is **manual** (always user-selectable,
-    per the "用例自己选择结果" rule). The **Remaining DI < 30** row is also
-    **manual** in the release variant (the release ``main()`` passes
-    ``di_row_ok=None`` so the operator judges DI against the open-bug list
-    rather than having an auto-judgement override the selection); the
-    development/preview paths still pass a demo ``di_row_ok`` value.
-    Rows whose index is in :data:`RELEASE_CONCLUSION_GUIDE_ROW_INDICES` render
-    in the table and stay user-selectable, but the final Go / Rejected verdict
-    ignores them.
+    any row whose ``*_row_ok`` is provided (preview/demo paths may still pass
+    values). In the release variant, **Latest GPU CI(L1-L5)**, **Remaining DI
+    < 30**, and **No remaining critical issues** are all **manual**
+    (``*_row_ok=None``): the operator picks Pass/Fail. The critical row starts
+    with neither button selected (unfilled) so the report does not invent a
+    scan result; other manual rows still default to Pass lit until clicked.
+    The **Latest NPU CI(L1-L4)** row is likewise **manual**. Preview paths may
+    still pass demo ``*_row_ok`` values. Rows whose index is in
+    :data:`RELEASE_CONCLUSION_GUIDE_ROW_INDICES` render in the table and stay
+    user-selectable, but the final Go / Rejected verdict ignores them.
+
+    Every row has an **Evidence** editor: the operator can paste a URL or an
+    image (clipboard or file picker) as supporting evidence. Evidence is
+    mirrored to a ``data-evidence`` attribute (so Save-As keeps the chips) and
+    to ``localStorage`` (same-origin reloads), with an in-memory fallback for
+    ``file://`` where Chrome may deny ``localStorage``.
     """
     rows: list[str] = []
     for i, item in enumerate(RELEASE_CONCLUSION_ITEMS):
@@ -192,11 +205,21 @@ def release_conclusion_widget_html(
             auto_ok = critical_row_ok
             row_detail = critical_row_detail
         is_auto = auto_ok is not None
-        pass_on = bool(auto_ok) if is_auto else True
+        if is_auto:
+            pass_on = bool(auto_ok)
+            fail_on = not pass_on
+        elif i == CONCLUSION_CRITICAL_ROW_INDEX:
+            # Manual critical row: leave Pass/Fail unfilled until the operator picks.
+            # Do not invent a Yes/No from a GitHub scan.
+            pass_on = False
+            fail_on = False
+        else:
+            pass_on = True
+            fail_on = False
         pass_cls = "is-on" if pass_on else ""
-        fail_cls = "" if pass_on else "is-on"
+        fail_cls = "is-on" if fail_on else ""
         pass_pressed = "true" if pass_on else "false"
-        fail_pressed = "false" if pass_on else "true"
+        fail_pressed = "true" if fail_on else "false"
         auto_cls = " conc-auto" if is_auto else ""
         guide_attr = "1" if i in RELEASE_CONCLUSION_GUIDE_ROW_INDICES else "0"
         hint = ""
@@ -212,12 +235,22 @@ def release_conclusion_widget_html(
             f' aria-pressed="{pass_pressed}">Pass</button>'
             f'<button type="button" class="conc-btn conc-fail {fail_cls}" data-conc="fail"'
             f' aria-pressed="{fail_pressed}">Fail</button>'
-            f"</div>{hint}</td></tr>"
+            f"</div>{hint}</td>"
+            '<td class="conc-evidence-cell">'
+            f'<div class="conc-evidence" data-conc-evidence="{i}" data-evidence="">'
+            '<ul class="conc-evidence-list" aria-label="Evidence"></ul>'
+            '<div class="conc-evidence-edit">'
+            '<textarea class="conc-evidence-input" rows="2" '
+            'placeholder="Paste a link or image as evidence"></textarea>'
+            '<label class="conc-evidence-upload">'
+            '<input type="file" class="conc-evidence-file" accept="image/*" multiple>'
+            "Add image</label>"
+            "</div></div></td></tr>"
         )
     rows_s = "\n".join(rows)
     return f"""<div class="release-conclusion-wrap">
 <table class="release-conclusion-table">
-<thead><tr><th>Check item</th><th>Result</th></tr></thead>
+<thead><tr><th>Check item</th><th>Result</th><th>Evidence</th></tr></thead>
 <tbody>
 {rows_s}
 </tbody>
@@ -229,6 +262,194 @@ def release_conclusion_widget_html(
 (function () {{
   var wrap = document.querySelector('.release-conclusion-wrap');
   if (!wrap) return;
+  var LS_PREFIX = 'release-conclusion-evidence:';
+  var mem = {{}};
+  function lsGet(k) {{
+    try {{
+      var v = localStorage.getItem(k);
+      if (v !== null) mem[k] = v;
+      return v;
+    }} catch (e) {{
+      return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null;
+    }}
+  }}
+  function lsSet(k, v) {{
+    mem[k] = v || '';
+    try {{
+      if (v) localStorage.setItem(k, v);
+      else localStorage.removeItem(k);
+    }} catch (e) {{ /* localStorage unavailable (e.g. file:// in Chrome) */ }}
+  }}
+  function allowedUrl(u) {{
+    if (!u || typeof u !== 'string') return false;
+    var s = u.trim();
+    if (/^https?:\\/\\//i.test(s)) return true;
+    if (/^data:image\\/(png|jpe?g|gif|webp);base64,/i.test(s)) return true;
+    return false;
+  }}
+  function normalizeUrl(s) {{
+    s = (s || '').trim();
+    if (/^www\\./i.test(s)) return 'https://' + s;
+    return s;
+  }}
+  function looksUrl(s) {{
+    s = (s || '').trim();
+    return /^(https?:\\/\\/|www\\.)\\S+$/i.test(s);
+  }}
+  function escapeHtml(s) {{
+    return String(s).replace(/[&<>"']/g, function (c) {{
+      return ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c];
+    }});
+  }}
+  function readItems(box) {{
+    var raw = box.getAttribute('data-evidence') || '';
+    if (!raw) {{
+      var idx = box.getAttribute('data-conc-evidence');
+      raw = lsGet(LS_PREFIX + idx) || '';
+    }}
+    if (!raw) return [];
+    try {{
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }} catch (e) {{
+      return [];
+    }}
+  }}
+  function writeItems(box, items) {{
+    var raw = items.length ? JSON.stringify(items) : '';
+    box.setAttribute('data-evidence', raw);
+    var idx = box.getAttribute('data-conc-evidence');
+    if (idx !== null) lsSet(LS_PREFIX + idx, raw);
+    renderList(box);
+  }}
+  function addItems(box, extra) {{
+    var items = readItems(box);
+    extra.forEach(function (it) {{
+      if (!it || !it.t) return;
+      if (it.t === 'url' && !allowedUrl(it.h)) return;
+      if (it.t === 'img' && !allowedUrl(it.s)) return;
+      if (it.t === 'img' && it.s && it.s.length > 1800000) return;
+      items.push(it);
+    }});
+    writeItems(box, items);
+  }}
+  function renderList(box) {{
+    var list = box.querySelector('.conc-evidence-list');
+    if (!list) return;
+    list.innerHTML = '';
+    readItems(box).forEach(function (it, i) {{
+      var li = document.createElement('li');
+      li.className = 'conc-evidence-item';
+      if (it.t === 'url' && allowedUrl(it.h)) {{
+        var a = document.createElement('a');
+        a.href = it.h;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = it.l || it.h;
+        li.appendChild(a);
+      }} else if (it.t === 'img' && allowedUrl(it.s)) {{
+        var img = document.createElement('img');
+        img.src = it.s;
+        img.alt = it.l || 'Evidence image';
+        img.className = 'conc-evidence-thumb';
+        li.appendChild(img);
+      }} else {{
+        return;
+      }}
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'conc-evidence-remove';
+      rm.setAttribute('data-evidence-index', String(i));
+      rm.setAttribute('aria-label', 'Remove evidence');
+      rm.textContent = '×';
+      li.appendChild(rm);
+      list.appendChild(li);
+    }});
+  }}
+  function addFile(box, file) {{
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) return;
+    if (file.size > 1200000) return;
+    var reader = new FileReader();
+    reader.onload = function () {{
+      var s = String(reader.result || '');
+      if (allowedUrl(s)) addItems(box, [{{t:'img', s:s, l:file.name || 'image'}}]);
+    }};
+    reader.readAsDataURL(file);
+  }}
+  wrap.querySelectorAll('.conc-evidence').forEach(function (box) {{
+    var idx = box.getAttribute('data-conc-evidence');
+    var attr = box.getAttribute('data-evidence') || '';
+    if (!attr) {{
+      var stored = lsGet(LS_PREFIX + idx);
+      if (stored) box.setAttribute('data-evidence', stored);
+    }}
+    renderList(box);
+    var ta = box.querySelector('.conc-evidence-input');
+    var file = box.querySelector('.conc-evidence-file');
+    if (ta) {{
+      ta.addEventListener('paste', function (e) {{
+        var cd = e.clipboardData;
+        var added = false;
+        if (cd && cd.files && cd.files.length) {{
+          for (var i = 0; i < cd.files.length; i++) addFile(box, cd.files[i]);
+          added = true;
+        }}
+        if (cd && cd.items && !added) {{
+          for (var j = 0; j < cd.items.length; j++) {{
+            if (cd.items[j].type.indexOf('image/') === 0) {{
+              var f = cd.items[j].getAsFile();
+              if (f) {{ addFile(box, f); added = true; }}
+            }}
+          }}
+        }}
+        var text = cd ? (cd.getData('text') || '') : '';
+        var extras = [];
+        text.split(/\\s+/).forEach(function (tok) {{
+          var u = normalizeUrl(tok);
+          if (looksUrl(u) && allowedUrl(normalizeUrl(u).indexOf('www.') === 0 ? 'https://' + u.replace(/^www\\./i,'www.') : u) || looksUrl(tok)) {{
+            var href = normalizeUrl(tok);
+            if (allowedUrl(href)) extras.push({{t:'url', h:href}});
+          }}
+        }});
+        if (added || extras.length) {{
+          e.preventDefault();
+          if (extras.length) addItems(box, extras);
+          ta.value = '';
+        }}
+      }});
+      ta.addEventListener('keydown', function (e) {{
+        if (e.key !== 'Enter' || e.shiftKey) return;
+        e.preventDefault();
+        var raw = (ta.value || '').trim();
+        if (!raw) return;
+        var extras = [];
+        raw.split(/\\s+/).forEach(function (tok) {{
+          var href = normalizeUrl(tok);
+          if (allowedUrl(href)) extras.push({{t:'url', h:href}});
+        }});
+        if (extras.length) {{ addItems(box, extras); ta.value = ''; }}
+      }});
+    }}
+    if (file) {{
+      file.addEventListener('change', function () {{
+        for (var i = 0; i < (file.files || []).length; i++) addFile(box, file.files[i]);
+        file.value = '';
+      }});
+    }}
+  }});
+  wrap.addEventListener('click', function (e) {{
+    var rm = e.target && e.target.closest ? e.target.closest('.conc-evidence-remove') : null;
+    if (rm) {{
+      var box = rm.closest('.conc-evidence');
+      if (!box) return;
+      var ix = parseInt(rm.getAttribute('data-evidence-index') || '-1', 10);
+      var items = readItems(box);
+      if (ix >= 0 && ix < items.length) {{
+        items.splice(ix, 1);
+        writeItems(box, items);
+      }}
+    }}
+  }});
   function allPass() {{
     // Verdict ignores (Guide) rows: those are advisory only and must not
     // change the final Go / Rejected outcome.
@@ -577,7 +798,7 @@ def _wrap_release_report_h2_sections(html_fragment: str) -> str:
 
 
 def _test_result_h3_is_gpu_card(h3_block: str) -> bool:
-    """True if the block opens with an ``h3`` for H100 / H200 / H800 / A100 / A3 / B200 (not Common stack)."""
+    """True if the block opens with an ``h3`` for H100/L4 / H200 / H800 / A100 / A3/A2 / B200 (not Common stack)."""
     m = re.match(r"\s*<h3>([\s\S]*?)</h3>", h3_block.strip())
     if not m:
         return False
@@ -591,16 +812,13 @@ def _test_result_h3_is_gpu_card(h3_block: str) -> bool:
         return True
     if re.fullmatch(r"A100", inner_text, re.IGNORECASE):
         return True
-    if re.fullmatch(r"A3", inner_text, re.IGNORECASE):
+    # ``### A3``, ``### A3/A2``, ``### A3/A2 (CI ...)``
+    if re.match(r"A3(?:/A2)?(?:\s*[（(/]|\Z)", inner_text, re.IGNORECASE):
         return True
-    # ``### H100``, ``### H100 (CI ...)``, ``### H100（CI ...）`` — reject ``H1000``-style labels.
-    # Allow optional whitespace between ``H100`` and the opening paren so that the
-    # Buildkite-side heading ``H100 (CI — Buildkite scheduled nightly)`` is still
-    # treated as a GPU card and folded.
-    if re.match(r"H100(?:\s*[（(]|\Z)", inner_text, re.IGNORECASE):
+    # ``### H100``, ``### H100/L4``, ``### H100/L4 (CI ...)`` — reject ``H1000``.
+    if re.match(r"H100(?:/L4)?(?:\s*[（(/]|\Z)", inner_text, re.IGNORECASE):
         return True
-    # ``### B200``, ``### B200 (CI — Buildkite scheduled release)`` — same paren-suffix rule
-    # as H100 so the B200 Buildkite-side chapter folds into a collapsible card too.
+    # ``### B200``, ``### B200 (CI — Buildkite scheduled release)``
     return bool(re.match(r"B200(?:\s*[（(]|\Z)", inner_text, re.IGNORECASE))
 
 
@@ -3412,9 +3630,9 @@ def _gpu_details_extra_classes(title: str) -> str:
         return " release-gpu-details--h800"
     if re.fullmatch(r"A100", t, re.IGNORECASE):
         return " release-gpu-details--a100"
-    if re.fullmatch(r"A3", t, re.IGNORECASE):
+    if re.match(r"A3(?:/A2)?\b", t, re.IGNORECASE):
         return " release-gpu-details--a3"
-    if re.match(r"H100", t, re.IGNORECASE):
+    if re.match(r"H100(?:/L4)?\b", t, re.IGNORECASE):
         return " release-gpu-details--h100"
     if re.match(r"B200", t, re.IGNORECASE):
         return " release-gpu-details--b200"
@@ -3423,27 +3641,52 @@ def _gpu_details_extra_classes(title: str) -> str:
 
 def _gpu_summary_icon_markup(title: str) -> str:
     t = (title or "").strip()
-    # Buildkite-side CI chapters (H100 scheduled nightly, B200 scheduled release)
-    # use the cloud icon; local-GPU chapters use the server icon.
-    if re.match(r"H100", t, re.IGNORECASE) or re.match(r"B200", t, re.IGNORECASE):
-        paths = _RELEASE_SVG_CLOUD
+    # Buildkite-side CI chapters (H100/L4, A3/A2 NPU, B200) use the cloud icon;
+    # local-GPU chapters use the server icon.
+    if (
+        re.match(r"H100(?:/L4)?\b", t, re.IGNORECASE)
+        or re.match(r"A3(?:/A2)?\b", t, re.IGNORECASE)
+        or re.match(r"B200", t, re.IGNORECASE)
+    ):
+        # A3/A2 may be local OR CI; CI headings include "(CI" / "Buildkite".
+        if re.match(r"A3(?:/A2)?\b", t, re.IGNORECASE) and "CI" not in t and "Buildkite" not in t:
+            paths = _RELEASE_SVG_SERVER
+        else:
+            paths = _RELEASE_SVG_CLOUD
     else:
         paths = _RELEASE_SVG_SERVER
     return _release_inline_svg(paths, size=20, extra_class="release-gpu-summary-ico")
 
 
 def _gpu_short_title(title: str) -> str:
-    """Reduce GPU h3 title to its short token (H100 / H200 / H800 / A100 / A3 / B200).
+    """Reduce GPU h3 title to its short token (H100/L4 / H200 / H800 / A100 / A3/A2 / B200).
 
-    ``### H100 (CI — Buildkite scheduled nightly)`` and ``### B200 (CI — Buildkite
-    scheduled release)`` should still display as ``H100`` / ``B200`` in the
+    ``### H100/L4 (CI — …)`` and ``### A3/A2 (CI — …)`` keep the slash form in the
     collapsible summary. Falls back to the original title when no token is found.
     """
     t = (title or "").strip()
     if not t:
         return t
-    m = re.match(r"\s*(H100|H200|H800|A100|A3|B200)\b", t, re.IGNORECASE)
-    return m.group(1).upper() if m else t
+    m = re.match(
+        r"\s*(H100/L4|H100|H200|H800|A100|A3/A2|A3|B200)\b",
+        t,
+        re.IGNORECASE,
+    )
+    if not m:
+        return t
+    token = m.group(1)
+    # Preserve canonical casing for slash forms.
+    aliases = {
+        "h100/l4": "H100/L4",
+        "a3/a2": "A3/A2",
+        "h100": "H100",
+        "h200": "H200",
+        "h800": "H800",
+        "a100": "A100",
+        "a3": "A3",
+        "b200": "B200",
+    }
+    return aliases.get(token.lower(), token.upper())
 
 
 def _convert_gpu_section_to_collapsible_details(full_section: str) -> str:
@@ -3668,6 +3911,7 @@ try:
     _FAIL_STATUS_MODAL_HTML = _fsm_fn()
 except Exception:  # pragma: no cover
     _FAIL_STATUS_MODAL_HTML = ""
+
 
 
 def wrap_html_document(
