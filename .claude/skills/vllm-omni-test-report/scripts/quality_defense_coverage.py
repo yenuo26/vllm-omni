@@ -23,18 +23,24 @@ the radar keyword list; the three ids in today's JSON are not hardcoded.
 
 A row with hardware ``GPU`` counts on the GPU half only, ``NPU`` on the
 NPU half only, and ``GPU/NPU`` on both halves. The numerator is a real
-test case under ``tests/dfx/perf/tests/*.json`` (performance) or
-``tests/e2e/accuracy/**/*.py`` (accuracy) that matches the row's model,
-dataset, full-duplex vs non-full-duplex mode, async-chunk feature, and
-hardware side. Traffic strings and deploy card counts are not extra
-splits. ``async chunk + prefix`` matches a case that enables async chunk;
-the bundled "prefix" token is not required on its own. ``default``
-matches only an explicit non-async case (``--no-async-chunk`` or
-``async_chunk: false``). Feature ``None`` matches a case that does not
-enable async chunk. A row whose metrics mention COT is covered only by
-a case that mentions COT. GPU is the default hardware of these tests;
-NPU requires an ``npu`` / ``ascend`` marker or a reference from an NPU
-Buildkite YAML. No pass/fail score and no metric value is invented.
+case that matches the row's model, dataset, full-duplex vs
+non-full-duplex mode, async-chunk feature, and hardware side, and that
+the CUDA nightly pipeline (GPU) or the NPU nightly pipeline actually
+selects. A hardware mark in the JSON is not enough when that pipeline's
+``pytest`` command never names the file, or its ``-k`` expression skips
+the test. ``random`` / ``random-mm`` never cover seed-tts, daily-omni,
+duplexEval, or OmniInteract. Performance cases live in
+``tests/dfx/perf/tests/*.json``. An accuracy row is covered by those
+same JSON benches when the bench carries accuracy metrics (SIM/WER,
+Accuracy, duplex metrics, SSIM/PSNR) or by a standalone test under
+``tests/e2e/accuracy/**/*.py``. Traffic strings and deploy card counts
+are not extra splits. ``async chunk + prefix`` matches a case that
+enables async chunk; the bundled "prefix" token is not required on its
+own. ``default`` matches only an explicit non-async case
+(``--no-async-chunk`` or ``async_chunk: false``). Feature ``None``
+matches a case that does not enable async chunk. A row whose metrics
+mention COT is covered only by a case that mentions COT. No pass/fail
+score and no metric value is invented.
 
 Reliability
 -----------
@@ -101,6 +107,25 @@ _RELIABILITY_SCENARIOS: tuple[tuple[str, str], ...] = (
     ("exit_multi", "Graceful SIGTERM exit, multi replica"),
 )
 _RELIABILITY_DIMENSIONS = ("detect", "respond", "recover")
+# Issue 133 (updated 2026-11-25): Wan and Hunyuan multi-replica rows are
+# planned work, not current 必达 gaps. Qwen and MiniCPM still include them.
+_REPLICA_SCENARIO_IDS = frozenset(
+    {
+        "replica_startup",
+        "replica_idle",
+        "replica_under_load",
+        "replica_during_exit",
+    }
+)
+_RELIABILITY_PLANNED_REPLICA = frozenset({"Wan", "HunyuanImage"})
+_EVAL_DATASETS = frozenset({"seed-tts", "daily-omni", "duplexeval", "omniinteract"})
+_RANDOM_DATASETS = frozenset({"random", "random-mm", "randommm"})
+_ACCURACY_KEY_RE = re.compile(
+    r"(ssim|psnr|pixel_accuracy|seed_tts_wer|seed_tts_sim|min_seed_tts|max_seed_tts|"
+    r"min_daily_omni_accuracy|required_duplex_metrics|duplex_metric|wer_eval|"
+    r"(^|_)accuracy($|_))",
+    re.I,
+)
 
 _SKIP_ASSIGN_RE = re.compile(
     r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*pytest\.mark\.skip\(",
@@ -147,8 +172,34 @@ _ASYNC_FALSE_RE = re.compile(r"async_chunk[\"']?\s*[:=]\s*false\b")
 
 
 def reliability_cell_count() -> int:
-    """Number of in-scope detect/respond/recover cells per radar model."""
+    """Full issue-133 library, before model-specific planned rows are dropped."""
     return len(_RELIABILITY_SCENARIOS) * len(_RELIABILITY_DIMENSIONS)
+
+
+def reliability_scenarios_for(model_id: str | None) -> tuple[str, ...]:
+    """Scenario ids in this model's denominator.
+
+    Wan and Hunyuan drop the four multi-replica scenarios. Those cells are
+    planned, not uncovered gaps.
+    """
+    if model_id in _RELIABILITY_PLANNED_REPLICA:
+        return tuple(sid for sid, _label in _RELIABILITY_SCENARIOS if sid not in _REPLICA_SCENARIO_IDS)
+    return tuple(sid for sid, _label in _RELIABILITY_SCENARIOS)
+
+
+def keyword_matches(text: str, keyword: str) -> bool:
+    """True when ``keyword`` names this text and not a longer sibling model.
+
+    ``minimax_h3`` must not match MiniMax-H3-Image. ``qwen_image_21`` and
+    ``lingbot_world`` are specific enough that the compact form does not
+    sit inside ``qwen_image``, ``qwen_image_edit``, or ``lingbot_video``.
+    """
+    needle = _norm(keyword)
+    if not needle or not text:
+        return False
+    if needle == "minimaxh3":
+        return re.search(r"minimax[\W_]*h[\W_]*3(?![\W_]*image)", text, re.I) is not None
+    return needle in _norm(text)
 
 
 def coverage_percent(covered: int, total: int) -> int:
@@ -228,13 +279,14 @@ def matching_scenarios(
 ) -> list[dict]:
     """Scenarios whose id, title, or alias contains a radar keyword."""
     del model_id  # matching is keyword-based so new JSON ids attach themselves
-    norms = [_norm(kw) for kw in keywords if _norm(kw)]
     matched: list[dict] = []
     for scenario in scenarios:
-        blob = _scenario_blob(scenario)
-        if not blob:
-            continue
-        if any(kw in blob for kw in norms):
+        parts = [str(scenario.get("id") or ""), str(scenario.get("title") or "")]
+        aliases = scenario.get("aliases") or []
+        if isinstance(aliases, list):
+            parts.extend(str(alias) for alias in aliases)
+        blob = " ".join(parts)
+        if blob.strip() and any(keyword_matches(blob, kw) for kw in keywords):
             matched.append(scenario)
     return matched
 
@@ -396,6 +448,17 @@ def _sides_from_marks(item: dict) -> tuple[bool, bool] | None:
     return gpu, npu
 
 
+def _hardware_from_decorator(decorators: str) -> tuple[bool, bool] | None:
+    """Read ``hardware_test(res={...})`` when the test declares its devices."""
+    match = re.search(r"hardware_test\s*\(\s*res\s*=\s*\{([^}]*)\}", decorators, re.S)
+    if not match:
+        return None
+    body = match.group(1).lower()
+    gpu = any(token in body for token in ("cuda", "rocm", "gpu", "xpu"))
+    npu = "npu" in body
+    return gpu, npu
+
+
 def _hardware_flags(text: str, path: Path, npu_yaml: str) -> tuple[bool, bool]:
     low = text.lower()
     npu = bool(re.search(r"\bnpu\b", low) or "ascend" in low)
@@ -415,10 +478,9 @@ def _hardware_flags(text: str, path: Path, npu_yaml: str) -> tuple[bool, bool]:
 
 
 def _models_in_text(text: str, keywords: dict[str, tuple[str, ...]]) -> set[str]:
-    blob = _norm(text)
     found: set[str] = set()
     for model_id, kws in keywords.items():
-        if any(_norm(kw) and _norm(kw) in blob for kw in kws):
+        if any(keyword_matches(text, kw) for kw in kws):
             found.add(model_id)
     return found
 
@@ -651,8 +713,7 @@ def _cells_for_test(
 
 
 def _file_matches_model(filename: str, keywords: tuple[str, ...]) -> bool:
-    blob = _norm(filename)
-    return any(_norm(kw) and _norm(kw) in blob for kw in keywords)
+    return any(keyword_matches(filename, kw) for kw in keywords)
 
 
 def _scenario_dimensions(body: str) -> set[str]:
@@ -938,9 +999,18 @@ def scan_reliability_cells(
     repo_root: Path | None,
     *,
     keywords: dict[str, tuple[str, ...]],
+    skipped_out: dict[str, set[tuple[str, str]]] | None = None,
 ) -> dict[str, set[tuple[str, str]]]:
-    """Active fault-mode cells per radar model id."""
+    """Active fault-mode cells per radar model id.
+
+    When ``skipped_out`` is provided, tests with ``skip_reason`` /
+    ``@pytest.mark.skip`` or a signal spec whose only SIGKILL is skipped
+    are recorded there instead of in the covered set.
+    """
     found = {model_id: set() for model_id in keywords}
+    skipped = skipped_out if skipped_out is not None else {model_id: set() for model_id in keywords}
+    for model_id in keywords:
+        skipped.setdefault(model_id, set())
     if repo_root is None or not repo_root.is_dir():
         return found
     root = repo_root / "tests" / "dfx" / "reliability"
@@ -958,8 +1028,6 @@ def scan_reliability_cells(
         lists = _signal_lists(text)
         model_class = _model_class_name(text)
         for func_name, decorators, body in _iter_test_functions(text):
-            if _function_skipped(decorators):
-                continue
             class_names = [name for name in _scenario_class_names(decorators, body) if name in classes]
             if class_names:
                 signals = _active_scenario_signals(
@@ -971,19 +1039,36 @@ def scan_reliability_cells(
                 )
                 evidence = "\n".join(_scenario_source(name, classes) for name in class_names)
                 evidence = _expand_callees_limited(evidence + "\n" + body, functions)
-                cells = _cells_for_test(
-                    func_name,
-                    _code_for_dims(evidence),
-                    signals,
-                    filename=path.name,
-                    scenario_style=True,
-                )
+                body_for_cells = _code_for_dims(evidence)
+                scenario_style = True
             else:
                 signals = _active_signals(decorators, body, lists)
-                cells = _cells_for_test(func_name, body, signals, filename=path.name)
+                body_for_cells = body
+                scenario_style = False
+            # An empty signal set is a skip only when the scenario declares
+            # signals_attr and every spec is skipped. OOM and graceful cases
+            # have no crash signal and still count.
+            requires_signal = any(
+                _SIGNALS_ATTR_RE.search(_scenario_source(name, classes) or "")
+                for name in class_names
+            )
+            spec_skipped = bool(requires_signal and not signals)
+            forced_skip = _function_skipped(decorators) or spec_skipped
+            if forced_skip and not signals:
+                signals = {"SIGKILL", "SIGTERM"}
+            cells = _cells_for_test(
+                func_name,
+                body_for_cells,
+                signals,
+                filename=path.name,
+                scenario_style=scenario_style,
+            )
             cells = {(sid, dim) for sid, dim in cells if sid in known}
+            target = skipped if forced_skip else found
             for model_id in owners:
-                found[model_id] |= cells
+                target[model_id] |= cells
+    for model_id in found:
+        skipped[model_id] -= found[model_id]
     return found
 
 
@@ -1037,6 +1122,130 @@ def _header_before_first_test(text: str) -> str:
     return _strip_docstrings(header)
 
 
+def _k_matches(name: str, expr: str | None) -> bool:
+    """Pytest ``-k`` subset: keywords are substrings, with and/or/not."""
+    if expr is None:
+        return True
+    text = expr.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    if not text:
+        return True
+    node = name.lower()
+    tokens = re.findall(r"\(|\)|\band\b|\bor\b|\bnot\b|[A-Za-z0-9_.-]+", text, re.I)
+    if not tokens:
+        return True
+    parts: list[str] = []
+    for token in tokens:
+        low = token.lower()
+        if low in {"and", "or", "not"} or token in {"(", ")"}:
+            parts.append(low if low in {"and", "or", "not"} else token)
+        else:
+            parts.append("True" if low in node else "False")
+    compiled = " ".join(parts)
+    if not re.fullmatch(r"[TrueFalseandort\s()]+", compiled):
+        return False
+    try:
+        return bool(eval(compiled, {"__builtins__": {}}, {}))  # noqa: S307 - tokens are only booleans and and/or/not
+    except Exception:
+        return False
+
+
+def _pytest_chunks(text: str) -> list[str]:
+    """Each ``pytest`` invocation in a pipeline file, backslash joins included."""
+    flat = re.sub(r"\\\s*\n", " ", text)
+    chunks: list[str] = []
+    for match in re.finditer(r"\bpytest\b", flat):
+        rest = flat[match.start() :]
+        nxt = re.search(r"\n[^\n]*\bpytest\b", rest[6:])
+        chunk = rest[: 6 + nxt.start()] if nxt else rest[:2500]
+        chunks.append(chunk)
+    return chunks
+
+
+def _parse_pytest_chunk(chunk: str) -> dict:
+    config = ""
+    config_match = re.search(r"--test-config-file\s+(\S+)", chunk)
+    if config_match:
+        config = config_match.group(1).strip("\"'")
+    k_expr = None
+    k_match = re.search(r"(?:^|\s)-k\s+(\"[^\"]*\"|'[^']*'|\S+)", chunk)
+    if k_match:
+        k_expr = k_match.group(1).strip("\"'")
+    bare: set[str] = set()
+    nodes: dict[str, set[str]] = {}
+    dirs: set[str] = set()
+    for path_match in re.finditer(r"(tests/[\w./-]+\.py)(?:::(\w+))?", chunk):
+        path, node = path_match.group(1), path_match.group(2)
+        if node:
+            nodes.setdefault(path, set()).add(node)
+        else:
+            bare.add(path)
+    for dir_match in re.finditer(r"(tests/[\w./-]+/)(?:\s|$)", chunk):
+        dirs.add(dir_match.group(1))
+    return {"config": config, "k": k_expr, "bare": bare, "nodes": nodes, "dirs": dirs}
+
+
+def _nightly_invocations(repo_root: Path) -> dict[str, list[dict]]:
+    """GPU (cuda + amd nightly) and NPU nightly pytest selections."""
+    found: dict[str, list[dict]] = {"gpu": [], "npu": []}
+    for folder, side in (("cuda", "gpu"), ("npu", "npu"), ("amd", "gpu")):
+        directory = repo_root / ".buildkite" / folder
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*nightly*.y*ml")):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for chunk in _pytest_chunks(text):
+                found[side].append(_parse_pytest_chunk(chunk))
+    return found
+
+
+def _invocation_selects(invocation: dict, *, config: str, test_name: str, py_path: str) -> bool:
+    if invocation["config"] and invocation["config"] == config:
+        return _k_matches(test_name, invocation["k"])
+    if not py_path:
+        return False
+    if py_path in invocation["bare"] or any(py_path.startswith(folder) for folder in invocation["dirs"]):
+        return _k_matches(test_name, invocation["k"])
+    nodes = invocation["nodes"].get(py_path)
+    if nodes and test_name in nodes:
+        return _k_matches(test_name, invocation["k"])
+    return False
+
+
+def _selected_sides(
+    invocations: dict[str, list[dict]],
+    *,
+    config: str = "",
+    test_name: str = "",
+    py_path: str = "",
+) -> set[str]:
+    selected: set[str] = set()
+    for side, items in invocations.items():
+        if any(
+            _invocation_selects(item, config=config, test_name=test_name, py_path=py_path)
+            for item in items
+        ):
+            selected.add(side)
+    return selected
+
+
+def _has_accuracy_metrics(obj: object) -> bool:
+    """True when a bench object carries accuracy metric keys, not path strings."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if _ACCURACY_KEY_RE.search(str(key)):
+                return True
+            if _has_accuracy_metrics(value):
+                return True
+    elif isinstance(obj, list):
+        return any(_has_accuracy_metrics(item) for item in obj)
+    return False
+
+
 def scan_model_care_cases(
     repo_root: Path | None,
     *,
@@ -1046,6 +1255,7 @@ def scan_model_care_cases(
     if repo_root is None or not repo_root.is_dir():
         return []
     npu_yaml = _read_npu_yaml(repo_root)
+    invocations = _nightly_invocations(repo_root)
     cases: list[dict] = []
     perf_dir = repo_root / "tests" / "dfx" / "perf" / "tests"
     if perf_dir.is_dir():
@@ -1106,19 +1316,30 @@ def scan_model_care_cases(
                         ]
                     )
                     label = str(bench.get("name") or test_name or path.stem)
-                    cases.append(
-                        _case_record(
-                            kind="perf",
-                            models=models,
-                            datasets=datasets,
-                            tags=_tags_in_text(json.dumps(bench)),
-                            async_chunk=async_chunk,
-                            duplex=_is_duplex_text(duplex_blob, datasets),
-                            gpu=gpu,
-                            npu=npu,
-                            source=f"{path.relative_to(repo_root).as_posix()}:{label}",
-                        )
+                    rel_config = path.relative_to(repo_root).as_posix()
+                    selected = _selected_sides(
+                        invocations,
+                        config=rel_config,
+                        test_name=test_name or label,
                     )
+                    side_gpu = bool(gpu and "gpu" in selected)
+                    side_npu = bool(npu and "npu" in selected)
+                    record = _case_record(
+                        kind="perf",
+                        models=models,
+                        datasets=datasets,
+                        tags=_tags_in_text(json.dumps(bench)),
+                        async_chunk=async_chunk,
+                        duplex=_is_duplex_text(duplex_blob, datasets),
+                        gpu=side_gpu,
+                        npu=side_npu,
+                        source=f"{rel_config}:{label}",
+                    )
+                    cases.append(record)
+                    # Combined perf+accuracy benches cover a Precision row
+                    # with the same model, dataset, mode, feature, and side.
+                    if _has_accuracy_metrics(bench):
+                        cases.append(dict(record, kind="prec"))
     acc_root = repo_root / "tests" / "e2e" / "accuracy"
     if acc_root.is_dir():
         for path in sorted(acc_root.rglob("*.py")):
@@ -1148,7 +1369,14 @@ def scan_model_care_cases(
                 func_async = _async_flag(expanded)
                 async_chunk = func_async if func_async is not None else header_async
                 datasets = _datasets_in_text(func_name + "\n" + expanded)
-                gpu, npu = _hardware_flags(decorators + "\n" + expanded, path, npu_yaml)
+                marked = _hardware_from_decorator(decorators)
+                if marked is None and re.search(r"pytest\.mark\.cpu\b", decorators):
+                    gpu, npu = False, False
+                elif marked is None:
+                    gpu, npu = _hardware_flags(decorators + "\n" + body, path, npu_yaml)
+                else:
+                    gpu, npu = marked
+                selected = _selected_sides(invocations, test_name=func_name, py_path=rel)
                 cases.append(
                     _case_record(
                         kind="prec",
@@ -1157,8 +1385,8 @@ def scan_model_care_cases(
                         tags=_tags_in_text(expanded),
                         async_chunk=async_chunk,
                         duplex=_is_duplex_text(expanded, datasets),
-                        gpu=gpu,
-                        npu=npu,
+                        gpu=bool(gpu and "gpu" in selected),
+                        npu=bool(npu and "npu" in selected),
                         source=f"{rel}:{func_name}",
                     )
                 )
@@ -1174,6 +1402,10 @@ def _case_covers(case: dict, row: dict, side: str, *, dataset_token: str | None 
     if side == "npu" and not case["npu"]:
         return False
     needed = frozenset({dataset_token}) if dataset_token else _row_datasets(str(row.get("dataset") or ""))
+    # random / random-mm is a smoke dataset. It does not stand in for
+    # seed-tts, daily-omni, duplexEval, or OmniInteract.
+    if needed & _EVAL_DATASETS and case["datasets"] <= _RANDOM_DATASETS:
+        return False
     if not needed or not needed <= case["datasets"]:
         return False
     if _row_requires_cot(row) and "cot" not in case["tags"]:
@@ -1330,19 +1562,45 @@ def score_model_care(
     return result
 
 
-def score_reliability(cells: set[tuple[str, str]]) -> dict:
-    """Reliability fraction against the issue 133 library."""
-    total = reliability_cell_count()
-    known = {scenario_id for scenario_id, _label in _RELIABILITY_SCENARIOS}
-    hit = sorted(f"{sid}:{dim}" for sid, dim in cells if sid in known and dim in _RELIABILITY_DIMENSIONS)
-    covered = len(hit)
+def score_reliability(
+    cells: set[tuple[str, str]],
+    *,
+    model_id: str | None = None,
+    skipped: set[tuple[str, str]] | None = None,
+) -> dict:
+    """Reliability fraction against the planned issue-133 library for one model."""
+    scenarios = reliability_scenarios_for(model_id)
+    known = set(scenarios)
+    planned = [
+        f"{sid}:{dim}"
+        for sid, _label in _RELIABILITY_SCENARIOS
+        if sid not in known
+        for dim in _RELIABILITY_DIMENSIONS
+    ]
+    hit_cells = {(sid, dim) for sid, dim in cells if sid in known and dim in _RELIABILITY_DIMENSIONS}
+    skipped_cells = {
+        (sid, dim)
+        for sid, dim in (skipped or set())
+        if sid in known and dim in _RELIABILITY_DIMENSIONS and (sid, dim) not in hit_cells
+    }
+    missing = [
+        f"{sid}:{dim}"
+        for sid in scenarios
+        for dim in _RELIABILITY_DIMENSIONS
+        if (sid, dim) not in hit_cells and (sid, dim) not in skipped_cells
+    ]
+    covered = len(hit_cells)
+    total = len(scenarios) * len(_RELIABILITY_DIMENSIONS)
     return {
         "basis": "issue-133",
         "issue": RELIABILITY_ISSUE_URL,
         "covered": covered,
         "total": total,
         "pct": coverage_percent(covered, total),
-        "hits": hit,
+        "hits": sorted(f"{sid}:{dim}" for sid, dim in hit_cells),
+        "skipped": sorted(f"{sid}:{dim}" for sid, dim in skipped_cells),
+        "missing": missing,
+        "planned": planned,
     }
 
 
@@ -1362,13 +1620,18 @@ def attach_quality_percentages(
     care_path = resolve_model_care_json(model_care_path)
     scenarios = load_model_care_scenarios(care_path)
     cases = scan_model_care_cases(repo_root, keywords=keywords)
-    rel_cells = scan_reliability_cells(repo_root, keywords=keywords)
+    rel_skipped: dict[str, set[tuple[str, str]]] = {}
+    rel_cells = scan_reliability_cells(repo_root, keywords=keywords, skipped_out=rel_skipped)
     for model_id, cov in coverage.items():
         care = score_model_care(scenarios, cases, model_id=model_id, keywords=keywords.get(model_id, ()))
         for axis in ("perf", "prec"):
             care[axis]["display"] = "split"
         block = {"perf": care["perf"], "prec": care["prec"], "model_care": str(care_path or "")}
         if model_id in has_rel:
-            block["rel"] = score_reliability(rel_cells.get(model_id, set()))
+            block["rel"] = score_reliability(
+                rel_cells.get(model_id, set()),
+                model_id=model_id,
+                skipped=rel_skipped.get(model_id, set()),
+            )
         cov["pct"] = block
     return coverage

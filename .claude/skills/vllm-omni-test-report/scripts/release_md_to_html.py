@@ -14,7 +14,7 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from quality_defense_coverage import attach_quality_percentages  # noqa: E402
+from quality_defense_coverage import attach_quality_percentages, keyword_matches  # noqa: E402
 from report_html_theme import EDITORIAL_THEME_CSS, RELEASE_MARKDOWN_DOC_CSS  # noqa: E402
 
 # Inserted after ``## Test conclusion``; replaced with interactive HTML (release) or static MD
@@ -2663,13 +2663,14 @@ def _upgrade_resource_usage_block(html_fragment: str) -> str:
 _QUALITY_DEFENSE_MODELS = (
     ("qwen-omni",     "Qwen3-Omni"),
     ("minicpm",       "MiniCPM"),
-    ("qwen-tts",      "Qwen-TTS"),
-    ("qwen-image",    "Qwen-Image"),
-    ("HunyuanImage",  "HunyuanImage"),
-    ("HunyuanVideo",  "HunyuanVideo"),
-    ("Wan",           "Wan"),
-    ("MinimaxH3",     "MinimaxH3"),
-    ("lingbot",       "LingBot"),
+    ("qwen-tts",           "Qwen-TTS"),
+    ("qwen-image",         "Qwen-Image 2.1"),
+    ("HunyuanImage",       "HunyuanImage"),
+    ("HunyuanVideo",       "HunyuanVideo"),
+    ("Wan",                "Wan"),
+    ("MinimaxH3",          "MinimaxH3"),
+    ("minimax-h3-image",   "MiniMax-H3-Image"),
+    ("lingbot",            "LingBot World"),
 )
 
 # Cyclic axis order. ``rel`` is conditionally present (see
@@ -2712,13 +2713,17 @@ def _qd_axis_angles(axes: list[str]) -> dict[str, float]:
 _QUALITY_DEFENSE_MODEL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "qwen-omni":    ("qwen3_omni",),
     "minicpm":      ("minicpmo_4_5", "minicpmo", "minicpm"),
-    "qwen-tts":     ("qwen3_tts",),
-    "qwen-image":   ("qwen_image",),
-    "HunyuanImage": ("hunyuan_image3", "hunyuan_image", "hunyuanimage"),
-    "HunyuanVideo": ("hunyuanvideo15", "hunyuanvideo", "hunyuan_video"),
-    "Wan":          ("wan22", "wan2_2", "wan2"),
-    "MinimaxH3":    ("minimax_h3", "minimax"),
-    "lingbot":      ("lingbot",),
+    "qwen-tts":          ("qwen3_tts",),
+    # Qwen-Image 2.1 only. qwen_image / qwen_image_edit / qwen_image_layered do not count.
+    "qwen-image":        ("qwen_image_21", "Qwen-Image 2.1"),
+    "HunyuanImage":      ("hunyuan_image3", "hunyuan_image", "hunyuanimage"),
+    "HunyuanVideo":      ("hunyuanvideo15", "hunyuanvideo", "hunyuan_video"),
+    "Wan":               ("wan22", "wan2_2", "wan2"),
+    # Video MiniMax-H3. Do not use a bare "minimax" token; it also names the image model.
+    "MinimaxH3":         ("minimax_h3",),
+    "minimax-h3-image":  ("minimax_h3_image", "MiniMax-H3-Image"),
+    # LingBot World only. test_lingbot_video_* does not count.
+    "lingbot":           ("lingbot_world", "LingBot World"),
 }
 
 
@@ -2846,10 +2851,10 @@ def _compute_quality_defense_coverage(
             if not path.is_file() or path.suffix not in (".md", ".py"):
                 continue
             try:
-                hay = (path.name + "\n" + path.read_text(errors="ignore")).lower()
+                hay = path.name + "\n" + path.read_text(errors="ignore")
             except OSError:
                 continue
-            if any(kw in hay for kw in suffixes):
+            if any(keyword_matches(hay, kw) for kw in suffixes):
                 return True
         return False
 
@@ -2861,8 +2866,7 @@ def _compute_quality_defense_coverage(
         def _lane_has(text: str) -> bool:
             if not text:
                 return False
-            low = text.lower()
-            return any(kw in low for kw in kws_lower)
+            return any(keyword_matches(text, kw) for kw in kws)
 
         gpu: set[str] = set()
         npu: set[str] = set()
@@ -3017,12 +3021,17 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
 
         if a in ("perf", "prec", "rel"):
             block = _qd_axis_numbers(lit, a)
+            # Model care rows keep an integer percent. Models with no care
+            # list fill the fan when a real test exists and leave it empty
+            # otherwise, with no 100% or 0% caption. Reliability always
+            # shows its issue-133 percent.
+            show_percent = a == "rel" or block.get("basis") == "model-care"
             if a == "rel":
                 percent = int(block.get("pct") or 0)
                 covered = int(block.get("covered") or 0)
                 total = int(block.get("total") or 0)
                 segment_parts.append(_pct_circle(a, percent, covered, total, ax_label))
-            else:
+            elif show_percent:
                 gpu_pct, gpu_cov, gpu_tot = _qd_side_percent(block, "gpu")
                 npu_pct, npu_cov, npu_tot = _qd_side_percent(block, "npu")
                 segment_parts.append(_pct_half(a, "gpu", 0, gpu_pct, gpu_cov, gpu_tot))
@@ -3032,6 +3041,22 @@ def _qd_model_radar_svg(model_id: str, lit: dict | None = None) -> str:
                     f'<text class="qd-pct qd-pct-caption" x="{cap_x:.1f}" y="{cap_y:.1f}" '
                     f'text-anchor="middle">{gpu_pct}%/{npu_pct}%</text>'
                 )
+            else:
+                for side, sweep in (("gpu", 0), ("npu", 1)):
+                    side_pct, _cov, _tot = _qd_side_percent(block, side)
+                    filled = side_pct >= 100
+                    on_attr = ' data-quality-on="1"' if filled else ""
+                    state = "covered" if filled else "empty"
+                    segment_parts.append(
+                        f'<g class="qd-segment" data-quality-key="{model_id}:{a}-{side}" '
+                        f'data-qd-side="{side}" data-quality-fill="{"1" if filled else "0"}"'
+                        f'{on_attr} tabindex="0" role="button" '
+                        f'aria-label="{model_id} {ax_label} {side.upper()} {state}" '
+                        f'aria-pressed="{"true" if filled else "false"}">'
+                        f'<g transform="translate({mx:.1f} {my:.1f}) rotate({angle:.4f})">'
+                        f'<path class="qd-half qd-half--{side}" d="M 0 18 A 18 18 0 0 {sweep} 0 -18 Z"/>'
+                        f"</g></g>"
+                    )
             continue
 
         # Split axis: GPU half (sweep=0) then NPU half (sweep=1).
@@ -3092,6 +3117,36 @@ def _qd_lit_count(model_id: str, cov: dict) -> int:
     return len(cov.get("gpu", set())) + len(cov.get("npu", set())) + rel_lit
 
 
+def _qd_reliability_gap_html(coverage: dict) -> str:
+    """Covered / skipped / missing / planned cells for the four reliability models."""
+    rows: list[str] = []
+    for model_id, display_name in _QUALITY_DEFENSE_MODELS:
+        if model_id not in _QUALITY_DEFENSE_HAS_REL:
+            continue
+        rel = ((coverage.get(model_id) or {}).get("pct") or {}).get("rel") or {}
+        if not isinstance(rel, dict) or "covered" not in rel:
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(display_name)}</td>"
+            f"<td>{int(rel.get('covered') or 0)}/{int(rel.get('total') or 0)}</td>"
+            f"<td>{len(rel.get('skipped') or [])}</td>"
+            f"<td>{len(rel.get('missing') or [])}</td>"
+            f"<td>{len(rel.get('planned') or [])}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        '<table class="qd-rel-gap"><caption>Reliability against the planned '
+        "issue 133 library. Missing cells are uncovered planned work. "
+        "Skipped tests are separate from those gaps. Planned is the Wan and "
+        "Hunyuan multi-replica set, which is not in their denominator."
+        "</caption><thead><tr><th>Model</th><th>Covered</th><th>Skipped</th>"
+        f"<th>Missing</th><th>Planned</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def _quality_defense_block_html() -> str:
     """Assemble the full Quality Defense Radar block — intro + grid + legend.
 
@@ -3127,27 +3182,30 @@ def _quality_defense_block_html() -> str:
     return (
         '<div class="qd-radar-wrap">'
         '<p class="qd-intro">Per-model 7-axis coverage radar across '
-        '<strong>9 flagship models</strong> (Functionality / Performance / '
+        '<strong>10 flagship models</strong> (Functionality / Performance / '
         'Documentation / Precision / Stability / Reliability / Gate). '
-        '<strong>Performance</strong> and <strong>Precision</strong> show the '
-        'share of '
+        '<strong>Performance</strong> and <strong>Precision</strong> for '
+        'Qwen3-Omni, MiniCPM, and HunyuanImage are the share of '
         '<a href="https://github.com/JiusiServe/omni-reviewbot">omni-reviewbot</a> '
-        'Model care rows (<code>kind</code> performance or accuracy, split by '
-        'GPU / NPU) that have a matching test case in this repo. A model with '
-        'no Model care rows for an axis is <strong>100%</strong> on a hardware '
-        'side only when this repo has a test of that type there, and '
-        '<strong>0%</strong> when it does not. <strong>Reliability</strong> shows the share of '
-        'in-scope detect / respond / recover cells from '
+        'Model care rows covered by a case with the same dataset, full vs '
+        'non-full duplex, feature, and hardware side, and that the CUDA or NPU '
+        'nightly pipeline actually runs. A <code>random</code> bench does not '
+        'cover seed-tts, daily-omni, duplexEval, or OmniInteract, and an '
+        '<code>npu</code> mark does not count when NPU nightly never selects '
+        'that test. Other models fill a side when a test of that type is '
+        'really run there, and leave it empty otherwise, with no percent '
+        'caption. <strong>Reliability</strong> is the planned issue '
         '<a href="https://github.com/JiusiServe/vllm-omni-project-manage/issues/133">'
-        'issue 133</a> covered by a non-skipped test under '
-        '<code>tests/dfx/reliability/</code>. The fill radius and the percent '
-        'label are that coverage. GPU halves are green, NPU halves are blue. '
+        '133</a> library. Wan and Hunyuan multi-replica cells are planned, '
+        'not gaps. GPU halves are green, NPU halves are blue. '
         'Models without a Reliability axis render a 6-axis hexagon. ' + lit_note +
         'Clicking still stores a confirmation outline in <code>localStorage</code> '
         'and does not replace the computed percent.</p>'
         f'<div class="qd-grid">\n      {cells_xml}\n    </div>'
-        '<p class="qd-legend">Performance / Precision captions are '
-        '<strong>GPU% / NPU%</strong>. Reliability is one percent. '
+        f"{_qd_reliability_gap_html(coverage)}"
+        '<p class="qd-legend">Model care Performance / Precision captions are '
+        '<strong>GPU% / NPU%</strong>. Models without a care list have no percent. '
+        'Reliability is one percent of the planned library. '
         'Other axes: click gray → '
         '<strong style="color:#16a34a">green</strong> (GPU / single) or '
         '<strong style="color:#0284c7">blue</strong> (NPU). '

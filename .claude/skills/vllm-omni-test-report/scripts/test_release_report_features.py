@@ -831,6 +831,25 @@ class QualityDefenseCoverageTests(unittest.TestCase):
             root = Path(tmp)
             perf = root / "tests" / "dfx" / "perf" / "tests"
             perf.mkdir(parents=True)
+            (perf / "test_qwen_image_21_vllm_omni.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "test_name": "test_qwen_image_21_single_device",
+                            "mark": [{"hardware_marks": {"res": {"cuda": "H100"}, "num_cards": 1}}],
+                            "server_params": {"model": "Qwen/Qwen-Image-2.1"},
+                            "benchmark_params": [{"dataset_name": "random", "name": "t2i"}],
+                        },
+                        {
+                            "test_name": "test_qwen_image_21_npu_unrun",
+                            "mark": [{"hardware_marks": {"res": {"npu": "A3"}, "num_cards": 1}}],
+                            "server_params": {"model": "Qwen/Qwen-Image-2.1"},
+                            "benchmark_params": [{"dataset_name": "random", "name": "t2i-npu"}],
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
             (perf / "test_qwen_image_vllm_omni.json").write_text(
                 json.dumps(
                     [
@@ -838,8 +857,33 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                             "test_name": "test_qwen_image_gpu",
                             "mark": [{"hardware_marks": {"res": {"cuda": "H100"}, "num_cards": 1}}],
                             "server_params": {"model": "Qwen/Qwen-Image"},
-                            "benchmark_params": [{"dataset_name": "random", "name": "t2i"}],
+                            "benchmark_params": [{"dataset_name": "random", "name": "old"}],
                         }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (perf / "test_lingbot_video_vllm_omni.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "test_name": "test_lingbot_video",
+                            "mark": [{"hardware_marks": {"res": {"cuda": "H100"}, "num_cards": 1}}],
+                            "server_params": {"model": "lingbot-video"},
+                            "benchmark_params": [{"dataset_name": "random", "name": "video"}],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            bk = root / ".buildkite" / "cuda"
+            bk.mkdir(parents=True)
+            (bk / "test-nightly.yml").write_text(
+                "\n".join(
+                    [
+                        "pytest --test-config-file tests/dfx/perf/tests/test_qwen_image_21_vllm_omni.json -k test_qwen_image_21_single_device",
+                        "pytest --test-config-file tests/dfx/perf/tests/test_qwen_image_vllm_omni.json",
+                        "pytest --test-config-file tests/dfx/perf/tests/test_lingbot_video_vllm_omni.json",
                     ]
                 ),
                 encoding="utf-8",
@@ -917,6 +961,12 @@ class QualityDefenseCoverageTests(unittest.TestCase):
             root = Path(tmp)
             acc = root / "tests" / "e2e" / "accuracy" / "qwen3_omni"
             acc.mkdir(parents=True)
+            nightly = root / ".buildkite" / "cuda"
+            nightly.mkdir(parents=True)
+            (nightly / "test-nightly.yml").write_text(
+                "pytest -s -v tests/e2e/accuracy/qwen3_omni/test_qwen3_omni.py\n",
+                encoding="utf-8",
+            )
             (acc / "test_qwen3_omni.py").write_text(
                 "\n".join(
                     [
@@ -1201,15 +1251,11 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual(qwen["perf"]["gpu"]["covered"], 0)
         self.assertEqual(qwen["perf"]["gpu"]["total"], 4)
         self.assertEqual(qwen["perf"]["npu"]["total"], 3)
-        self.assertEqual(qwen["prec"]["gpu"]["pct"], 40)
-        self.assertEqual((qwen["prec"]["gpu"]["covered"], qwen["prec"]["gpu"]["total"]), (2, 5))
+        # This checkout's nightly YAML does not select the dataset benches, so
+        # care rows stay uncovered. The 7441 selection rules are locked above.
+        self.assertEqual(qwen["prec"]["gpu"]["pct"], 0)
+        self.assertEqual((qwen["prec"]["gpu"]["covered"], qwen["prec"]["gpu"]["total"]), (0, 5))
         self.assertEqual(qwen["prec"]["npu"]["pct"], 0)
-        gpu_rows = qwen["prec"]["gpu"]["rows"]
-        by_dataset = {row["dataset"]: row for row in gpu_rows}
-        self.assertTrue(by_dataset["daily-omni"]["covered"])
-        self.assertIn("daily_omni", by_dataset["daily-omni"]["by"])
-        self.assertTrue(by_dataset["seed-tts"]["covered"])
-        self.assertFalse(any(row["covered"] for row in gpu_rows if row["dataset"] == "duplexEval"))
         self.assertEqual(qwen["rel"]["covered"], 8)
         self.assertEqual(qwen["rel"]["pct"], 15)
         self.assertIn("tree_idle:detect", qwen["rel"]["hits"])
@@ -1224,42 +1270,46 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertEqual(mini["rel"]["pct"], 0)
 
         hy = cov["HunyuanImage"]["pct"]
-        self.assertEqual((hy["perf"]["gpu"]["covered"], hy["perf"]["gpu"]["total"]), (2, 2))
-        self.assertEqual(hy["perf"]["gpu"]["pct"], 100)
+        self.assertEqual((hy["perf"]["gpu"]["covered"], hy["perf"]["gpu"]["total"]), (0, 2))
+        self.assertEqual(hy["perf"]["gpu"]["pct"], 0)
         self.assertEqual((hy["perf"]["npu"]["covered"], hy["perf"]["npu"]["total"]), (0, 2))
-        self.assertEqual((hy["prec"]["gpu"]["covered"], hy["prec"]["gpu"]["total"]), (2, 2))
+        self.assertEqual((hy["prec"]["gpu"]["covered"], hy["prec"]["gpu"]["total"]), (0, 2))
         self.assertEqual(hy["prec"]["npu"]["pct"], 0)
         self.assertEqual(hy["rel"]["covered"], 11)
-        self.assertEqual(hy["rel"]["pct"], 20)
+        self.assertEqual(hy["rel"]["total"], 42)
+        self.assertEqual(hy["rel"]["pct"], 26)
+        self.assertEqual(len(hy["rel"]["planned"]), 12)
         self.assertIn("root_idle:detect", hy["rel"]["hits"])
         self.assertNotIn("oom_under_load:detect", hy["rel"]["hits"])
 
         wan = cov["Wan"]["pct"]
         self.assertEqual(wan["perf"]["basis"], "repo-tests")
-        self.assertEqual(wan["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(wan["perf"]["gpu"]["pct"], 0)
         self.assertEqual(wan["perf"]["npu"]["pct"], 0)
-        self.assertEqual(wan["prec"]["gpu"]["pct"], 100)
+        self.assertEqual(wan["prec"]["gpu"]["pct"], 0)
         self.assertEqual(wan["prec"]["npu"]["pct"], 0)
         self.assertEqual(wan["rel"]["covered"], 12)
-        self.assertEqual(wan["rel"]["pct"], 22)
+        self.assertEqual(wan["rel"]["total"], 42)
+        self.assertEqual(wan["rel"]["pct"], 29)
         self.assertIn("oom_under_load:detect", wan["rel"]["hits"])
         self.assertIn("stage_under_load:respond", wan["rel"]["hits"])
         self.assertNotIn("root_under_load:detect", wan["rel"]["hits"])
         self.assertNotIn("oom_under_load:recover", wan["rel"]["hits"])
 
         self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["basis"], "repo-tests")
-        self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["gpu"]["pct"], 0)
         self.assertEqual(cov["qwen-tts"]["pct"]["perf"]["npu"]["pct"], 0)
         self.assertEqual(cov["qwen-tts"]["pct"]["prec"]["gpu"]["pct"], 0)
-        self.assertEqual(cov["qwen-image"]["pct"]["perf"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["qwen-image"]["pct"]["perf"]["gpu"]["pct"], 0)
         self.assertEqual(cov["qwen-image"]["pct"]["perf"]["npu"]["pct"], 0)
-        self.assertEqual(cov["qwen-image"]["pct"]["prec"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["qwen-image"]["pct"]["prec"]["gpu"]["pct"], 0)
         self.assertEqual(cov["qwen-image"]["pct"]["prec"]["npu"]["pct"], 0)
         self.assertEqual(cov["HunyuanVideo"]["pct"]["perf"]["gpu"]["pct"], 0)
-        self.assertEqual(cov["HunyuanVideo"]["pct"]["prec"]["gpu"]["pct"], 100)
+        self.assertEqual(cov["HunyuanVideo"]["pct"]["prec"]["gpu"]["pct"], 0)
         self.assertEqual(cov["HunyuanVideo"]["pct"]["prec"]["npu"]["pct"], 0)
         self.assertEqual(cov["MinimaxH3"]["pct"]["perf"]["single"], 0)
         self.assertEqual(cov["MinimaxH3"]["pct"]["prec"]["single"], 0)
+        self.assertEqual(cov["minimax-h3-image"]["pct"]["perf"]["gpu"]["pct"], 0)
         self.assertEqual(cov["lingbot"]["pct"]["perf"]["single"], 0)
         self.assertEqual(cov["lingbot"]["pct"]["prec"]["single"], 0)
         self.assertNotIn("Cosmos", cov)
@@ -1267,6 +1317,38 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         self.assertNotIn("perf", cov["qwen-omni"]["gpu"])
         self.assertNotIn("prec", cov["qwen-omni"]["gpu"])
         self.assertFalse(cov["qwen-omni"]["rel"])
+
+    def test_sibling_model_keywords_do_not_steal_cases(self) -> None:
+        from quality_defense_coverage import _models_in_text
+
+        kws = _QUALITY_DEFENSE_MODEL_KEYWORDS
+        self.assertEqual(
+            _models_in_text("test_qwen_image.py qwen_image_edit qwen_image_layered", kws),
+            set(),
+        )
+        self.assertIn("qwen-image", _models_in_text("tests/dfx/perf/tests/test_qwen_image_21_vllm_omni.json Qwen/Qwen-Image-2.1", kws))
+        self.assertNotIn("lingbot", _models_in_text("test_lingbot_video_vllm_omni.json", kws))
+        self.assertIn("lingbot", _models_in_text("test_lingbot_world_realtime.json LingBot World", kws))
+        self.assertEqual(
+            _models_in_text("test_minimax_h3_vllm_omni.json MiniMaxAI/MiniMax-H3", kws),
+            {"MinimaxH3"},
+        )
+        self.assertEqual(
+            _models_in_text("tests/e2e/online_serving/test_minimax_h3_image.py MiniMax-H3-Image", kws),
+            {"minimax-h3-image"},
+        )
+
+    def test_wan_and_hunyuan_replica_cells_are_planned(self) -> None:
+        from quality_defense_coverage import reliability_scenarios_for, score_reliability
+
+        self.assertEqual(len(reliability_scenarios_for("qwen-omni")) * 3, 54)
+        self.assertEqual(len(reliability_scenarios_for("Wan")) * 3, 42)
+        self.assertEqual(len(reliability_scenarios_for("HunyuanImage")) * 3, 42)
+        planned = score_reliability(set(), model_id="Wan")
+        self.assertEqual(planned["total"], 42)
+        self.assertEqual(len(planned["planned"]), 12)
+        self.assertTrue(all(item.startswith("replica_") for item in planned["planned"]))
+        self.assertEqual(score_reliability(set(), model_id="qwen-omni")["planned"], [])
 
     def test_qwen_and_minicpm_perf_rows_match_dataset_benches(self) -> None:
         """GPU and NPU Model care perf rows match the dataset benches on main.
@@ -1278,7 +1360,10 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         import json
         import tempfile
 
-        def bench(name, dataset, marks, async_chunk, backend="openai-chat-omni"):
+        def bench(name, dataset, marks, async_chunk, backend="openai-chat-omni", accuracy=None):
+            params = {"name": name, "dataset_name": dataset, "backend": backend}
+            if accuracy:
+                params.update(accuracy)
             return {
                 "test_name": name,
                 "mark": [{"hardware_marks": {"res": marks, "num_cards": 2}}],
@@ -1286,20 +1371,21 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                     "model": "placeholder",
                     "update": {"async_chunk": async_chunk},
                 },
-                "benchmark_params": [
-                    {"name": name, "dataset_name": dataset, "backend": backend}
-                ],
+                "benchmark_params": [params],
             }
 
         qwen_model = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
         mini_model = "openbmb/MiniCPM-o-4_5"
         files = {
             "test_qwen3_omni_non_full_duplex.json": [
-                bench("default-seed-tts-c64", "seed-tts", {"cuda": ["H100"]}, False),
-                bench("async-prefix-daily-omni-c8", "daily-omni", {"cuda": ["H100"]}, True),
-                bench("async-prefix-seed-tts-c64", "seed-tts", {"cuda": ["H100"]}, True),
-                bench("default-seed-tts-c32", "seed-tts", {"npu": "A3"}, False),
-                bench("async-prefix-seed-tts-c32", "seed-tts", {"npu": "A3"}, True),
+                bench("test_qwen3_omni_datasets_cuda_default", "seed-tts", {"cuda": ["H100"]}, False, accuracy={"seed_tts_wer_eval": True}),
+                bench("test_qwen3_omni_datasets_cuda_async_daily", "daily-omni", {"cuda": ["H100"]}, True, accuracy={"min_daily_omni_accuracy": 0.5}),
+                bench("test_qwen3_omni_datasets_cuda_async_seed", "seed-tts", {"cuda": ["H100"]}, True, accuracy={"seed_tts_wer_eval": True}),
+                bench("test_qwen3_omni_datasets_npu_default", "seed-tts", {"npu": "A3"}, False, accuracy={"seed_tts_wer_eval": True}),
+                bench("test_qwen3_omni_datasets_npu_async_prefix", "seed-tts", {"npu": "A3"}, True, accuracy={"seed_tts_wer_eval": True}),
+            ],
+            "test_qwen3_omni_no_async_chunk.json": [
+                bench("test_qwen3_omni_no_async_random", "random-mm", {"npu": "A3"}, False),
             ],
             "test_qwen3_omni_duplex_omni_duplex_eval.json": [
                 bench(
@@ -1308,6 +1394,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                     {"cuda": ["H100"]},
                     True,
                     "openai-realtime-duplex",
+                    {"required_duplex_metrics": ["pr"]},
                 ),
                 bench(
                     "c8_accuracy_response_stats_npu",
@@ -1315,6 +1402,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                     {"npu": "A3"},
                     True,
                     "openai-realtime-duplex",
+                    {"required_duplex_metrics": ["pr"]},
                 ),
             ],
             "test_qwen3_omni_duplex_omniinteract.json": [
@@ -1324,14 +1412,15 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                     {"cuda": "H100"},
                     True,
                     "openai-realtime-duplex",
+                    {"required_duplex_metrics": ["f1"]},
                 )
             ],
             "test_minicpmo_4_5.json": [
-                bench("test_minicpmo_4_5_default", "seed-tts", {"cuda": ["H100"]}, False),
-                bench("test_minicpmo_4_5_async_prefix", "seed-tts", {"cuda": ["H100"]}, True),
-                bench("test_minicpmo_4_5_async_prefix_daily_omni", "daily-omni", {"cuda": ["H100"]}, True),
-                bench("default-seed-tts-c16", "seed-tts", {"npu": "A3"}, False),
-                bench("async-prefix-seed-tts-c16", "seed-tts", {"npu": "A3"}, True),
+                bench("test_minicpmo_4_5_default", "seed-tts", {"cuda": ["H100"]}, False, accuracy={"seed_tts_wer_eval": True}),
+                bench("test_minicpmo_4_5_async_prefix", "seed-tts", {"cuda": ["H100"]}, True, accuracy={"seed_tts_wer_eval": True}),
+                bench("test_minicpmo_4_5_async_prefix_daily_omni", "daily-omni", {"cuda": ["H100"]}, True, accuracy={"min_daily_omni_accuracy": 0.5}),
+                bench("test_minicpmo_4_5_npu_default", "seed-tts", {"npu": "A3"}, False, accuracy={"seed_tts_wer_eval": True}),
+                bench("test_minicpmo_4_5_npu_async_prefix", "seed-tts", {"npu": "A3"}, True, accuracy={"seed_tts_wer_eval": True}),
             ],
             "test_minicpmo_4_5_omni_duplex_eval.json": [
                 bench(
@@ -1340,6 +1429,7 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                     {"cuda": ["H100"], "npu": "A3"},
                     None,
                     "openai-realtime-duplex",
+                    {"required_duplex_metrics": ["pr"]},
                 )
             ],
             "test_minicpmo_4_5_omniinteract.json": [
@@ -1366,6 +1456,33 @@ class QualityDefenseCoverageTests(unittest.TestCase):
             perf.mkdir(parents=True)
             for name, items in files.items():
                 (perf / name).write_text(json.dumps(items), encoding="utf-8")
+            cuda = root / ".buildkite" / "cuda"
+            npu = root / ".buildkite" / "npu"
+            cuda.mkdir(parents=True)
+            npu.mkdir(parents=True)
+            (cuda / "test-nightly.yml").write_text(
+                "\n".join(
+                    [
+                        'pytest --test-config-file tests/dfx/perf/tests/test_qwen3_omni_non_full_duplex.json -k "cuda_default or cuda_async_daily or cuda_async_seed"',
+                        "pytest --test-config-file tests/dfx/perf/tests/test_qwen3_omni_duplex_omni_duplex_eval.json",
+                        "pytest --test-config-file tests/dfx/perf/tests/test_qwen3_omni_duplex_omniinteract.json",
+                        'pytest --test-config-file tests/dfx/perf/tests/test_minicpmo_4_5.json -k "test_minicpmo_4_5_default or test_minicpmo_4_5_async_prefix_daily_omni or (test_minicpmo_4_5_async_prefix and not daily)"',
+                        "pytest --test-config-file tests/dfx/perf/tests/test_minicpmo_4_5_omni_duplex_eval.json",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (npu / "test-npu-nightly.yml").write_text(
+                "\n".join(
+                    [
+                        "pytest --test-config-file tests/dfx/perf/tests/test_qwen3_omni_no_async_chunk.json",
+                        "pytest --test-config-file tests/dfx/perf/tests/test_qwen3_omni_duplex_omni_duplex_eval.json",
+                        'pytest --test-config-file tests/dfx/perf/tests/test_minicpmo_4_5.json -k "test_minicpmo_4_5_npu_default or test_minicpmo_4_5_npu_async_prefix"',
+                        "pytest --test-config-file tests/dfx/perf/tests/test_minicpmo_4_5_omni_duplex_eval.json",
+                    ]
+                ),
+                encoding="utf-8",
+            )
             care = root / "care.json"
             care.write_text(
                 Path(__file__).resolve().parents[1].joinpath("references", "model_care_scenarios.json").read_text(),
@@ -1382,30 +1499,37 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                 keywords=_QUALITY_DEFENSE_MODEL_KEYWORDS,
                 model_care_path=care,
             )
-        for model_id in ("qwen-omni", "minicpm"):
-            perf_block = scored[model_id]["pct"]["perf"]
-            self.assertEqual(perf_block["gpu"]["pct"], 100, model_id)
-            self.assertEqual(perf_block["npu"]["pct"], 100, model_id)
-            self.assertGreater(perf_block["gpu"]["total"], 0)
-            self.assertEqual(perf_block["gpu"]["covered"], perf_block["gpu"]["total"])
-            self.assertEqual(perf_block["npu"]["covered"], perf_block["npu"]["total"])
-        qwen_gpu_rows = scored["qwen-omni"]["pct"]["perf"]["gpu"]["rows"]
-        qwen_npu_rows = scored["qwen-omni"]["pct"]["perf"]["npu"]["rows"]
+        qwen_perf = scored["qwen-omni"]["pct"]["perf"]
+        qwen_prec = scored["qwen-omni"]["pct"]["prec"]
+        self.assertEqual((qwen_perf["gpu"]["covered"], qwen_perf["gpu"]["total"]), (4, 4))
+        # NPU nightly runs random/random-mm plus duplexEval, not the npu-marked
+        # seed-tts entries that only sit in the CUDA JSON.
+        self.assertEqual((qwen_perf["npu"]["covered"], qwen_perf["npu"]["total"]), (1, 3))
+        self.assertEqual(qwen_perf["npu"]["pct"], 33)
+        self.assertEqual((qwen_prec["gpu"]["covered"], qwen_prec["gpu"]["total"]), (5, 5))
+        self.assertEqual((qwen_prec["npu"]["covered"], qwen_prec["npu"]["total"]), (1, 3))
+        qwen_gpu_rows = qwen_perf["gpu"]["rows"]
+        qwen_npu_rows = qwen_perf["npu"]["rows"]
 
         def joined(rows, dataset):
             return " ".join(row["by"] for row in rows if row["dataset"] == dataset)
 
-        self.assertIn("default-seed-tts-c64", joined(qwen_gpu_rows, "seed-tts"))
-        self.assertIn("async-prefix-seed-tts-c64", joined(qwen_gpu_rows, "seed-tts"))
-        self.assertIn("async-prefix-daily-omni-c8", joined(qwen_gpu_rows, "daily-omni"))
+        self.assertIn("cuda_default", joined(qwen_gpu_rows, "seed-tts"))
+        self.assertIn("cuda_async_seed", joined(qwen_gpu_rows, "seed-tts"))
+        self.assertIn("cuda_async_daily", joined(qwen_gpu_rows, "daily-omni"))
         self.assertIn("omni_duplex_eval.json", joined(qwen_gpu_rows, "duplexEval-OmniInteract"))
         self.assertIn("omniinteract.json", joined(qwen_gpu_rows, "duplexEval-OmniInteract"))
-        self.assertIn("default-seed-tts-c32", joined(qwen_npu_rows, "seed-tts"))
-        self.assertIn("async-prefix-seed-tts-c32", joined(qwen_npu_rows, "seed-tts"))
+        self.assertNotIn("random", joined(qwen_npu_rows, "seed-tts"))
+        self.assertFalse(any(row["covered"] for row in qwen_npu_rows if row["dataset"] == "seed-tts"))
         self.assertIn("c8_accuracy_response_stats_npu", joined(qwen_npu_rows, "duplexEval"))
-        mini_npu_rows = scored["minicpm"]["pct"]["perf"]["npu"]["rows"]
-        self.assertTrue(all(row["covered"] for row in mini_npu_rows))
-        self.assertTrue(any("async-prefix-seed-tts-c16" in row["by"] for row in mini_npu_rows))
+        mini_perf = scored["minicpm"]["pct"]["perf"]
+        mini_prec = scored["minicpm"]["pct"]["prec"]
+        self.assertEqual((mini_perf["gpu"]["covered"], mini_perf["gpu"]["total"]), (3, 4))
+        self.assertEqual((mini_perf["npu"]["covered"], mini_perf["npu"]["total"]), (4, 4))
+        self.assertEqual((mini_prec["gpu"]["covered"], mini_prec["gpu"]["total"]), (4, 5))
+        self.assertEqual((mini_prec["npu"]["covered"], mini_prec["npu"]["total"]), (4, 4))
+        self.assertTrue(any("test_minicpmo_4_5_npu_async_prefix" in row["by"] for row in mini_perf["npu"]["rows"]))
+        self.assertFalse(any(row["covered"] for row in mini_perf["gpu"]["rows"] if "OmniInteract" in str(row["dataset"])))
 
     def test_svg_bakes_percent_fill_and_leaves_other_axes_binary(self) -> None:
         lit = {
@@ -1423,13 +1547,13 @@ class QualityDefenseCoverageTests(unittest.TestCase):
                     "npu": {"pct": 0, "covered": 0, "total": 2, "rows": []},
                 },
                 "prec": {
-                    "basis": "no-model-care",
+                    "basis": "repo-tests",
                     "single": 100,
                     "pct": 100,
-                    "covered": 0,
-                    "total": 0,
-                    "gpu": {"pct": 100, "covered": 0, "total": 0, "rows": []},
-                    "npu": {"pct": 100, "covered": 0, "total": 0, "rows": []},
+                    "covered": 1,
+                    "total": 1,
+                    "gpu": {"pct": 100, "covered": 1, "total": 1, "rows": []},
+                    "npu": {"pct": 0, "covered": 0, "total": 0, "rows": []},
                 },
                 "rel": {"pct": 15, "covered": 8, "total": 54, "basis": "issue-133"},
             },
@@ -1437,10 +1561,13 @@ class QualityDefenseCoverageTests(unittest.TestCase):
         svg = _qd_model_radar_svg("qwen-omni", lit)
         self.assertIn('data-quality-pct="50"', svg)
         self.assertIn('data-quality-pct="0"', svg)
-        self.assertIn('data-quality-pct="100"', svg)
+        self.assertNotIn('data-quality-pct="100"', svg)
         self.assertIn('data-quality-pct="15"', svg)
         self.assertIn(">15%</text>", svg)
         self.assertIn(">50%/0%</text>", svg)
+        self.assertNotIn(">100%/0%</text>", svg)
+        self.assertIn('data-quality-key="qwen-omni:prec-gpu" data-qd-side="gpu" data-quality-fill="1"', svg)
+        self.assertIn('data-quality-key="qwen-omni:prec-npu" data-qd-side="npu" data-quality-fill="0"', svg)
         self.assertIn('class="qd-fill qd-fill--gpu"', svg)
         func = svg.split('data-quality-key="qwen-omni:func-gpu"', 1)[1].split("</g>", 1)[0]
         self.assertNotIn("data-quality-pct", func)

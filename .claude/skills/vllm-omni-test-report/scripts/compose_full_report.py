@@ -3233,8 +3233,8 @@ def preview_report_markdown(
     next_steps_block = render_next_steps_section()
 
     # Quality Defense Radar: per-model 7-axis coverage across 9 flagship
-    # models (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image, HunyuanImage,
-    # HunyuanVideo, Wan, MinimaxH3, LingBot), up to 13 clickable
+    # models (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image 2.1, HunyuanImage,
+    # HunyuanVideo, Wan, MinimaxH3, MiniMax-H3-Image, LingBot World), up to 13 clickable
     # segments per model. Release variant only — the preview also emits it
     # so the layout matches the live report HTML exactly.
     quality_defense_block = render_quality_defense_section()
@@ -3280,9 +3280,9 @@ def preview_report_markdown(
   rows are dropped.
 - **Next Steps (Outstanding Items):** manual-entry action table — see H2 between Open issues and Data
   source. HTML upgrade adds **Add Item** button and `localStorage`-backed editing (same as Development).
-- **Quality Defense Radar:** per-model 7-axis coverage radar across 9 flagship models
-  (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image, HunyuanImage, HunyuanVideo, Wan, MinimaxH3,
-  LingBot). Six axes split into GPU/NPU halves of one circle; Reliability is a
+- **Quality Defense Radar:** per-model 7-axis coverage radar across 10 flagship models
+  (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image 2.1, HunyuanImage, HunyuanVideo, Wan,
+  MinimaxH3, MiniMax-H3-Image, LingBot World). Six axes split into GPU/NPU halves of one circle; Reliability is a
   single circle (4 models). Segments pre-lit
   from the vllm-omni repo code; click to override. State kept in `localStorage`
   (`quality-defense:<model>:<segment-id>`) and mirrored to a `data-quality-on` attribute.
@@ -3318,7 +3318,7 @@ def main() -> None:
             "ready/merge/nightly/weekly/ut rows are dropped) + "
             "Failure Analysis (per-GPU with interactive Status column) + "
             "Open issues (stats window) + Next Steps (Outstanding Items) + "
-            "Quality Defense Radar (per-model 7-axis coverage across 9 flagship models). "
+            "Quality Defense Radar (per-model 7-axis coverage across 10 flagship models). "
             "``development`` — same Test Result layout as release, but **Test conclusion** and "
             "**Open issues** sections are omitted and **Metrics overview** is replaced with "
             "a Development-flavored 2-row operator-editable snapshot "
@@ -4150,8 +4150,8 @@ def main() -> None:
     next_steps_block = render_next_steps_section()
 
     # Quality Defense Radar: per-model 7-axis coverage across 9 flagship
-    # models (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image, HunyuanImage,
-    # HunyuanVideo, Wan, MinimaxH3, LingBot), up to 13 clickable
+    # models (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image 2.1, HunyuanImage,
+    # HunyuanVideo, Wan, MinimaxH3, MiniMax-H3-Image, LingBot World), up to 13 clickable
     # segments per model (6 axes split into GPU/NPU halves + Reliability
     # single). Release variant only — the
     # post-processor replaces the marker with the inline SVG via
@@ -4258,9 +4258,9 @@ def main() -> None:
   Status) with ``Add Item`` button; cells editable in HTML, persisted via
   `localStorage` (same implementation as the Development variant). H2 appears between
   Open issues and Data source.
-- **Quality Defense Radar:** per-model 7-axis coverage radar across 9 flagship models
-  (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image, HunyuanImage, HunyuanVideo, Wan,
-  MinimaxH3, LingBot). Six axes (Functionality / Performance / Documentation /
+- **Quality Defense Radar:** per-model 7-axis coverage radar across 10 flagship models
+  (Qwen3-Omni, MiniCPM, Qwen-TTS, Qwen-Image 2.1, HunyuanImage, HunyuanVideo, Wan,
+  MinimaxH3, MiniMax-H3-Image, LingBot World). Six axes (Functionality / Performance / Documentation /
   Precision / Stability / Gate) split into GPU/NPU halves of one circle; Reliability is
   a single circle (4 models). Segments are
   pre-lit from the vllm-omni repo code and remain click-to-override. State persisted via
