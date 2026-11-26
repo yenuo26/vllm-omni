@@ -111,10 +111,10 @@ PIPELINE_YAML_MAP: dict[str, list[tuple[str, str]]] = {
 }
 
 CATEGORY_ORDER: list[tuple[str, str, str]] = [
-    ("ready", "ready CI", "non-main branch (test-ready.yml)"),
-    ("merge", "merge", "main · not scheduled (test-merge.yml)"),
-    ("nightly", "nightly", "main · scheduled nightly (test-nightly.yml)"),
-    ("weekly", "weekly", "main · scheduled weekly (test-weekly.yml)"),
+    ("ready", "ready CI", "feature / PR branches (test-ready.yml)"),
+    ("merge", "merge", "main or release/v* · ordinary (test-merge.yml)"),
+    ("nightly", "nightly", "main or release/v* · Scheduled nightly / Release B200 (test-nightly.yml)"),
+    ("weekly", "weekly", "main or release/v* · Scheduled weekly (test-weekly.yml)"),
 ]
 
 # ── Timezone handling ──────────────────────────────────────────────────
@@ -1854,53 +1854,67 @@ class PoolStats:
 JOB_RECORD_PER_POOL_CAP = 2000
 
 
+# Same duration buckets as ``buildkite-ci-daily-analysis`` ``classify_build``.
+# Release branches are ``release/v<semver>`` plus the ``rc`` / ``.post`` forms
+# this repo cuts (``release/v0.34.0``, ``release/v0.34.0rc1``,
+# ``release/v0.14.0.post1``). ``release/v0.34.0-docker`` is not a version branch.
+_RELEASE_BRANCH_RE = re.compile(r"^release/v\d+\.\d+\.\d+(?:rc\d+|\.post\d+)?$")
+_NIGHTLY_TITLES = frozenset(
+    {
+        "scheduled nightly build",
+        "scheduled release b200 build",
+    }
+)
+_WEEKLY_TITLES = frozenset(
+    {
+        "scheduled weekly build",
+        "scheduled non-critical weekly build",
+    }
+)
+
+
+def _normalized_message_title(message: str | None) -> str:
+    """First line of a build message, case-folded, ordinary whitespace collapsed."""
+    line = (message or "").split("\n", 1)[0].replace("\r", "")
+    return re.sub(r"[ \t]+", " ", line).strip().casefold()
+
+
+def _is_release_branch(branch: str) -> bool:
+    return bool(_RELEASE_BRANCH_RE.fullmatch(branch.strip()))
+
+
 def _determine_ci_category(
     branch: str | None,
     source: str | None,
     created_at: datetime | None,
     message: str | None = None,
 ) -> str:
-    """Map a Buildkite build to one of ``ready`` / ``merge`` / ``nightly`` / ``weekly``.
+    """Map a Buildkite build to ``ready`` / ``merge`` / ``nightly`` / ``weekly``.
 
-    Heuristic (keyword-first, weekday fallback):
-      • non-main branch → ``ready`` (PR / pre-merge testing)
-      • main + non-scheduled source → ``merge`` (push to main, not on a schedule)
-      • main + scheduled:
-          - message contains ``weekly`` → ``weekly`` (checked BEFORE nightly —
-            the scheduled builds are titled ``Scheduled weekly build`` /
-            ``Scheduled nightly build`` / ``AMD nightly``)
-          - message contains ``nightly`` → ``nightly``
-          - message carries no keyword → fall back to the calendar rule:
-            created on a Sunday (CST) → ``weekly``, otherwise ``nightly``
+    Same rules as CI daily analysis ``classify_build``:
 
-    The message keyword is authoritative because the weekly schedule does
-    NOT land on a fixed CST weekday — it fires Saturday 12:00 UTC = Saturday
-    20:00 CST (verified 2026-10-03: build #16624 "Scheduled weekly build"
-    was created Sat 2026-10-03T12:00Z and the old Sunday-CST-only rule
-    misclassified it — and its Reliability Test jobs — as ``nightly``).
-    The weekday rule in ``_WEEKLY_WEEKDAY`` only covers message-less
-    scheduled builds and stays as a defensive default.
+      • feature / PR branch (neither ``main`` nor ``release/v<version>``) → ``ready``
+      • ``main`` or ``release/v<version>`` whose first message line is
+        ``Scheduled weekly build`` or ``Scheduled Non-Critical weekly build`` → ``weekly``
+      • same branches, first line ``Scheduled nightly build`` or
+        ``Scheduled Release B200 build`` → ``nightly``
+      • otherwise → ``merge``
+
+    ``source`` and ``created_at`` do not affect the bucket. Scheduled Release
+    B200 and some release-branch nightly/weekly builds are recorded as
+    ``source=ui``. A title that only contains "nightly" or "weekly" does not
+    match, and a message-less scheduled build is ``merge`` (no weekday guess).
     """
-    if branch and branch.strip() and branch.strip() != "main":
+    del source, created_at
+    branch_name = (branch or "").strip()
+    if branch_name != "main" and not _is_release_branch(branch_name):
         return "ready"
-    if source and source.strip().lower() == "schedule":
-        msg = (message or "").lower()
-        if "weekly" in msg:
-            return "weekly"
-        if "nightly" in msg:
-            return "nightly"
-        if created_at is not None:
-            cst_weekday = created_at.astimezone(CST).weekday()
-            # Python: Monday=0 … Sunday=6. Fallback only (message-less builds).
-            if cst_weekday == _WEEKLY_WEEKDAY:
-                return "weekly"
+    title = _normalized_message_title(message)
+    if title in _WEEKLY_TITLES:
+        return "weekly"
+    if title in _NIGHTLY_TITLES:
         return "nightly"
     return "merge"
-
-
-# Sunday (Python weekday 6) — fallback weekday for message-less scheduled
-# builds; the real weekly schedule fires Saturday 12:00 UTC (see docstring).
-_WEEKLY_WEEKDAY = 6
 
 
 @dataclass

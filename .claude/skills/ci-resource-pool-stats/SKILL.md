@@ -191,10 +191,15 @@ The HTML report includes:
      that card whose union of CI categories has no intersection with
      the remaining checked set; the card sub-line rewrites to reflect
      the new visible-group count (or "no groups match the selected CI
-     categories"). CI categories are inferred from the build's branch
-     (non-main → `ready`) and source (non-scheduled main → `merge`;
-     scheduled main with Sunday CST `created_at` → `weekly`, else
-     `nightly`).
+     categories"). CI categories use the same duration buckets as
+     `buildkite-ci-daily-analysis`: feature / PR branches are `ready`;
+     `main` and `release/v<version>` (`release/v0.34.0`, plus `rc` / `.post`
+     release branches) are `nightly` when the message's first line is
+     `Scheduled nightly build` or `Scheduled Release B200 build`, `weekly`
+     when it is `Scheduled weekly build` or
+     `Scheduled Non-Critical weekly build`, and `merge` otherwise.
+     `source` is ignored. A title that only mentions "nightly" or "weekly"
+     does not change the bucket.
    - Source meta line below the table: local repo path, files used, and
      the post-`git pull` HEAD SHA.
 4. **Hourly Trends panel** — two inline SVG line charts (Buildkite-driven),
