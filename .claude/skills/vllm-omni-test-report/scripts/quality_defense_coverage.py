@@ -1,0 +1,1729 @@
+#!/usr/bin/env python3
+"""Coverage percentages for the Quality Defense Radar (stdlib only).
+
+Performance and Precision
+-------------------------
+Denominator: rows in the Model care scenario table whose ``kind`` is
+``performance`` or ``accuracy``. Source file, in order:
+
+1. ``$MODEL_CARE_SCENARIOS_JSON`` when it points at a file
+2. ``kanban/docs/assets/care/model_care_scenarios.json`` inside a
+   JiusiServe/omni-reviewbot checkout (``$OMNI_REVIEW_REPO_ROOT``,
+   ``$OMNI_REVIEWBOT_ROOT``, ``/workspace/omni-reviewbot``,
+   ``/home/wy/omni-reviewbot``, ``~/omni-reviewbot``)
+3. The snapshot shipped next to this skill
+   (``references/model_care_scenarios.json``)
+
+The checkout wins over the snapshot, so a newly added scenario is picked
+up without editing this module. A flagship model with **no** rows for an
+axis is 100% on a hardware side only when this repo has a real test of
+that type on that side (performance JSON for Performance, an accuracy
+test for Precision). A side with no such test stays at 0%. Matching uses
+the radar keyword list; the three ids in today's JSON are not hardcoded.
+
+A row with hardware ``GPU`` counts on the GPU half only, ``NPU`` on the
+NPU half only, and ``GPU/NPU`` on both halves. The numerator is a real
+case that matches the row's model, dataset, full-duplex vs
+non-full-duplex mode, async-chunk feature, and hardware side, and that
+the CUDA nightly pipeline (GPU) or the NPU nightly pipeline actually
+selects. A hardware mark in the JSON is not enough when that pipeline's
+``pytest`` command never names the file, or its ``-k`` expression skips
+the test. ``random`` / ``random-mm`` never cover seed-tts, daily-omni,
+duplexEval, or OmniInteract. Performance cases live in
+``tests/dfx/perf/tests/*.json``. An accuracy row is covered by those
+same JSON benches when the bench carries accuracy metrics (SIM/WER,
+Accuracy, duplex metrics, SSIM/PSNR) or by a standalone test under
+``tests/e2e/accuracy/**/*.py``. Traffic strings and deploy card counts
+are not extra splits. ``async chunk + prefix`` matches a case that
+enables async chunk; the bundled "prefix" token is not required on its
+own. ``default`` matches only an explicit non-async case
+(``--no-async-chunk`` or ``async_chunk: false``). Feature ``None``
+matches a case that does not enable async chunk. A row whose metrics
+mention COT is covered only by a case that mentions COT. No pass/fail
+score and no metric value is invented.
+
+Reliability
+-----------
+Denominator: the in-scope fault-mode cells from
+https://github.com/JiusiServe/vllm-omni-project-manage/issues/133
+section 「可靠性测试需求规划（检测 / 响应 / 恢复）」 and the 0.34.0
+必达 rows of the 场景×模型缺口 table. Each scenario is scored on
+detect / respond / recover (优雅退出的「清理」counts as recover).
+Timings the issue prints as 「拉起/空闲」are separate cells for crash
+rows, because the issue says an idle case does not cover startup. Hang
+rows keep 「拉起/空闲」as one cell. Hang, overload, and dependency rows
+stay in the denominator even when no test implements them. Host memory
+is still out of scope. Wan and Hunyuan multi-replica SIGKILL and
+multi-replica hang cells are planned and are not in those denominators.
+
+Numerator: non-skipped ``test_*.py`` files under
+``tests/dfx/reliability/`` (not ``conftest.py``, ``helpers.py``,
+``unit/``, or ``invalid_param_test/``). An unconditional
+``@pytest.mark.skip``, a ``skip_reason`` on ``@scenario_params`` /
+``@launch_scenario_params``, or a skipped signal spec does not count.
+Crash cells require an active SIGKILL; SIGTERM / SIGINT do not count as
+crash coverage. ``at_launch`` is 拉起, ``at_load`` / ``with_load`` is
+带载, ``at_idle`` / ``no_load`` is 空闲, and ``at_exit`` is 退出过程.
+``test_graceful_shutdown`` in a ``*_replica.py`` file is the multi-replica
+exit cell; the same name elsewhere is the single-replica exit.
+Scenario classes (and the helpers they call) supply the signal and the
+detect / respond / recover evidence when the test body is only a
+``Scenario().run(...)`` line.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+
+RELIABILITY_ISSUE_URL = "https://github.com/JiusiServe/vllm-omni-project-manage/issues/133"
+
+_MODEL_CARE_REL = Path("kanban/docs/assets/care/model_care_scenarios.json")
+_BUNDLED_MODEL_CARE = (
+    Path(__file__).resolve().parent.parent / "references" / "model_care_scenarios.json"
+)
+
+# In-scope cells. id suffix is the timing. Three dimensions each.
+# Kept in this module (with the issue URL) so report generation does not
+# fetch GitHub.
+_RELIABILITY_SCENARIOS: tuple[tuple[str, str], ...] = (
+    ("oom_startup", "GPU OOM at startup"),
+    ("oom_under_load", "GPU OOM under load"),
+    ("tree_startup", "Full-tree SIGKILL at startup"),
+    ("tree_idle", "Full-tree SIGKILL while idle"),
+    ("tree_under_load", "Full-tree SIGKILL under load"),
+    ("stage_startup", "Partial stage SIGKILL at startup"),
+    ("stage_idle", "Partial stage SIGKILL while idle"),
+    ("stage_under_load", "Partial stage SIGKILL under load"),
+    ("stage_during_exit", "Partial stage SIGKILL during exit"),
+    ("replica_startup", "Partial replica SIGKILL at startup"),
+    ("replica_idle", "Partial replica SIGKILL while idle"),
+    ("replica_under_load", "Partial replica SIGKILL under load"),
+    ("replica_during_exit", "Partial replica SIGKILL during exit"),
+    ("root_startup", "Serve-root SIGKILL at startup"),
+    ("root_idle", "Serve-root SIGKILL while idle"),
+    ("root_under_load", "Serve-root SIGKILL under load"),
+    ("exit_single", "Graceful SIGTERM exit, single replica"),
+    ("exit_multi", "Graceful SIGTERM exit, multi replica"),
+    # Hang rows. 「拉起/空闲」is one library row here, not two cells.
+    ("hang_full_quiet", "Full-process hang at startup or idle"),
+    ("hang_full_under_load", "Full-process hang under load"),
+    ("hang_full_during_exit", "Full-process hang during exit"),
+    ("hang_stage_quiet", "Partial stage hang at startup or idle"),
+    ("hang_stage_under_load", "Partial stage hang under load"),
+    ("hang_stage_during_exit", "Partial stage hang during exit"),
+    ("hang_replica_quiet", "Partial replica hang at startup or idle"),
+    ("hang_replica_under_load", "Partial replica hang under load"),
+    ("hang_replica_during_exit", "Partial replica hang during exit"),
+    ("overload_under_load", "Overload and backpressure under load"),
+    ("dependency_startup", "Dependency fault at startup"),
+    ("dependency_idle", "Dependency fault while idle"),
+    ("dependency_under_load", "Dependency fault under load"),
+    ("dependency_during_exit", "Dependency fault during exit"),
+)
+_RELIABILITY_DIMENSIONS = ("detect", "respond", "recover")
+# Issue 133 (updated 2026-11-25): Wan and Hunyuan multi-replica rows are
+# planned work, not current 必达 gaps. Qwen and MiniCPM still include them.
+_REPLICA_SCENARIO_IDS = frozenset(
+    {
+        "replica_startup",
+        "replica_idle",
+        "replica_under_load",
+        "replica_during_exit",
+        "hang_replica_quiet",
+        "hang_replica_under_load",
+        "hang_replica_during_exit",
+    }
+)
+_RELIABILITY_PLANNED_REPLICA = frozenset({"Wan", "HunyuanImage"})
+_EVAL_DATASETS = frozenset({"seed-tts", "daily-omni", "duplexeval", "omniinteract"})
+_RANDOM_DATASETS = frozenset({"random", "random-mm", "randommm"})
+_ACCURACY_KEY_RE = re.compile(
+    r"(ssim|psnr|pixel_accuracy|seed_tts_wer|seed_tts_sim|min_seed_tts|max_seed_tts|"
+    r"min_daily_omni_accuracy|required_duplex_metrics|duplex_metric|wer_eval|"
+    r"(^|_)accuracy($|_))",
+    re.I,
+)
+
+_SKIP_ASSIGN_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*pytest\.mark\.skip\(",
+    re.M,
+)
+_SIG_RE = re.compile(r"SIG(?:KILL|TERM|INT)")
+_DEF_RE = re.compile(r"^def\s+(test_[A-Za-z0-9_]+)\(", re.M)
+_ANY_DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\(", re.M)
+_PARAM_LIST_RE = re.compile(
+    r"""@pytest\.mark\.parametrize\(\s*['"](\w+)['"]\s*,\s*([A-Z][A-Z0-9_]*)"""
+)
+_SCENARIO_CLASS_RE = re.compile(
+    r"(?:scenario_params|launch_scenario_params)\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*([A-Za-z_][A-Za-z0-9_]*)"
+)
+_RUN_CLASS_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\(\)\.run\b")
+_SKIP_REASON_RE = re.compile(r"""skip_reason\s*=\s*(['"])([^'"]+)\1""")
+_SIGNALS_ATTR_RE = re.compile(r"""^\s+signals_attr\s*=\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]""", re.M)
+_SIGNAL_SPEC_START_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*(?::[^\n=]+)?=\s*", re.M)
+_SIGNAL_PAIR_RE = re.compile(
+    r"""\(\s*['"](SIG(?:KILL|TERM|INT))['"]\s*,\s*(None|['"][^'"]*['"])"""
+)
+_TOP_LEVEL_BLOCK_RE = re.compile(r"^(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+_RELIABILITY_SKIP_DIRS = frozenset({"unit", "invalid_param_test", "__pycache__"})
+_RELIABILITY_SKIP_FILES = frozenset({"conftest.py", "helpers.py"})
+# Generic harness helpers. Their default arguments mention SIGKILL even when
+# the scenario calls them with SIGTERM, and their bodies are not the fault
+# assertion the cell is scoring.
+_RELIABILITY_SKIP_EXPAND = frozenset(
+    {
+        "start_server_from_params",
+        "inject_gpu_oom",
+        "stop_gpu_oom_hogs",
+        "client_for_server",
+        "post_json_raw",
+        "escalate_live_pids",
+        "make_server_root_kill_fault_injector",
+        "make_server_tree_kill_fault_injector",
+        "make_process_kill_fault_injector",
+        "run_fault_injection_with_rate_load",
+    }
+)
+_ASYNC_TRUE_RE = re.compile(r"async_chunk[\"']?\s*[:=]\s*true\b")
+_ASYNC_FALSE_RE = re.compile(r"async_chunk[\"']?\s*[:=]\s*false\b")
+
+
+def reliability_cell_count() -> int:
+    """Full issue-133 library, before model-specific planned rows are dropped."""
+    return len(_RELIABILITY_SCENARIOS) * len(_RELIABILITY_DIMENSIONS)
+
+
+def reliability_scenarios_for(model_id: str | None) -> tuple[str, ...]:
+    """Scenario ids in this model's denominator.
+
+    Wan and Hunyuan drop multi-replica SIGKILL and multi-replica hang.
+    Those cells are planned, not uncovered gaps. Hang, overload, and
+    dependency rows stay in every model's denominator.
+    """
+    if model_id in _RELIABILITY_PLANNED_REPLICA:
+        return tuple(sid for sid, _label in _RELIABILITY_SCENARIOS if sid not in _REPLICA_SCENARIO_IDS)
+    return tuple(sid for sid, _label in _RELIABILITY_SCENARIOS)
+
+
+def keyword_matches(text: str, keyword: str) -> bool:
+    """True when ``keyword`` names this text and not a longer sibling model.
+
+    ``minimax_h3`` must not match MiniMax-H3-Image. ``qwen_image_21`` and
+    ``lingbot_world`` are specific enough that the compact form does not
+    sit inside ``qwen_image``, ``qwen_image_edit``, or ``lingbot_video``.
+    """
+    needle = _norm(keyword)
+    if not needle or not text:
+        return False
+    if needle == "minimaxh3":
+        return re.search(r"minimax[\W_]*h[\W_]*3(?![\W_]*image)", text, re.I) is not None
+    return needle in _norm(text)
+
+
+def coverage_percent(covered: int, total: int) -> int:
+    """Integer percent, half-up. ``total <= 0`` is an empty requirement (100)."""
+    if total <= 0:
+        return 100
+    if covered < 0:
+        covered = 0
+    if covered > total:
+        covered = total
+    return (100 * covered + total // 2) // total
+
+
+def resolve_model_care_json(explicit: Path | str | None = None) -> Path | None:
+    """Locate the Model care scenario JSON. Checkout beats the snapshot."""
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    env_file = os.environ.get("MODEL_CARE_SCENARIOS_JSON")
+    if env_file:
+        candidates.append(Path(env_file).expanduser())
+    for root_env in ("OMNI_REVIEW_REPO_ROOT", "OMNI_REVIEWBOT_ROOT"):
+        raw = os.environ.get(root_env)
+        if raw:
+            candidates.append(Path(raw).expanduser() / _MODEL_CARE_REL)
+    for root in (
+        Path("/workspace/omni-reviewbot"),
+        Path("/home/wy/omni-reviewbot"),
+        Path.home() / "omni-reviewbot",
+    ):
+        candidates.append(root / _MODEL_CARE_REL)
+    candidates.append(_BUNDLED_MODEL_CARE)
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_file():
+            return resolved
+    return None
+
+
+def load_model_care_scenarios(path: Path | None) -> list[dict]:
+    """Return the ``scenarios`` list, or ``[]`` when the file is missing."""
+    if path is None or not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    scenarios = payload.get("scenarios") if isinstance(payload, dict) else None
+    if not isinstance(scenarios, list):
+        return []
+    return [item for item in scenarios if isinstance(item, dict)]
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def _scenario_blob(scenario: dict) -> str:
+    parts = [str(scenario.get("id") or ""), str(scenario.get("title") or "")]
+    aliases = scenario.get("aliases") or []
+    if isinstance(aliases, list):
+        parts.extend(str(alias) for alias in aliases)
+    return _norm(" ".join(parts))
+
+
+def matching_scenarios(
+    scenarios: list[dict],
+    model_id: str,
+    keywords: tuple[str, ...],
+) -> list[dict]:
+    """Scenarios whose id, title, or alias contains a radar keyword."""
+    del model_id  # matching is keyword-based so new JSON ids attach themselves
+    matched: list[dict] = []
+    for scenario in scenarios:
+        parts = [str(scenario.get("id") or ""), str(scenario.get("title") or "")]
+        aliases = scenario.get("aliases") or []
+        if isinstance(aliases, list):
+            parts.extend(str(alias) for alias in aliases)
+        blob = " ".join(parts)
+        if blob.strip() and any(keyword_matches(blob, kw) for kw in keywords):
+            matched.append(scenario)
+    return matched
+
+
+def _hardware_sides(hardware: str) -> tuple[str, ...]:
+    text = (hardware or "").upper().replace(" ", "")
+    gpu = "GPU" in text
+    npu = "NPU" in text
+    if gpu and npu:
+        return ("gpu", "npu")
+    if npu:
+        return ("npu",)
+    if gpu:
+        return ("gpu",)
+    return ("gpu", "npu")
+
+
+def _row_kind(row: dict) -> str | None:
+    kind = str(row.get("kind") or "").strip().lower()
+    if kind in {"performance", "perf"}:
+        return "perf"
+    if kind in {"accuracy", "precision", "prec"}:
+        return "prec"
+    return None
+
+
+def _row_datasets(dataset: str) -> frozenset[str]:
+    compact = _norm(dataset)
+    if "duplexeval" in compact and "omniinteract" in compact:
+        return frozenset({"duplexeval", "omniinteract"})
+    if "duplexeval" in compact:
+        return frozenset({"duplexeval"})
+    if "omniinteract" in compact:
+        return frozenset({"omniinteract"})
+    if "dailyomni" in compact:
+        return frozenset({"daily-omni"})
+    if "seedtts" in compact:
+        return frozenset({"seed-tts"})
+    if compact == "random":
+        return frozenset({"random"})
+    # ``custom_image`` is the perf-JSON name of the care-list ``custom`` row.
+    if compact in {"custom", "customimage"}:
+        return frozenset({"custom"})
+    if "singleimage" in compact:
+        return frozenset({"single-image"})
+    return frozenset({compact}) if compact else frozenset()
+
+
+def _row_is_full_duplex(row: dict) -> bool:
+    mode = str(row.get("mode") or "").lower()
+    if "non-full" in mode or "non full" in mode:
+        return False
+    return "full duplex" in mode or "fullduplex" in mode
+
+
+def _row_feature(row: dict) -> str:
+    feature = str(row.get("feature") or "").strip().lower()
+    if feature in {"", "none", "null"}:
+        return "none"
+    if "async" in feature:
+        return "async"
+    if feature == "default":
+        return "default"
+    return feature
+
+
+def _row_requires_cot(row: dict) -> bool:
+    try:
+        blob = json.dumps(row, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        blob = str(row).lower()
+    return re.search(r"\bcot\b", blob) is not None
+
+
+def _strip_docstrings(text: str) -> str:
+    text = re.sub(r'"""[\s\S]*?"""', "", text)
+    return re.sub(r"'''[\s\S]*?'''", "", text)
+
+
+def _async_flag(text: str) -> bool | None:
+    low = text.lower()
+    negative = "--no-async-chunk" in low or _ASYNC_FALSE_RE.search(low) is not None
+    positive = (
+        ("--async-chunk" in low and "--no-async-chunk" not in low)
+        or _ASYNC_TRUE_RE.search(low) is not None
+        or "get_chunk_config" in low
+    )
+    if positive and negative:
+        return None
+    if positive:
+        return True
+    if negative:
+        return False
+    return None
+
+
+def _datasets_in_text(text: str) -> set[str]:
+    low = text.lower()
+    compact = _norm(text)
+    found: set[str] = set()
+    if "seed-tts" in low or "seed_tts" in low:
+        found.add("seed-tts")
+    if "daily-omni" in low or "daily_omni" in low:
+        found.add("daily-omni")
+    if "duplexeval" in compact or "duplex_eval" in low or "duplex-eval" in low:
+        found.add("duplexeval")
+    if "omniinteract" in compact:
+        found.add("omniinteract")
+    if re.search(r"\bpsnr\b", low) and re.search(r"\bssim\b", low):
+        found.add("single-image")
+    if "pixel_accuracy" in low or "pixel accuracy" in low:
+        found.add("single-image")
+    return found
+
+
+def _tags_in_text(text: str) -> set[str]:
+    low = text.lower()
+    tags: set[str] = set()
+    if re.search(r"\bcot\b", low):
+        tags.add("cot")
+    return tags
+
+
+def _is_duplex_text(text: str, datasets: set[str]) -> bool:
+    if "duplexeval" in datasets or "omniinteract" in datasets:
+        return True
+    low = text.lower()
+    return (
+        "full duplex" in low
+        or "full_duplex" in low
+        or "fullduplex" in low
+        or "realtime-duplex" in low
+        or "realtime_duplex" in low
+    )
+
+
+def _sides_from_marks(item: dict) -> tuple[bool, bool] | None:
+    """Read ``mark[].hardware_marks.res`` (``cuda``/``rocm`` → GPU, ``npu`` → NPU)."""
+    marks = item.get("mark")
+    if not isinstance(marks, list):
+        return None
+    gpu = False
+    npu = False
+    found = False
+    for mark in marks:
+        if not isinstance(mark, dict):
+            continue
+        hardware = mark.get("hardware_marks")
+        res = hardware.get("res") if isinstance(hardware, dict) else None
+        if not isinstance(res, dict):
+            continue
+        found = True
+        keys = {str(key).lower() for key in res}
+        if keys & {"cuda", "rocm", "gpu", "xpu"}:
+            gpu = True
+        if "npu" in keys:
+            npu = True
+    if not found:
+        return None
+    return gpu, npu
+
+
+def _hardware_from_decorator(decorators: str) -> tuple[bool, bool] | None:
+    """Read ``hardware_test(res={...})`` when the test declares its devices."""
+    match = re.search(r"hardware_test\s*\(\s*res\s*=\s*\{([^}]*)\}", decorators, re.S)
+    if not match:
+        return None
+    body = match.group(1).lower()
+    gpu = any(token in body for token in ("cuda", "rocm", "gpu", "xpu"))
+    npu = "npu" in body
+    return gpu, npu
+
+
+def _hardware_flags(text: str, path: Path, npu_yaml: str) -> tuple[bool, bool]:
+    low = text.lower()
+    npu = bool(re.search(r"\bnpu\b", low) or "ascend" in low)
+    gpu = bool(re.search(r"\bcuda\b|\bgpu\b|\bh100\b|\brocm\b", low))
+    if npu_yaml:
+        name = path.name
+        rel = str(path).replace("\\", "/")
+        if name and name in npu_yaml:
+            npu = True
+        elif rel in npu_yaml.replace("\\", "/"):
+            npu = True
+    if npu and not gpu:
+        return False, True
+    if gpu or not npu:
+        return True, npu
+    return True, True
+
+
+def _models_in_text(text: str, keywords: dict[str, tuple[str, ...]]) -> set[str]:
+    found: set[str] = set()
+    for model_id, kws in keywords.items():
+        if any(keyword_matches(text, kw) for kw in kws):
+            found.add(model_id)
+    return found
+
+
+def _read_npu_yaml(repo_root: Path) -> str:
+    chunks: list[str] = []
+    for rel in (
+        ".buildkite/test-npu-nightly.yaml",
+        ".buildkite/test-npu-ready.yaml",
+        ".buildkite/npu/test-npu-nightly.yml",
+        ".buildkite/npu/test-npu-ready.yml",
+    ):
+        path = repo_root / rel
+        if path.is_file():
+            try:
+                chunks.append(path.read_text(errors="ignore"))
+            except OSError:
+                continue
+    npu_dir = repo_root / ".buildkite" / "npu"
+    if npu_dir.is_dir():
+        for path in sorted(npu_dir.glob("*.y*ml")):
+            try:
+                chunks.append(path.read_text(errors="ignore"))
+            except OSError:
+                continue
+    return "\n".join(chunks)
+
+
+def _match_bracket(text: str, open_at: int) -> int:
+    depth = 0
+    for idx in range(open_at, len(text)):
+        char = text[idx]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return len(text) - 1
+
+
+def _top_level_params(body: str) -> list[str]:
+    """Split a ``[ pytest.param(...), ... ]`` body into param chunks."""
+    chunks: list[str] = []
+    depth = 0
+    start: int | None = None
+    for idx, char in enumerate(body):
+        if char in "([{":
+            if depth == 1 and char == "(" and start is None:
+                start = idx
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 1 and start is not None and char == ")":
+                chunks.append(body[start : idx + 1])
+                start = None
+            if depth < 0:
+                break
+    return chunks
+
+
+def _signal_lists(text: str) -> dict[str, set[str]]:
+    skip_names = set(_SKIP_ASSIGN_RE.findall(text))
+    found: dict[str, set[str]] = {}
+    for match in re.finditer(r"^([A-Z][A-Z0-9_]*)\s*=\s*\[", text, re.M):
+        open_at = match.end() - 1
+        close_at = _match_bracket(text, open_at)
+        body = text[open_at : close_at + 1]
+        active: set[str] = set()
+        params = _top_level_params(body)
+        pieces = params or [body]
+        for piece in pieces:
+            if re.search(r"pytest\.mark\.skip\(", piece):
+                continue
+            if any(re.search(rf"\b{re.escape(name)}\b", piece) for name in skip_names):
+                continue
+            active.update(_SIG_RE.findall(piece))
+        if active:
+            found[match.group(1)] = active
+    return found
+
+
+def _iter_test_functions(text: str) -> list[tuple[str, str, str]]:
+    """Return ``(name, decorators, body)`` for each ``def test_*``."""
+    matches = list(_DEF_RE.finditer(text))
+    items: list[tuple[str, str, str]] = []
+    for index, match in enumerate(matches):
+        prev = matches[index - 1].end() if index else 0
+        preamble = text[prev : match.start()]
+        deco_lines: list[str] = []
+        started = False
+        for line in reversed(preamble.splitlines()):
+            stripped = line.strip()
+            if not stripped:
+                if started:
+                    break
+                continue
+            if line.startswith(("def ", "class ")):
+                break
+            deco_lines.append(line)
+            started = True
+        decorators = "\n".join(reversed(deco_lines))
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.start() : end]
+        body = re.sub(r"\n(?:[ \t]*@.*\n)+\s*$", "\n", body)
+        items.append((match.group(1), decorators, body))
+    return items
+
+
+def _function_skipped(decorators: str) -> bool:
+    if re.search(r"@pytest\.mark\.skip\(", decorators):
+        return True
+    # @scenario_params / @launch_scenario_params(..., skip_reason="...") skips
+    # every parameter of that test. An empty or missing reason still runs.
+    return _SKIP_REASON_RE.search(decorators) is not None
+
+
+def _active_signals(decorators: str, body: str, lists: dict[str, set[str]]) -> set[str]:
+    signals: set[str] = set()
+    for _arg, list_name in _PARAM_LIST_RE.findall(decorators):
+        signals |= lists.get(list_name, set())
+    if signals:
+        return signals
+    return set(_SIG_RE.findall(decorators + "\n" + body))
+
+
+def _timing(name: str) -> str:
+    """Map a test or scenario name onto one fault-library timing.
+
+    ``at_launch`` is checked before ``at_load`` so the two tokens stay
+    distinct. ``at_idle`` and ``no_load`` both mean the server fixture is
+    already up.
+    """
+    if "at_launch" in name or any(token in name for token in ("startup", "bringup", "before_ready", "during_launch")):
+        return "startup"
+    if "at_load" in name or "with_load" in name or "under_load" in name:
+        return "under_load"
+    if "at_exit" in name or "during_exit" in name or "on_exit" in name:
+        return "during_exit"
+    return "idle"
+
+
+def _documents_serial_recover(text: str) -> bool:
+    """True when comments or docstrings say later serial cases cover recovery.
+
+    A negative sentence such as "this case alone does not verify restart
+    recovery" does not block the credit when the same text also says a later
+    serial case provides that coverage.
+    """
+    low = text.lower()
+    patterns = (
+        r"later serial cases",
+        r"subsequent(?: selected)? serial cases",
+        r"serial suite cases",
+        r"suite-level (?:whole-instance )?restart coverage",
+        r"suite-level recovery coverage",
+        r"fresh-start recovery",
+        r"fresh startup and service",
+        r"later successful serial cases",
+        r"next selected case starts a fresh",
+        r"covered only by later",
+        r"a later start serves",
+    )
+    return any(re.search(pattern, low) for pattern in patterns)
+
+
+def _dimensions(body: str) -> set[str]:
+    low = body.lower()
+    detect = (
+        "assert_fault" in low
+        or "failure_observed" in low
+        or "fault_observed" in low
+        or ("expected" in low and "fail" in low)
+        or "status >= 500" in low
+        or "status_code >= 500" in low
+        or "get_health" in low
+        or "/health" in low
+        or "health" in low
+        or "fast_fail" in low
+    )
+    respond = (
+        "fast_fail" in low
+        or "elapsed" in low
+        or "hung" in low
+        or "not hang" in low
+        or "pending" in low
+        or "failure_observed" in low
+        or "status >= 500" in low
+        or "status_code >= 500" in low
+        or "assert_fault" in low
+    )
+    # Cleanup / restart assertions only. "converge" and "convergence" in a
+    # fast-fail bound are response-time checks, not the recover dimension.
+    recover = (
+        "gpu_release" in low
+        or re.search(r"\bresidual\b", low) is not None
+        or re.search(r"\brecover(?:y|s|ed|ing)?\b", low) is not None
+        or re.search(r"\brestart(?:ed|s|ing)?\b", low) is not None
+    )
+    dims: set[str] = set()
+    if detect:
+        dims.add("detect")
+    if respond:
+        dims.add("respond")
+    if recover:
+        dims.add("recover")
+    return dims
+
+
+def _cells_for_test(
+    name: str,
+    body: str,
+    signals: set[str],
+    *,
+    filename: str = "",
+    scenario_style: bool = False,
+) -> set[tuple[str, str]]:
+    """Map one active test to ``(scenario_id, dimension)`` cells."""
+    lname = name.lower()
+    dims = _scenario_dimensions(body) if scenario_style else _dimensions(body)
+    if not dims:
+        return set()
+    crash_ok = "SIGKILL" in signals
+
+    def pack(scenario_id: str) -> set[tuple[str, str]]:
+        return {(scenario_id, dim) for dim in dims}
+
+    if "oom" in lname:
+        scenario = "oom_startup" if _timing(lname) == "startup" else "oom_under_load"
+        return pack(scenario)
+
+    if "graceful" in lname or "normal_exit" in lname:
+        if "SIGTERM" not in signals and "sigterm" not in lname:
+            return set()
+        # ``test_graceful_shutdown`` is the same name in the single-server
+        # file and the ``*_replica.py`` file. The file, not the function
+        # name, decides exit_single vs exit_multi.
+        replica_file = filename.endswith("_replica.py")
+        scenario = "exit_multi" if ("multi" in lname or "replica" in lname or replica_file) else "exit_single"
+        return pack(scenario)
+
+    if not crash_ok:
+        return set()
+
+    if "replica" in lname:
+        return pack(f"replica_{_timing(lname)}")
+    if "tree" in lname:
+        return pack(f"tree_{_timing(lname)}")
+    if "serve_root" in lname or "server_root" in lname:
+        return pack(f"root_{_timing(lname)}")
+    if "during_exit" in lname or "on_exit" in lname:
+        return pack(f"stage_{_timing(lname)}")
+    return pack(f"stage_{_timing(lname)}")
+
+
+def _file_matches_model(filename: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword_matches(filename, kw) for kw in keywords)
+
+
+def _scenario_dimensions(body: str) -> set[str]:
+    """Detect / respond / recover for a scenario class and the helpers it calls.
+
+    The older function-body keywords still apply. Scenario modules state the
+    same three checks with ``observable``, an HTTP 500 contract, a deadline,
+    and ``pytest.fail`` instead of ``assert_fault``.
+    """
+    dims = _dimensions(body)
+    low = body.lower()
+    if (
+        "observable" in low
+        or "status in (500" in low
+        or "err_code=(500" in low
+        or "err_code=500" in low
+        or "must fail" in low
+    ):
+        dims.add("detect")
+    if (
+        "deadline" in low
+        or "grace_sec" in low
+        or "grace period" in low
+        or "did not terminate" in low
+        or "did not fail" in low
+        or "pytest.fail" in low
+    ):
+        dims.add("respond")
+    return dims
+
+
+def _code_for_dims(text: str) -> str:
+    """Drop docstrings, comments, and prints before the dimension scan.
+
+    Scenario docstrings say a case does *not* verify recovery, and several
+    prints log "restart required" on the path that returns without a
+    recovery assertion. Those words must not fill the recover cell.
+    """
+    text = _strip_docstrings(text)
+    kept: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        kept.append(re.sub(r"\s+#.*", "", line))
+    return _strip_call("\n".join(kept), "print")
+
+
+def _strip_call(text: str, name: str) -> str:
+    """Remove ``name(...)`` call expressions, including nested parentheses."""
+    needle = name + "("
+    out: list[str] = []
+    cursor = 0
+    while True:
+        found = text.find(needle, cursor)
+        if found < 0:
+            out.append(text[cursor:])
+            break
+        out.append(text[cursor:found])
+        depth = 0
+        index = found + len(name)
+        while index < len(text):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    index += 1
+                    break
+            index += 1
+        cursor = index
+    return "".join(out)
+
+
+def _top_level_classes(text: str) -> dict[str, str]:
+    matches = list(_TOP_LEVEL_BLOCK_RE.finditer(text))
+    found: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        if not text.startswith("class ", match.start()):
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        found[match.group(1)] = text[match.start() : end]
+    return found
+
+
+def _top_level_functions(text: str) -> dict[str, str]:
+    matches = list(_TOP_LEVEL_BLOCK_RE.finditer(text))
+    found: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        if not text.startswith("def ", match.start()):
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        found[match.group(1)] = text[match.start() : end]
+    return found
+
+
+def _read_reliability_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _iter_reliability_test_files(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for path in sorted(root.rglob("test_*.py")):
+        if path.name in _RELIABILITY_SKIP_FILES:
+            continue
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            parts = path.parts
+        if any(part in _RELIABILITY_SKIP_DIRS for part in parts):
+            continue
+        found.append(path)
+    return found
+
+
+def _reliability_sources(root: Path) -> tuple[dict[str, str], dict[str, str], dict[str, list[tuple[str, bool]]]]:
+    """Class bodies, helper bodies, and signal specs under the reliability tree."""
+    classes: dict[str, str] = {}
+    functions: dict[str, str] = {}
+    specs: dict[str, list[tuple[str, bool]]] = {}
+    files: list[Path] = []
+    scenario_dir = root / "scenarios"
+    if scenario_dir.is_dir():
+        files.extend(sorted(scenario_dir.glob("*.py")))
+    helpers = root / "helpers.py"
+    if helpers.is_file():
+        files.append(helpers)
+    files.extend(_iter_reliability_test_files(root))
+    for path in files:
+        text = _read_reliability_text(path)
+        if not text:
+            continue
+        classes.update(_top_level_classes(text))
+        functions.update(_top_level_functions(text))
+        specs.update(_signal_specs(text))
+    return classes, functions, specs
+
+
+def _signal_specs(text: str) -> dict[str, list[tuple[str, bool]]]:
+    """``NAME = (("SIGKILL", None), ...)`` → signal, skipped-when-reason-set."""
+    found: dict[str, list[tuple[str, bool]]] = {}
+    for match in _SIGNAL_SPEC_START_RE.finditer(text):
+        window = text[match.end() : match.end() + 600]
+        if not window.lstrip().startswith("("):
+            continue
+        pairs = _SIGNAL_PAIR_RE.findall(window)
+        if not pairs:
+            continue
+        found[match.group(1)] = [(signal, reason != "None") for signal, reason in pairs]
+    return found
+
+
+def _class_bases(name: str, source: str) -> list[str]:
+    match = re.search(r"^class\s+" + re.escape(name) + r"\(([^)]*)\)", source, re.M)
+    if not match:
+        return []
+    bases: list[str] = []
+    for part in match.group(1).split(","):
+        base = part.strip().split(".")[-1].split("[")[0].strip()
+        if base and base != name:
+            bases.append(base)
+    return bases
+
+
+def _walk_class_attr(name: str, classes: dict[str, str], pattern: re.Pattern[str]) -> str | None:
+    seen: set[str] = set()
+    stack = [name]
+    while stack:
+        current = stack.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        source = classes.get(current, "")
+        if not source:
+            continue
+        match = pattern.search(source)
+        if match:
+            return match.group(1) if match.lastindex == 1 else match.group(match.lastindex)
+        stack.extend(_class_bases(current, source))
+    return None
+
+
+def _scenario_source(name: str, classes: dict[str, str]) -> str:
+    """Class body, plus the inherited ``run`` when this class does not define one."""
+    seen: set[str] = set()
+    parts: list[str] = []
+    current = name
+    while current and current not in seen:
+        seen.add(current)
+        source = classes.get(current, "")
+        if not source:
+            break
+        parts.append(source)
+        if re.search(r"^\s+def run\(", source, re.M):
+            break
+        bases = _class_bases(current, source)
+        current = bases[0] if bases else ""
+    return "\n".join(parts)
+
+
+def _scenario_class_names(decorators: str, body: str) -> list[str]:
+    names: list[str] = []
+    for name in _SCENARIO_CLASS_RE.findall(decorators) + _RUN_CLASS_RE.findall(body):
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _expand_callees_limited(source: str, functions: dict[str, str]) -> str:
+    """Include helpers the scenario calls, two levels deep, skipping harness code."""
+    seen: set[str] = set()
+    parts = [source]
+
+    def walk(text: str, depth: int) -> None:
+        if depth > 1:
+            return
+        for name, body in functions.items():
+            if name in seen or name in _RELIABILITY_SKIP_EXPAND or name.startswith("test_"):
+                continue
+            if re.search(rf"\b{re.escape(name)}\(", text) is None:
+                continue
+            seen.add(name)
+            parts.append(body)
+            walk(body, depth + 1)
+
+    walk(source, 0)
+    return "\n".join(parts)
+
+
+def _model_class_name(text: str) -> str:
+    match = re.search(r"^MODEL\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", text, re.M)
+    return match.group(1) if match else ""
+
+
+def _active_scenario_signals(
+    class_names: list[str],
+    *,
+    classes: dict[str, str],
+    functions: dict[str, str],
+    specs: dict[str, list[tuple[str, bool]]],
+    model_class: str,
+) -> set[str]:
+    """Signals the scenario actually runs.
+
+    A ``signals_attr`` uses the model spec (``("SIGKILL", None)`` runs;
+    ``("SIGKILL", "reason")`` is skipped). A scenario that kills inside
+    ``run`` uses the literal in that class or in the kill helper it calls.
+    """
+    active: set[str] = set()
+    for name in class_names:
+        source = _scenario_source(name, classes)
+        if not source:
+            continue
+        attr = _walk_class_attr(name, classes, _SIGNALS_ATTR_RE)
+        if attr:
+            spec_name = ""
+            if model_class:
+                spec_name = _walk_class_attr(model_class, classes, re.compile(
+                    rf"^\s+{re.escape(attr)}\s*(?::[^\n=]+)?=\s*([A-Za-z_][A-Za-z0-9_]*)",
+                    re.M,
+                )) or ""
+            pairs = specs.get(spec_name) if spec_name else None
+            if pairs is None:
+                active.add("SIGKILL")
+            else:
+                active.update(signal for signal, skipped in pairs if not skipped)
+            continue
+        kill_text = source
+        for func_name, func_body in functions.items():
+            if not func_name.startswith(("_kill", "_shutdown", "kill_")):
+                continue
+            if re.search(rf"\b{re.escape(func_name)}\(", source):
+                kill_text += "\n" + func_body
+        active.update(_SIG_RE.findall(_strip_docstrings(kill_text)))
+    return active
+
+
+def scan_reliability_cells(
+    repo_root: Path | None,
+    *,
+    keywords: dict[str, tuple[str, ...]],
+    skipped_out: dict[str, set[tuple[str, str]]] | None = None,
+) -> dict[str, set[tuple[str, str]]]:
+    """Active fault-mode cells per radar model id.
+
+    When ``skipped_out`` is provided, tests with ``skip_reason`` /
+    ``@pytest.mark.skip`` or a signal spec whose only SIGKILL is skipped
+    are recorded there instead of in the covered set.
+    """
+    found = {model_id: set() for model_id in keywords}
+    skipped = skipped_out if skipped_out is not None else {model_id: set() for model_id in keywords}
+    for model_id in keywords:
+        skipped.setdefault(model_id, set())
+    if repo_root is None or not repo_root.is_dir():
+        return found
+    root = repo_root / "tests" / "dfx" / "reliability"
+    if not root.is_dir():
+        return found
+    known = {scenario_id for scenario_id, _label in _RELIABILITY_SCENARIOS}
+    classes, functions, specs = _reliability_sources(root)
+    for path in _iter_reliability_test_files(root):
+        owners = [mid for mid, kws in keywords.items() if _file_matches_model(path.name, kws)]
+        if not owners:
+            continue
+        text = _read_reliability_text(path)
+        if not text:
+            continue
+        lists = _signal_lists(text)
+        model_class = _model_class_name(text)
+        for func_name, decorators, body in _iter_test_functions(text):
+            class_names = [name for name in _scenario_class_names(decorators, body) if name in classes]
+            if class_names:
+                signals = _active_scenario_signals(
+                    class_names,
+                    classes=classes,
+                    functions=functions,
+                    specs=specs,
+                    model_class=model_class,
+                )
+                evidence = "\n".join(_scenario_source(name, classes) for name in class_names)
+                evidence = _expand_callees_limited(evidence + "\n" + body, functions)
+                body_for_cells = _code_for_dims(evidence)
+                scenario_style = True
+            else:
+                signals = _active_signals(decorators, body, lists)
+                body_for_cells = body
+                scenario_style = False
+            # An empty signal set is a skip only when the scenario declares
+            # signals_attr and every spec is skipped. OOM and graceful cases
+            # have no crash signal and still count.
+            requires_signal = any(
+                _SIGNALS_ATTR_RE.search(_scenario_source(name, classes) or "")
+                for name in class_names
+            )
+            spec_skipped = bool(requires_signal and not signals)
+            forced_skip = _function_skipped(decorators) or spec_skipped
+            if forced_skip and not signals:
+                signals = {"SIGKILL", "SIGTERM"}
+            cells = _cells_for_test(
+                func_name,
+                body_for_cells,
+                signals,
+                filename=path.name,
+                scenario_style=scenario_style,
+            )
+            cells = {(sid, dim) for sid, dim in cells if sid in known}
+            if not forced_skip and cells and _documents_serial_recover(
+                body + "\n" + "\n".join(_scenario_source(name, classes) for name in class_names)
+            ):
+                cells |= {(sid, "recover") for sid, _dim in cells}
+            target = skipped if forced_skip else found
+            for model_id in owners:
+                target[model_id] |= cells
+    for model_id in found:
+        skipped[model_id] -= found[model_id]
+    return found
+
+
+def _helper_sources(text: str) -> dict[str, str]:
+    matches = list(_ANY_DEF_RE.finditer(text))
+    sources: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sources[match.group(1)] = text[match.start() : end]
+    return sources
+
+
+def _expand_callees(body: str, helpers: dict[str, str]) -> str:
+    extra: list[str] = []
+    for name, source in helpers.items():
+        if name.startswith("test_"):
+            continue
+        if re.search(rf"\b{re.escape(name)}\b", body):
+            extra.append(source)
+    return body + "\n" + "\n".join(extra)
+
+
+def _case_record(
+    *,
+    kind: str,
+    models: set[str],
+    datasets: set[str],
+    tags: set[str],
+    async_chunk: bool | None,
+    duplex: bool,
+    gpu: bool,
+    npu: bool,
+    source: str,
+) -> dict:
+    return {
+        "kind": kind,
+        "models": models,
+        "datasets": datasets,
+        "tags": tags,
+        "async_chunk": async_chunk,
+        "duplex": duplex,
+        "gpu": gpu,
+        "npu": npu,
+        "source": source,
+    }
+
+
+def _header_before_first_test(text: str) -> str:
+    match = _DEF_RE.search(text)
+    header = text[: match.start()] if match else text
+    return _strip_docstrings(header)
+
+
+def _k_matches(name: str, expr: str | None) -> bool:
+    """Pytest ``-k`` subset: keywords are substrings, with and/or/not."""
+    if expr is None:
+        return True
+    text = expr.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    if not text:
+        return True
+    node = name.lower()
+    tokens = re.findall(r"\(|\)|\band\b|\bor\b|\bnot\b|[A-Za-z0-9_.-]+", text, re.I)
+    if not tokens:
+        return True
+    parts: list[str] = []
+    for token in tokens:
+        low = token.lower()
+        if low in {"and", "or", "not"} or token in {"(", ")"}:
+            parts.append(low if low in {"and", "or", "not"} else token)
+        else:
+            parts.append("True" if low in node else "False")
+    compiled = " ".join(parts)
+    if not re.fullmatch(r"[TrueFalseandort\s()]+", compiled):
+        return False
+    try:
+        return bool(eval(compiled, {"__builtins__": {}}, {}))  # noqa: S307 - tokens are only booleans and and/or/not
+    except Exception:
+        return False
+
+
+def _pytest_chunks(text: str) -> list[str]:
+    """Each ``pytest`` invocation in a pipeline file, backslash joins included."""
+    flat = re.sub(r"\\\s*\n", " ", text)
+    chunks: list[str] = []
+    for match in re.finditer(r"\bpytest\b", flat):
+        rest = flat[match.start() :]
+        nxt = re.search(r"\n[^\n]*\bpytest\b", rest[6:])
+        chunk = rest[: 6 + nxt.start()] if nxt else rest[:2500]
+        chunks.append(chunk)
+    return chunks
+
+
+def _parse_pytest_chunk(chunk: str) -> dict:
+    config = ""
+    config_match = re.search(r"--test-config-file\s+(\S+)", chunk)
+    if config_match:
+        config = config_match.group(1).strip("\"'")
+    k_expr = None
+    k_match = re.search(r"(?:^|\s)-k\s+(\"[^\"]*\"|'[^']*'|\S+)", chunk)
+    if k_match:
+        k_expr = k_match.group(1).strip("\"'")
+    bare: set[str] = set()
+    nodes: dict[str, set[str]] = {}
+    dirs: set[str] = set()
+    for path_match in re.finditer(r"(tests/[\w./-]+\.py)(?:::(\w+))?", chunk):
+        path, node = path_match.group(1), path_match.group(2)
+        if node:
+            nodes.setdefault(path, set()).add(node)
+        else:
+            bare.add(path)
+    for dir_match in re.finditer(r"(tests/[\w./-]+/)(?:\s|$)", chunk):
+        dirs.add(dir_match.group(1))
+    return {"config": config, "k": k_expr, "bare": bare, "nodes": nodes, "dirs": dirs}
+
+
+def _nightly_invocations(repo_root: Path) -> dict[str, list[dict]]:
+    """GPU (cuda + amd nightly) and NPU nightly pytest selections."""
+    found: dict[str, list[dict]] = {"gpu": [], "npu": []}
+    for folder, side in (("cuda", "gpu"), ("npu", "npu"), ("amd", "gpu")):
+        directory = repo_root / ".buildkite" / folder
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*nightly*.y*ml")):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for chunk in _pytest_chunks(text):
+                found[side].append(_parse_pytest_chunk(chunk))
+    return found
+
+
+def _invocation_selects(invocation: dict, *, config: str, test_name: str, py_path: str) -> bool:
+    if invocation["config"] and invocation["config"] == config:
+        return _k_matches(test_name, invocation["k"])
+    if not py_path:
+        return False
+    if py_path in invocation["bare"] or any(py_path.startswith(folder) for folder in invocation["dirs"]):
+        return _k_matches(test_name, invocation["k"])
+    nodes = invocation["nodes"].get(py_path)
+    if nodes and test_name in nodes:
+        return _k_matches(test_name, invocation["k"])
+    return False
+
+
+def _selected_sides(
+    invocations: dict[str, list[dict]],
+    *,
+    config: str = "",
+    test_name: str = "",
+    py_path: str = "",
+) -> set[str]:
+    selected: set[str] = set()
+    for side, items in invocations.items():
+        if any(
+            _invocation_selects(item, config=config, test_name=test_name, py_path=py_path)
+            for item in items
+        ):
+            selected.add(side)
+    return selected
+
+
+def _is_local_mark(text: str) -> bool:
+    """True for ``local_model`` / ``local_test`` marks. Those runs are local, not nightly."""
+    return re.search(r"local[_\s-]?model|local[_\s-]?test", text or "", re.I) is not None
+
+
+def _json_is_local(item: dict) -> bool:
+    try:
+        blob = json.dumps(item.get("mark"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        blob = str(item.get("mark"))
+    return _is_local_mark(blob)
+
+
+def _deploy_config_text(repo_root: Path, text: str) -> str:
+    """Fold a referenced deploy YAML into async-chunk detection."""
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for name in re.findall(r"([\w./-]+\.ya?ml)", text):
+        candidates = (
+            repo_root / name,
+            repo_root / "vllm_omni" / "deploy" / Path(name).name,
+        )
+        for path in candidates:
+            key = str(path)
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            try:
+                chunks.append(path.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                continue
+    return "\n".join(chunks)
+
+
+def _has_accuracy_metrics(obj: object) -> bool:
+    """True when a bench object carries accuracy metric keys, not path strings."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if _ACCURACY_KEY_RE.search(str(key)):
+                return True
+            if _has_accuracy_metrics(value):
+                return True
+    elif isinstance(obj, list):
+        return any(_has_accuracy_metrics(item) for item in obj)
+    return False
+
+
+def scan_model_care_cases(
+    repo_root: Path | None,
+    *,
+    keywords: dict[str, tuple[str, ...]],
+) -> list[dict]:
+    """Performance and accuracy cases that can cover a Model care row."""
+    if repo_root is None or not repo_root.is_dir():
+        return []
+    npu_yaml = _read_npu_yaml(repo_root)
+    invocations = _nightly_invocations(repo_root)
+    cases: list[dict] = []
+    perf_dir = repo_root / "tests" / "dfx" / "perf" / "tests"
+    if perf_dir.is_dir():
+        for path in sorted(perf_dir.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            items = payload if isinstance(payload, list) else [payload]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                server = item.get("server_params") if isinstance(item.get("server_params"), dict) else {}
+                model_text = " ".join(
+                    [
+                        path.name,
+                        str(item.get("test_name") or ""),
+                        str(server.get("model") or ""),
+                        json.dumps(server, ensure_ascii=False),
+                    ]
+                )
+                models = _models_in_text(model_text, keywords)
+                if not models:
+                    continue
+                async_chunk = _async_flag(json.dumps(server, ensure_ascii=False))
+                if async_chunk is None:
+                    async_chunk = _async_flag(json.dumps(item.get("server_params") or {}, ensure_ascii=False))
+                benches = item.get("benchmark_params")
+                bench_rows = benches if isinstance(benches, list) and benches else [item]
+                for bench in bench_rows:
+                    if not isinstance(bench, dict):
+                        continue
+                    raw_dataset = ""
+                    for key in ("dataset", "dataset_name", "dataset-name"):
+                        value = bench.get(key)
+                        if isinstance(value, str) and value.strip():
+                            raw_dataset = value.strip()
+                            break
+                    datasets = set(_row_datasets(raw_dataset))
+                    marked = _sides_from_marks(item)
+                    if marked is None:
+                        gpu, npu = _hardware_flags(
+                            model_text + "\n" + json.dumps(bench, ensure_ascii=False),
+                            path,
+                            npu_yaml,
+                        )
+                    else:
+                        gpu, npu = marked
+                    test_name = str(item.get("test_name") or "")
+                    if re.search(r"(^|_)npu($|_)", test_name.lower()):
+                        npu = True
+                    duplex_blob = " ".join(
+                        [
+                            raw_dataset,
+                            test_name,
+                            str(bench.get("backend") or ""),
+                            json.dumps(bench.get("extra_body") or {}),
+                        ]
+                    )
+                    label = str(bench.get("name") or test_name or path.stem)
+                    rel_config = path.relative_to(repo_root).as_posix()
+                    selected = _selected_sides(
+                        invocations,
+                        config=rel_config,
+                        test_name=test_name or label,
+                    )
+                    # A local_model case is run outside nightly and still counts
+                    # on the hardware it declares.
+                    if _json_is_local(item):
+                        selected = set(selected) | ({"gpu"} if gpu else set()) | ({"npu"} if npu else set())
+                    side_gpu = bool(gpu and "gpu" in selected)
+                    side_npu = bool(npu and "npu" in selected)
+                    record = _case_record(
+                        kind="perf",
+                        models=models,
+                        datasets=datasets,
+                        tags=_tags_in_text(json.dumps(bench)),
+                        async_chunk=async_chunk,
+                        duplex=_is_duplex_text(duplex_blob, datasets),
+                        gpu=side_gpu,
+                        npu=side_npu,
+                        source=f"{rel_config}:{label}",
+                    )
+                    cases.append(record)
+                    # Combined perf+accuracy benches cover a Precision row
+                    # with the same model, dataset, mode, feature, and side.
+                    if _has_accuracy_metrics(bench):
+                        cases.append(dict(record, kind="prec"))
+    acc_root = repo_root / "tests" / "e2e" / "accuracy"
+    if acc_root.is_dir():
+        for path in sorted(acc_root.rglob("*.py")):
+            if path.name == "conftest.py":
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not _models_in_text(str(path.relative_to(repo_root)), keywords) and not _models_in_text(
+                path.name, keywords
+            ):
+                # File path did not name a radar model. Still accept the file
+                # when a test function's own text names one (rare).
+                file_models: set[str] = set()
+            else:
+                file_models = _models_in_text(str(path.relative_to(repo_root)) + "\n" + path.name, keywords)
+            header = _header_before_first_test(text)
+            header_async = _async_flag(header)
+            helpers = _helper_sources(text)
+            rel = path.relative_to(repo_root).as_posix()
+            for func_name, decorators, body in _iter_test_functions(text):
+                expanded = _expand_callees(decorators + "\n" + body, helpers)
+                models = set(file_models) | _models_in_text(func_name + "\n" + expanded, keywords)
+                if not models:
+                    continue
+                func_async = _async_flag(expanded)
+                async_chunk = func_async if func_async is not None else header_async
+                if async_chunk is None:
+                    async_chunk = _async_flag(_deploy_config_text(repo_root, header + "\n" + expanded))
+                datasets = _datasets_in_text(func_name + "\n" + expanded)
+                marked = _hardware_from_decorator(decorators)
+                if marked is None and re.search(r"pytest\.mark\.cpu\b", decorators):
+                    gpu, npu = False, False
+                elif marked is None:
+                    gpu, npu = _hardware_flags(decorators + "\n" + body, path, npu_yaml)
+                else:
+                    gpu, npu = marked
+                selected = _selected_sides(invocations, test_name=func_name, py_path=rel)
+                if _is_local_mark(decorators + "\n" + body):
+                    selected = set(selected) | ({"gpu"} if gpu else set()) | ({"npu"} if npu else set())
+                cases.append(
+                    _case_record(
+                        kind="prec",
+                        models=models,
+                        datasets=datasets,
+                        tags=_tags_in_text(expanded),
+                        async_chunk=async_chunk,
+                        duplex=_is_duplex_text(expanded, datasets),
+                        gpu=bool(gpu and "gpu" in selected),
+                        npu=bool(npu and "npu" in selected),
+                        source=f"{rel}:{func_name}",
+                    )
+                )
+    return cases
+
+
+def _case_covers(case: dict, row: dict, side: str, *, dataset_token: str | None = None) -> bool:
+    kind = _row_kind(row)
+    if kind is None or case["kind"] != kind:
+        return False
+    if side == "gpu" and not case["gpu"]:
+        return False
+    if side == "npu" and not case["npu"]:
+        return False
+    needed = frozenset({dataset_token}) if dataset_token else _row_datasets(str(row.get("dataset") or ""))
+    # random / random-mm is a smoke dataset. It does not stand in for
+    # seed-tts, daily-omni, duplexEval, or OmniInteract.
+    if needed & _EVAL_DATASETS and case["datasets"] <= _RANDOM_DATASETS:
+        return False
+    if not needed or not needed <= case["datasets"]:
+        return False
+    if _row_requires_cot(row) and "cot" not in case["tags"]:
+        return False
+    full = _row_is_full_duplex(row)
+    if full and not case["duplex"]:
+        return False
+    if not full and case["duplex"]:
+        return False
+    feature = _row_feature(row)
+    # A full-duplex bench that does not repeat async_chunk still covers the
+    # duplex care row. An explicit ``async_chunk: false`` does not.
+    if feature == "async" and case["async_chunk"] is not True:
+        if not (full and case["async_chunk"] is None):
+            return False
+    if feature == "default" and case["async_chunk"] is not False:
+        return False
+    if feature == "none" and case["async_chunk"] is True:
+        return False
+    return True
+
+
+def _empty_side() -> dict:
+    return {"covered": 0, "total": 0, "pct": 0, "rows": []}
+
+
+def _presence_side(cases: list[dict], kind: str, side: str) -> dict:
+    """100% when any real case of ``kind`` exists on ``side``, else 0%."""
+    hits = [case["source"] for case in cases if case["kind"] == kind and case.get(side)]
+    present = bool(hits)
+    return {
+        "covered": 1 if present else 0,
+        "total": 1 if present else 0,
+        "pct": 100 if present else 0,
+        "rows": [],
+        "by": hits[0] if hits else "",
+    }
+
+
+def score_model_care(
+    scenarios: list[dict],
+    cases: list[dict],
+    *,
+    model_id: str,
+    keywords: tuple[str, ...],
+) -> dict[str, dict]:
+    """Performance and Precision fractions for one radar model.
+
+    No Model care rows for an axis → ``basis="repo-tests"``: 100% on a
+    hardware side only when a real case of that kind exists there, else 0%.
+    """
+    matched = matching_scenarios(scenarios, model_id, keywords)
+    model_cases = [case for case in cases if model_id in case["models"]]
+    result = {
+        "perf": _empty_side() | {"basis": "repo-tests", "gpu": _empty_side(), "npu": _empty_side()},
+        "prec": _empty_side() | {"basis": "repo-tests", "gpu": _empty_side(), "npu": _empty_side()},
+    }
+    if not matched:
+        for axis, kind in (("perf", "perf"), ("prec", "prec")):
+            gpu = _presence_side(model_cases, kind, "gpu")
+            npu = _presence_side(model_cases, kind, "npu")
+            single = 100 if gpu["pct"] == 100 or npu["pct"] == 100 else 0
+            result[axis] = {
+                "basis": "repo-tests",
+                "gpu": gpu,
+                "npu": npu,
+                "covered": gpu["covered"] + npu["covered"],
+                "total": gpu["total"] + npu["total"],
+                "pct": single,
+                "single": single,
+            }
+        return result
+    for axis in ("perf", "prec"):
+        result[axis] = {
+            "basis": "model-care",
+            "gpu": {"covered": 0, "total": 0, "rows": []},
+            "npu": {"covered": 0, "total": 0, "rows": []},
+        }
+    for scenario in matched:
+        for row in scenario.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            axis = _row_kind(row)
+            if axis is None:
+                continue
+            for side in _hardware_sides(str(row.get("hardware") or "")):
+                bucket = result[axis][side]
+                needed = _row_datasets(str(row.get("dataset") or ""))
+                # A care row that names two datasets (duplexEval-OmniInteract)
+                # is covered when each dataset has its own matching case.
+                # The repo records those benches in separate JSON files.
+                if len(needed) > 1:
+                    hits: list[str] = []
+                    covered = True
+                    for token in sorted(needed):
+                        token_hits = [
+                            case["source"]
+                            for case in model_cases
+                            if _case_covers(case, row, side, dataset_token=token)
+                        ]
+                        if not token_hits:
+                            covered = False
+                            hits = []
+                            break
+                        hits.append(token_hits[0])
+                else:
+                    matched_cases = [case for case in model_cases if _case_covers(case, row, side)]
+                    if not _row_requires_cot(row):
+                        tighter = [case for case in matched_cases if "cot" not in case["tags"]]
+                        if tighter:
+                            matched_cases = tighter
+                    hits = [case["source"] for case in matched_cases]
+                    covered = bool(hits)
+                bucket["total"] += 1
+                if covered:
+                    bucket["covered"] += 1
+                bucket["rows"].append(
+                    {
+                        "mode": row.get("mode"),
+                        "feature": row.get("feature"),
+                        "dataset": row.get("dataset"),
+                        "hardware": row.get("hardware"),
+                        "covered": covered,
+                        "by": "; ".join(hits),
+                    }
+                )
+    for axis, kind in (("perf", "perf"), ("prec", "prec")):
+        gpu = result[axis]["gpu"]
+        npu = result[axis]["npu"]
+        # A side the care table does not mention is presence-based, same as
+        # a model with no rows: full only when a real case exists.
+        if gpu["total"] == 0:
+            present = _presence_side(model_cases, kind, "gpu")
+            gpu["pct"] = present["pct"]
+            gpu["by"] = present["by"]
+        else:
+            gpu["pct"] = coverage_percent(gpu["covered"], gpu["total"])
+        if npu["total"] == 0:
+            present = _presence_side(model_cases, kind, "npu")
+            npu["pct"] = present["pct"]
+            npu["by"] = present["by"]
+        else:
+            npu["pct"] = coverage_percent(npu["covered"], npu["total"])
+        combined_cov = gpu["covered"] + npu["covered"]
+        combined_total = gpu["total"] + npu["total"]
+        result[axis]["covered"] = combined_cov
+        result[axis]["total"] = combined_total
+        if combined_total == 0:
+            result[axis]["pct"] = 100 if gpu["pct"] == 100 or npu["pct"] == 100 else 0
+        else:
+            result[axis]["pct"] = coverage_percent(combined_cov, combined_total)
+        result[axis]["single"] = result[axis]["pct"]
+        result[axis]["basis"] = "model-care"
+    return result
+
+
+def score_reliability(
+    cells: set[tuple[str, str]],
+    *,
+    model_id: str | None = None,
+    skipped: set[tuple[str, str]] | None = None,
+) -> dict:
+    """Reliability fraction against the planned issue-133 library for one model."""
+    scenarios = reliability_scenarios_for(model_id)
+    known = set(scenarios)
+    planned = [
+        f"{sid}:{dim}"
+        for sid, _label in _RELIABILITY_SCENARIOS
+        if sid not in known
+        for dim in _RELIABILITY_DIMENSIONS
+    ]
+    hit_cells = {(sid, dim) for sid, dim in cells if sid in known and dim in _RELIABILITY_DIMENSIONS}
+    skipped_cells = {
+        (sid, dim)
+        for sid, dim in (skipped or set())
+        if sid in known and dim in _RELIABILITY_DIMENSIONS and (sid, dim) not in hit_cells
+    }
+    missing = [
+        f"{sid}:{dim}"
+        for sid in scenarios
+        for dim in _RELIABILITY_DIMENSIONS
+        if (sid, dim) not in hit_cells and (sid, dim) not in skipped_cells
+    ]
+    covered = len(hit_cells)
+    total = len(scenarios) * len(_RELIABILITY_DIMENSIONS)
+    return {
+        "basis": "issue-133",
+        "issue": RELIABILITY_ISSUE_URL,
+        "covered": covered,
+        "total": total,
+        "pct": coverage_percent(covered, total),
+        "hits": sorted(f"{sid}:{dim}" for sid, dim in hit_cells),
+        "skipped": sorted(f"{sid}:{dim}" for sid, dim in skipped_cells),
+        "missing": missing,
+        "planned": planned,
+    }
+
+
+def attach_quality_percentages(
+    coverage: dict[str, dict],
+    repo_root: Path | None,
+    *,
+    has_rel: frozenset[str] | set[str],
+    keywords: dict[str, tuple[str, ...]],
+    model_care_path: Path | str | None = None,
+) -> dict[str, dict]:
+    """Add a ``pct`` block to each model's coverage dict.
+
+    Binary axes (``gpu`` / ``npu`` sets, ``rel`` bool) are left to the caller.
+    Performance, Precision, and Reliability percentages live under ``pct``.
+    """
+    care_path = resolve_model_care_json(model_care_path)
+    scenarios = load_model_care_scenarios(care_path)
+    cases = scan_model_care_cases(repo_root, keywords=keywords)
+    rel_skipped: dict[str, set[tuple[str, str]]] = {}
+    rel_cells = scan_reliability_cells(repo_root, keywords=keywords, skipped_out=rel_skipped)
+    for model_id, cov in coverage.items():
+        care = score_model_care(scenarios, cases, model_id=model_id, keywords=keywords.get(model_id, ()))
+        for axis in ("perf", "prec"):
+            care[axis]["display"] = "split"
+        block = {"perf": care["perf"], "prec": care["prec"], "model_care": str(care_path or "")}
+        if model_id in has_rel:
+            block["rel"] = score_reliability(
+                rel_cells.get(model_id, set()),
+                model_id=model_id,
+                skipped=rel_skipped.get(model_id, set()),
+            )
+        cov["pct"] = block
+    return coverage

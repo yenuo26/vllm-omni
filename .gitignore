@@ -240,6 +240,7 @@ datasets/
 *.csv
 *.json
 !tests/dfx/perf/tests/*.json
+!.claude/skills/vllm-omni-test-report/references/model_care_scenarios.json
 !apps/ComfyUI-vLLM-Omni/example_workflows/*.json
 !tests/assets/soulxsinger/*.json
 *.jsonl

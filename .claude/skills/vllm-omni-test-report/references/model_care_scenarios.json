@@ -1,0 +1,625 @@
+{
+  "columns": [
+    {
+      "key": "deploy",
+      "label": "Deployment"
+    },
+    {
+      "key": "mode",
+      "label": "Mode"
+    },
+    {
+      "key": "feature",
+      "label": "Feature"
+    },
+    {
+      "key": "hardware",
+      "label": "Hardware"
+    },
+    {
+      "key": "dataset",
+      "label": "Dataset"
+    },
+    {
+      "key": "traffic",
+      "label": "Traffic"
+    },
+    {
+      "key": "metrics",
+      "label": "Metrics"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "qwen3-omni",
+      "title": "qwen3-omni",
+      "aliases": [
+        "qwen3-omni",
+        "qwen3_omni",
+        "Qwen3 Omni",
+        "Qwen3-Omni",
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+      ],
+      "deploy": "Single replica · 3-stage (stage0: 1 card; stage1,2: 1 card)",
+      "rows": [
+        {
+          "mode": "Full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "duplexEval-OmniInteract",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "busy RTF"
+            },
+            {
+              "label": "other",
+              "value": "client RTF, client TTFP, TTFT, E2E, audio duration, Stall Ratio"
+            }
+          ],
+          "dataset_label": "duplexEval (120 samples) + OmniInteract (60 samples, 1q1a_math)"
+        },
+        {
+          "mode": "Full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "duplexEval",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "busy RTF"
+            },
+            {
+              "label": "other",
+              "value": "client RTF, client TTFP, TTFT, E2E, audio duration, Stall Ratio"
+            }
+          ],
+          "dataset_label": "duplexEval (120 samples)"
+        },
+        {
+          "mode": "Full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU/NPU",
+          "dataset": "duplexEval",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "PR/RTD"
+            }
+          ],
+          "dataset_label": "duplexEval (120 samples)"
+        },
+        {
+          "mode": "Full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "OmniInteract",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "F1"
+            }
+          ],
+          "dataset_label": "OmniInteract (60 samples, 1q1a_math)"
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "default",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "default",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "daily-omni",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "TTFT, RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 1 / 16 / 32 / 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 1 / 16 / 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "default",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "default",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "daily-omni",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "Accuracy"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "minicpmo-4-5",
+      "title": "MiniCPM-o 4.5",
+      "aliases": [
+        "minicpm",
+        "minicpmo-4-5",
+        "MiniCPM-o 4.5",
+        "MiniCPM-o-4.5",
+        "MiniCPM-o-4_5",
+        "openbmb/MiniCPM-o-4_5"
+      ],
+      "deploy": "1 card · 3-stage · stage2: 2 replicas",
+      "rows": [
+        {
+          "mode": "Full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "duplexEval-OmniInteract",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "busy RTF"
+            },
+            {
+              "label": "other",
+              "value": "client RTF, client TTFP, TTFT, E2E, audio duration, Stall Ratio"
+            }
+          ],
+          "dataset_label": "duplexEval (120 samples) + OmniInteract (60 samples, 1q1a_math)"
+        },
+        {
+          "mode": "Full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "duplexEval",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "busy RTF"
+            },
+            {
+              "label": "other",
+              "value": "client RTF, client TTFP, TTFT, E2E, audio duration, Stall Ratio"
+            }
+          ],
+          "dataset_label": "duplexEval (120 samples)"
+        },
+        {
+          "mode": "Full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU/NPU",
+          "dataset": "duplexEval",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "PR/RTD"
+            }
+          ],
+          "dataset_label": "duplexEval (120 samples)"
+        },
+        {
+          "mode": "Full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "OmniInteract",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "F1"
+            }
+          ],
+          "dataset_label": "OmniInteract (60 samples, 1q1a_math)"
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "default",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "default",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "daily-omni",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "TTFT, RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 1 / 16 / 32 / 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 1 / 16 / 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "default",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "default",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "daily-omni",
+          "traffic": "Concurrency 8",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "Accuracy"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "GPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 32",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ]
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 1 / 16 / 32 / 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "RTF, TTFP"
+            },
+            {
+              "label": "other",
+              "value": "TPOT, E2E, Throughput, TTFT"
+            }
+          ],
+          "deploy": "Single replica · 2 cards (stage0,1: 1 card; stage2: 1 card)"
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "async chunk + prefix",
+          "hardware": "NPU",
+          "dataset": "seed-tts",
+          "traffic": "Concurrency 64",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "SIM/WER"
+            }
+          ],
+          "deploy": "Single replica · 2 cards (stage0,1: 1 card; stage2: 1 card)"
+        }
+      ]
+    },
+    {
+      "id": "hunyuan-image",
+      "title": "hunyuan-image",
+      "aliases": [
+        "hunyuan",
+        "hunyuan-image",
+        "hunyuan-image3",
+        "HunyuanImage-3.0"
+      ],
+      "rows": [
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "None",
+          "hardware": "GPU/NPU",
+          "dataset": "custom",
+          "traffic": "Concurrency 1 / 16",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "Latency, Throughput"
+            }
+          ],
+          "deploy": "Distilled weights, quantized · AR (TP=2): 2 cards + DiT (TP=1, SP=2): 2 cards"
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "performance",
+          "feature": "None",
+          "hardware": "GPU/NPU",
+          "dataset": "random",
+          "traffic": "Concurrency 1 / 4",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "Latency, Throughput"
+            }
+          ],
+          "deploy": "Distilled weights, quantized · DiT (TP=1, SP=4)"
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "None",
+          "hardware": "GPU/NPU",
+          "dataset": "Single image",
+          "traffic": "Concurrency 1",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "PSNR, SSIM"
+            }
+          ],
+          "deploy": "Distilled weights · DiT (TP=4) (it2i)"
+        },
+        {
+          "mode": "Non-full duplex",
+          "kind": "accuracy",
+          "feature": "None",
+          "hardware": "GPU/NPU",
+          "dataset": "Single image",
+          "traffic": "Concurrency 1",
+          "metrics": [
+            {
+              "label": "baseline",
+              "value": "PSNR, SSIM, COT similarity to reference, Image-Image similarity, COT prefix match"
+            }
+          ],
+          "deploy": "Distilled weights · AR (TP=2) + DiT (TP=2)"
+        }
+      ]
+    }
+  ]
+}
