@@ -27,7 +27,7 @@ import ci_daily_analysis as m  # noqa: E402
 
 # Each scenario represents a (pipeline, branch, ci_bucket, message) tuple
 # covering all four CI buckets: merge / ready / nightly / weekly. The
-# `message` field is what classify_build() uses to bucket scheduled runs.
+# `branch` plus the first line of `message` is what classify_build() uses.
 PIPELINE_BRANCH_SCENARIOS = [
     # ── merge bucket (main, ordinary runs) ──
     {
@@ -51,7 +51,7 @@ PIPELINE_BRANCH_SCENARIOS = [
             ("precommit-hooks", 0.96, 45),
         ],
     },
-    # ── ready bucket (non-main) ──
+    # ── ready bucket (feature / PR branch) ──
     {
         "pipeline": "vllm-omni",
         "branch": "alice/diffusion-fp8",
@@ -131,7 +131,7 @@ PIPELINE_BRANCH_SCENARIOS = [
             ("lint", 0.95, 110),
         ],
     },
-    # ── npu ready (non-main) ──
+    # ── npu ready (feature / PR branch) ──
     {
         "pipeline": "vllm-omni-npu-ci",
         "branch": "carol/ascend-graph-opt",

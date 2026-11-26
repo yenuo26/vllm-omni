@@ -217,25 +217,42 @@ filtering is done client-side with vanilla JS — no external dependencies.
 
 ## CI bucket classification
 
-Each job is bucketed using its parent build's `branch` and `message`
-fields (logic adapted from the `vllm-omni-test-report` skill):
+Each job is bucketed from its parent build's `branch` and the **first line**
+of `message`. `source` is not consulted: production scheduled runs on release
+branches are sometimes recorded as `source=ui` (for example Scheduled Release
+B200 build #20135 on `release/v0.34.0`, and some release-branch Scheduled
+nightly / weekly builds).
+
+A release branch is `release/v` plus a version, matching the names this repo
+cuts on GitHub:
+
+- `release/v0.34.0`
+- `release/v0.34.0rc1`
+- `release/v0.14.0.post1`
+
+Pattern: `^release/v\d+\.\d+\.\d+(?:rc\d+|\.post\d+)?$`. Sidecars such as
+`release/v0.34.0-docker`, and feature branches that only mention a version
+(`backport/10687-release-v0.34.0`), stay `ready`.
 
 | Bucket     | Rule |
 |------------|------|
-| `ready`    | `branch != "main"` |
-| `merge`    | `branch == "main"`, ordinary run, not scheduled nightly / weekly |
-| `nightly`  | `branch == "main"` AND `source == "schedule"` AND message contains `"nightly"`, excluding scheduled weekly |
-| `weekly`   | `branch == "main"` AND `source == "schedule"` AND message contains `"weekly"` |
+| `ready`    | branch is neither `main` nor a `release/v<version>` branch. Feature and PR branches stay ready. |
+| `merge`    | `main` or `release/v<version>`, and the first line is not one of the four scheduled titles below |
+| `nightly`  | `main` or `release/v<version>`, and the first line is `Scheduled nightly build` or `Scheduled Release B200 build` |
+| `weekly`   | `main` or `release/v<version>`, and the first line is `Scheduled weekly build` or `Scheduled Non-Critical weekly build` |
 
-The `weekly` check runs before `nightly`, so a `"Scheduled weekly"`
-build is never double-counted as nightly.
+Titles are matched case-insensitively after collapsing ordinary spaces and
+tabs. The match is the **whole first line**, not a substring, so
+`Add experimental AMD MI300 nightly lane` stays `merge` on `main` /
+`release/v<version>` and `ready` on a feature branch.
+`Scheduled weekly build(Release)` is not weekly.
 
-> **AND, not OR (revised).** Both `nightly` and `weekly` require **both**
-> `source == "schedule"` **and** the matching keyword in the message. The
-> previous OR-based heuristics mis-bucketed webhook/PR builds whose commit
-> title merely mentioned "nightly" (e.g. "Add experimental AMD MI300
-> nightly lane") as nightly. Only a true scheduled run (`source ==
-> "schedule"`) whose message carries the keyword counts.
+`weekly` is checked before `nightly`. The two title sets do not overlap.
+
+This classifier is the duration-bucket mapping shared with
+`ci-resource-pool-stats`. It is separate from the test-report skill's
+`classify_build` in `buildkite_build_stats.py`, which still selects the
+latest ready / merge / nightly builds for nightly and release reports.
 
 ## Output naming (required)
 

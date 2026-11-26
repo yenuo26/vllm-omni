@@ -83,22 +83,45 @@ PIPELINE_DISPLAY = {
 }
 
 # CI bucket names — used for the CI Aggregate panel and as `data-ci-bucket`
-# attributes on aggregate cards. The mapping follows the test-report skill:
-#   - ready:    non-`main` branches
-#   - merge:    `main`, ordinary runs (not scheduled nightly / weekly)
-#   - nightly:  `main`, scheduled nightly (or legacy "nightly"/"scheduled"+"build")
-#   - weekly:   `main`, "scheduled weekly" build message
+# attributes on aggregate cards.
+#   - ready:    neither `main` nor a `release/v<version>` branch
+#   - merge:    `main` or `release/v<version>`, ordinary runs
+#   - nightly:  `main` or `release/v<version>`, Scheduled nightly / Release B200
+#   - weekly:   `main` or `release/v<version>`, Scheduled weekly / Non-Critical weekly
 CI_BUCKET_READY = "ready"
 CI_BUCKET_MERGE = "merge"
 CI_BUCKET_NIGHTLY = "nightly"
 CI_BUCKET_WEEKLY = "weekly"
 CI_BUCKET_ORDER = [CI_BUCKET_READY, CI_BUCKET_MERGE, CI_BUCKET_NIGHTLY, CI_BUCKET_WEEKLY]
 CI_BUCKET_DISPLAY = {
-    CI_BUCKET_READY: "Ready (non-main branches)",
-    CI_BUCKET_MERGE: "Merge (main, ordinary runs)",
-    CI_BUCKET_NIGHTLY: "Nightly (main, scheduled)",
-    CI_BUCKET_WEEKLY: "Weekly (main, scheduled weekly)",
+    CI_BUCKET_READY: "Ready (feature / PR branches)",
+    CI_BUCKET_MERGE: "Merge (main / release, ordinary)",
+    CI_BUCKET_NIGHTLY: "Nightly (scheduled nightly / Release B200)",
+    CI_BUCKET_WEEKLY: "Weekly (scheduled weekly / non-critical)",
 }
+
+# Upstream release branches are ``release/v<semver>`` with the pre/post
+# suffixes this repo actually cuts (verified against vllm-project/vllm-omni):
+#   release/v0.34.0, release/v0.34.0rc1, release/v0.14.0.post1
+# Sidecars such as ``release/v0.34.0-docker`` and feature branches that only
+# mention a version (``backport/10687-release-v0.34.0``) are not release branches.
+_RELEASE_BRANCH_RE = re.compile(r"^release/v\d+\.\d+\.\d+(?:rc\d+|\.post\d+)?$")
+
+# Whole first line of the build message, after case-folding and collapsing
+# ordinary spaces/tabs. Not a substring: a PR title that merely mentions
+# "nightly" or "weekly" must not match.
+_NIGHTLY_TITLES = frozenset(
+    {
+        "scheduled nightly build",
+        "scheduled release b200 build",
+    }
+)
+_WEEKLY_TITLES = frozenset(
+    {
+        "scheduled weekly build",
+        "scheduled non-critical weekly build",
+    }
+)
 
 # Job names that are Buildkite orchestration / setup steps rather than real
 # CI work. By default these are filtered out of the report so they don't
@@ -135,50 +158,57 @@ def compile_extra_patterns(raw: str | None) -> list[re.Pattern[str]]:
     return out
 
 
-_WEEKLY_MSG = re.compile(r"weekly", re.IGNORECASE)
-_NIGHTLY_MSG = re.compile(r"nightly", re.IGNORECASE)
+def _is_release_branch(branch: str) -> bool:
+    """True for ``release/v<version>`` branches this repo actually cuts."""
+    return bool(_RELEASE_BRANCH_RE.fullmatch(branch.strip()))
 
 
-def _is_scheduled(build: dict) -> bool:
-    """True if the build was triggered by a Buildkite schedule (cron)."""
-    return (build.get("source") or "").strip().lower() == "schedule"
+def _is_main_or_release(branch: str) -> bool:
+    branch = branch.strip()
+    return branch == "main" or _is_release_branch(branch)
+
+
+def _normalized_message_title(message: str | None) -> str:
+    """First line of a build message, case-folded, ordinary whitespace collapsed.
+
+    Only the first line is considered, so a commit body that happens to quote
+    a scheduled title cannot re-bucket the build. Spaces and tabs are ordinary
+    whitespace; the match is still the whole line, not a substring.
+    """
+    line = (message or "").split("\n", 1)[0].replace("\r", "")
+    return re.sub(r"[ \t]+", " ", line).strip().casefold()
 
 
 def _is_scheduled_weekly(build: dict) -> bool:
-    """True if a *scheduled* build's message indicates a Buildkite *Scheduled weekly* run.
+    """True when the message title is Scheduled weekly or Scheduled Non-Critical weekly.
 
-    Requires **both** conditions (AND): ``source == "schedule"`` **and** the
-    message contains ``weekly``. The message-only check was dropped so a
-    webhook/PR commit that merely mentions "weekly" in its title is no longer
-    mis-bucketed as weekly.
+    Does not consult ``source``. Release-branch scheduled builds are sometimes
+    recorded as ``source=ui``. A title that merely contains "weekly" does not match.
     """
-    if not _is_scheduled(build):
-        return False
-    return bool(_WEEKLY_MSG.search(build.get("message") or ""))
+    return _normalized_message_title(build.get("message")) in _WEEKLY_TITLES
 
 
 def _is_nightly_bucket(build: dict) -> bool:
-    """
-    True if a `main`-branch build counts as **nightly**.
+    """True when the message title is Scheduled nightly or Scheduled Release B200.
 
-    Requires **both** conditions (AND): ``source == "schedule"`` **and** the
-    message contains ``nightly``. Excludes scheduled weekly (handled
-    separately). The previous OR-based heuristics (``source == "schedule"``
-    alone, or ``"nightly" in msg`` alone, or ``"scheduled" + "build"``)
-    mis-bucketed webhook/PR builds whose commit title happened to mention
-    "nightly" (e.g. "Add experimental AMD MI300 nightly lane") as nightly.
+    Excludes the weekly titles. Does not consult ``source``. A title that merely
+    contains "nightly" (for example "Add experimental AMD MI300 nightly lane")
+    does not match.
     """
     if _is_scheduled_weekly(build):
         return False
-    if not _is_scheduled(build):
-        return False
-    return bool(_NIGHTLY_MSG.search(build.get("message") or ""))
+    return _normalized_message_title(build.get("message")) in _NIGHTLY_TITLES
 
 
 def classify_build(build: dict) -> str:
-    """Map a Buildkite build object to one of the four CI buckets."""
+    """Map a Buildkite build object to one of the four CI buckets.
+
+    Feature and PR branches are ``ready``. ``main`` and ``release/v<version>``
+    builds are ``weekly`` or ``nightly`` when the message title is one of the
+    four scheduled types, and ``merge`` otherwise. ``source`` is ignored.
+    """
     branch = (build.get("branch") or "").strip()
-    if branch != "main":
+    if not _is_main_or_release(branch):
         return CI_BUCKET_READY
     if _is_scheduled_weekly(build):
         return CI_BUCKET_WEEKLY
@@ -2380,14 +2410,19 @@ def render_html(
         "  <dd><code>finished_at − started_at</code> for jobs that have both timestamps. "
         "Jobs still running or missing timestamps show <code>N/A</code>.</dd>\n"
         "  <dt>CI Bucket</dt>\n"
-        "  <dd>Per-job classification derived from the parent build:\n"
-        "    <code>ready</code> = non-<code>main</code> branch;\n"
-        "    <code>merge</code> = <code>main</code>, ordinary run, not scheduled nightly/weekly;\n"
-        "    <code>nightly</code> = <code>main</code>, scheduled nightly "
-        "(message contains <code>nightly</code>, or <code>source=schedule</code>, "
-        "or <code>scheduled</code>+<code>build</code>);\n"
-        "    <code>weekly</code> = <code>main</code>, scheduled weekly "
-        "(message contains <code>scheduled weekly</code>).</dd>\n"
+        "  <dd>Per-job classification from the parent build's branch and the "
+        "first line of its message (<code>source</code> is ignored; a title that "
+        "only mentions nightly or weekly does not match):\n"
+        "    <code>ready</code> = feature / PR branch, neither <code>main</code> "
+        "nor <code>release/v0.34.0</code> (also <code>rc</code> / <code>.post</code> "
+        "release branches);\n"
+        "    <code>merge</code> = <code>main</code> or a release branch, ordinary run "
+        "whose title is not one of the four scheduled types;\n"
+        "    <code>nightly</code> = <code>main</code> or a release branch, first line "
+        "<code>Scheduled nightly build</code> or <code>Scheduled Release B200 build</code>;\n"
+        "    <code>weekly</code> = <code>main</code> or a release branch, first line "
+        "<code>Scheduled weekly build</code> or "
+        "<code>Scheduled Non-Critical weekly build</code>.</dd>\n"
         "  <dt>Infra filter</dt>\n"
         "  <dd>Buildkite orchestration jobs (default patterns: "
         "<code>:pipeline: init</code>, anything matching <code>Resolve skip-ci</code>, "
