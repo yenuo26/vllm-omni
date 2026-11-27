@@ -7,20 +7,25 @@ import unittest
 from collections import namedtuple
 
 from issue_close_confirm import (
+    LANE_B200,
     STATUS_CLOSABLE,
     STATUS_FAILING,
     STATUS_INSUFFICIENT,
     PipelineSnapshot,
     attach_clean_streaks,
+    b200_branches_for_issue,
     collect_confirmations,
     count_consecutive_clean_runs,
     evaluate_issue,
     extract_node_ids,
     infer_sides,
+    is_b200_issue,
+    is_scheduled_release_b200,
     job_kind,
     match_jobs,
     node_still_failing,
     normalize_job_name,
+    select_scheduled_release_b200_builds,
     snapshots_from_bk_results,
 )
 
@@ -53,15 +58,46 @@ def _job(
     return {"name": name, "state": state, "info": info, "log_error": log_error, "raw_url": "https://example"}
 
 
-def _snap(label: str, jobs: list[dict], *, number: int = 1, available: bool = True) -> PipelineSnapshot:
-    return PipelineSnapshot(
+def _snap(
+    label: str,
+    jobs: list[dict],
+    *,
+    number: int = 1,
+    available: bool = True,
+    lane: str | None = None,
+    branch: str = "main",
+    pipeline: str = "pipe",
+) -> PipelineSnapshot:
+    kwargs = dict(
         label=label,
         build_number=number,
-        build_url=f"https://buildkite.com/vllm/pipe/builds/{number}",
+        build_url=f"https://buildkite.com/vllm/{pipeline}/builds/{number}",
         jobs=jobs,
         available=available,
         org="vllm",
-        pipeline="pipe",
+        pipeline=pipeline,
+        branch=branch,
+    )
+    if lane is not None:
+        kwargs["lane"] = lane
+    return PipelineSnapshot(**kwargs)
+
+
+def _b200_snap(
+    jobs: list[dict],
+    *,
+    number: int = 20135,
+    branch: str = "release/v0.34.0",
+    available: bool = True,
+) -> PipelineSnapshot:
+    return _snap(
+        "CUDA",
+        jobs,
+        number=number,
+        available=available,
+        lane=LANE_B200,
+        branch=branch,
+        pipeline="vllm-omni",
     )
 
 
@@ -271,6 +307,194 @@ class StreakAndSnapshotTests(unittest.TestCase):
         self.assertTrue(snaps["CUDA"].available)
         self.assertEqual(snaps["CUDA"].build_number, 20013)
         self.assertEqual(snaps["CUDA"].build_url, "https://buildkite.com/vllm/vllm-omni/builds/20013")
+
+
+class B200CloseContractTests(unittest.TestCase):
+    """[B200] issues must be judged from Scheduled Release B200, not daily nightly."""
+
+    def test_detects_b200_tag_in_title_body_or_labels(self):
+        self.assertTrue(is_b200_issue(_issue(1, "[Bug][B200]: job failed on H100")))
+        self.assertTrue(is_b200_issue(_issue(2, "job failed", "see [B200] log")))
+        self.assertTrue(is_b200_issue(_issue(3, "job failed", labels=["ci-failure", "[B200]"])))
+        self.assertTrue(is_b200_issue(_issue(4, "[Bug][ b200 ]: job failed")))
+        self.assertFalse(is_b200_issue(_issue(5, "job failed on a B200 node")))
+        self.assertFalse(is_b200_issue(_issue(6, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")))
+
+    def test_branches_from_issue_ignore_sidecar_and_backport_names(self):
+        issue = _issue(
+            10660,
+            "[Bug][B200]: Nightly CI failed - Diffusion X2V MiniMax H3 Function Test",
+            "Nightly CI (Buildkite vllm/vllm-omni #20135, Scheduled Release B200 build)\n"
+            "Branch: release/v0.34.0\n",
+        )
+        self.assertEqual(b200_branches_for_issue(issue), ("release/v0.34.0",))
+        self.assertEqual(b200_branches_for_issue(_issue(1, "[B200] failed on main")), ("main",))
+        text = (
+            "also mentioned release/v0.34.0-docker and "
+            "backport/10687-release-v0.34.0 and release/v0.34.0rc1"
+        )
+        self.assertEqual(b200_branches_for_issue(_issue(2, "[B200] x", text)), ("release/v0.34.0rc1",))
+
+    def test_b200_build_match_is_first_line_and_ignores_source(self):
+        self.assertTrue(
+            is_scheduled_release_b200(
+                {"message": "Scheduled Release B200 build", "source": "ui", "number": 20135}
+            )
+        )
+        self.assertTrue(
+            is_scheduled_release_b200(
+                {"message": "  scheduled   release   b200   build  \nbody", "source": "schedule"}
+            )
+        )
+        self.assertFalse(
+            is_scheduled_release_b200({"message": "Scheduled nightly build", "source": "schedule"})
+        )
+        self.assertFalse(
+            is_scheduled_release_b200(
+                {"message": "Fix typo\nScheduled Release B200 build", "source": "ui"}
+            )
+        )
+        self.assertFalse(
+            is_scheduled_release_b200(
+                {"message": "Add experimental Scheduled Release B200 build docs", "source": "ui"}
+            )
+        )
+        selected = select_scheduled_release_b200_builds(
+            [
+                {"number": 21145, "message": "Scheduled nightly build", "source": "schedule"},
+                {"number": 20135, "message": "Scheduled Release B200 build", "source": "ui"},
+                {"number": 20000, "message": "Scheduled weekly build", "source": "schedule"},
+                {"number": 19900, "message": "PR: mention Scheduled Release B200 build"},
+            ]
+        )
+        self.assertEqual([int(b["number"]) for b in selected], [20135])
+
+    def test_b200_issue_is_not_closable_from_daily_nightly(self):
+        issue = _issue(
+            10660,
+            "[Bug][B200]: Diffusion X2V · MiniMax H3 Function Test failed",
+            "Branch: release/v0.34.0\n"
+            "Job title is \"Diffusion X2V · MiniMax H3 Function Test\".\n"
+            "tests/e2e/online_serving/minimax_h3/test_minimax_h3_dlo_dp2_fl2va_ref2va.py::"
+            "test_minimax_h3_ref2va_partition[minimax_h3_dlo_dp2_ref2va_partition]",
+        )
+        nightly = {
+            "CUDA": _snap("CUDA", [_job("Diffusion X2V · MiniMax H3 Function Test")], number=21145),
+            "NPU": _snap("NPU", [_job("Unrelated NPU Job")], number=13097),
+        }
+        rows = collect_confirmations([issue], nightly, b200_pipelines={})
+        self.assertEqual(rows[0].status, STATUS_INSUFFICIENT)
+        self.assertIn("Scheduled Release B200", rows[0].reason)
+
+        failing_b200 = {
+            "release/v0.34.0": _b200_snap(
+                [_job("Diffusion X2V · MiniMax H3 Function Test", state="failed", failed=["a.py::t"])],
+                number=20135,
+            )
+        }
+        rows = collect_confirmations([issue], nightly, b200_pipelines=failing_b200)
+        self.assertEqual(rows[0].status, STATUS_FAILING)
+        self.assertIn("20135", rows[0].reason)
+        self.assertNotIn("#21145", rows[0].reason)
+        self.assertEqual(rows[0].evidence["CUDA"].build_number, 20135)
+        self.assertEqual(rows[0].evidence["CUDA"].lane, LANE_B200)
+
+    def test_b200_issue_is_closable_only_from_release_b200_build(self):
+        issue = _issue(
+            10661,
+            "[Bug][B200]: Diffusion X2V · MiniMax H3 I2VA/Ref2VA/Timeline Guide Accuracy Test failed",
+            "Branch: release/v0.34.0\n"
+            "Job title is \"Diffusion X2V · MiniMax H3 I2VA/Ref2VA/Timeline Guide Accuracy Test\".\n"
+            "tests/e2e/accuracy/minimax_h3/test_minimax_h3_i2va_ref2va_similarity.py::"
+            "test_minimax_h3_i2va_matches_official_reference",
+        )
+        job = "Diffusion X2V · MiniMax H3 I2VA/Ref2VA/Timeline Guide Accuracy Test"
+        nightly = {"CUDA": _snap("CUDA", [_job(job, state="failed", failed=["a.py::t"])], number=21145)}
+        # A green B200 on main must not close a release/v0.34.0 issue.
+        b200 = {
+            "main": _b200_snap([_job(job)], number=19800, branch="main"),
+            "release/v0.34.0": _b200_snap([_job(job)], number=20140, branch="release/v0.34.0"),
+        }
+        rows = collect_confirmations([issue], nightly, b200_pipelines=b200)
+        self.assertEqual(rows[0].status, STATUS_CLOSABLE)
+        self.assertEqual(rows[0].evidence["CUDA"].build_number, 20140)
+        self.assertIn("Scheduled Release B200 #20140 (release/v0.34.0)", rows[0].reason)
+        self.assertNotIn("#21145", rows[0].reason)
+        self.assertNotIn("#19800", rows[0].reason)
+
+    def test_non_b200_issue_still_uses_daily_nightly(self):
+        issue = _issue(10, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")
+        nightly = {"CUDA": _snap("CUDA", [_job("Diffusion X2V Wan2.2 Accuracy Test")], number=21145)}
+        b200 = {"main": _b200_snap([_job("Diffusion X2V Wan2.2 Accuracy Test")], number=20135, branch="main")}
+        rows = collect_confirmations([issue], nightly, b200_pipelines=b200)
+        self.assertEqual(rows[0].status, STATUS_CLOSABLE)
+        self.assertEqual(rows[0].evidence["CUDA"].build_number, 21145)
+        self.assertIn("passed on #21145", rows[0].results["CUDA"])
+        self.assertNotIn("Scheduled Release B200", rows[0].reason)
+
+    def test_npu_nightly_is_not_b200_evidence(self):
+        issue = _issue(
+            8,
+            "[Bug][B200]: Omni Function Test failed",
+            "Job title is \"Omni Function Test\".",
+        )
+        nightly = {
+            "CUDA": _snap("CUDA", [_job("Omni Function Test")], number=21145),
+            "NPU": _snap("NPU", [_job("Omni Function Test")], number=13097),
+        }
+        rows = collect_confirmations([issue], nightly, b200_pipelines={})
+        self.assertEqual(rows[0].status, STATUS_INSUFFICIENT)
+        self.assertNotIn("13097", rows[0].reason)
+
+    def test_b200_streak_ignores_daily_nightly_history(self):
+        issue = _issue(
+            9,
+            "[Bug][B200]: Omni Function Test failed",
+            "Job title is \"Omni Function Test\". Branch: release/v0.34.0",
+        )
+        nightly = {"CUDA": _snap("CUDA", [_job("Omni Function Test")], number=21145)}
+        b200 = {"release/v0.34.0": _b200_snap([_job("Omni Function Test")], number=20140)}
+        rows = collect_confirmations([issue], nightly, b200_pipelines=b200)
+        self.assertEqual(rows[0].status, STATUS_CLOSABLE)
+        self.assertIsNone(rows[0].clean_streak)
+        nightly_hist = {
+            "CUDA": [
+                (21145, [_job("Omni Function Test", state="passed")]),
+                (21052, [_job("Omni Function Test", state="passed")]),
+                (20900, [_job("Omni Function Test", state="passed")]),
+            ]
+        }
+        b200_hist = {
+            "release/v0.34.0": [
+                (20140, [_job("Omni Function Test", state="passed")]),
+                (20135, [_job("Omni Function Test", state="failed")]),
+            ]
+        }
+        attach_clean_streaks(rows, nightly_hist, b200_histories=b200_hist)
+        self.assertEqual(rows[0].clean_streak, 1)
+
+    def test_dual_tagged_b200_h100_requires_both_lanes(self):
+        issue = _issue(
+            10655,
+            "[Bug][B200][H100][Release]: Omni Function Test failed",
+            "Branch: release/v0.34.0\nJob title is \"Omni Function Test\".",
+        )
+        nightly = {"CUDA": _snap("CUDA", [_job("Omni Function Test")], number=21145)}
+        b200_fail = {
+            "release/v0.34.0": _b200_snap(
+                [_job("Omni Function Test", state="failed", failed=["a.py::t"])],
+                number=20135,
+            )
+        }
+        rows = collect_confirmations([issue], nightly, b200_pipelines=b200_fail)
+        self.assertEqual(rows[0].status, STATUS_FAILING)
+        self.assertIn("B200", rows[0].sides)
+        self.assertIn("CUDA", rows[0].sides)
+        b200_ok = {"release/v0.34.0": _b200_snap([_job("Omni Function Test")], number=20140)}
+        rows = collect_confirmations([issue], nightly, b200_pipelines=b200_ok)
+        self.assertEqual(rows[0].status, STATUS_CLOSABLE)
+        self.assertEqual(rows[0].evidence["B200"].build_number, 20140)
+        self.assertEqual(rows[0].evidence["CUDA"].build_number, 21145)
 
 
 if __name__ == "__main__":

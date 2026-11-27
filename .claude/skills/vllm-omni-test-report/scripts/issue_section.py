@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from issue_close_confirm import (
+    LANE_B200,
     STATUS_CLOSABLE,
     STATUS_FAILING,
     STATUS_INSUFFICIENT,
@@ -28,6 +29,7 @@ from issue_close_confirm import (
     IssueConfirmation,
     PipelineSnapshot,
     infer_sides,
+    is_b200_issue,
     job_kind,
     job_name_is_distinctive,
     match_jobs,
@@ -583,12 +585,23 @@ def _file_item_from_bare(job: BareJobFailure) -> IssueItem:
     )
 
 
+def _evidence_pipelines(
+    row: IssueConfirmation,
+    pipelines: dict[str, PipelineSnapshot],
+) -> dict[str, PipelineSnapshot]:
+    """Prefer the snapshots this confirmation was actually judged against."""
+    return row.evidence or pipelines
+
+
 def _confirmation_links(row: IssueConfirmation, pipelines: dict[str, PipelineSnapshot]) -> list[tuple[str, str]]:
     links: list[tuple[str, str]] = []
+    evidence = _evidence_pipelines(row, pipelines)
     for side in row.sides:
-        snap = pipelines.get(side)
+        snap = evidence.get(side)
         if snap and snap.build_url:
-            label = row.results.get(side) or f"{side} nightly"
+            label = row.results.get(side) or (
+                f"{side} Scheduled Release B200" if snap.lane == LANE_B200 else f"{side} nightly"
+            )
             links.append((f"{side} {label}", snap.build_url))
     return _dedupe_links(links)
 
@@ -596,6 +609,28 @@ def _confirmation_links(row: IssueConfirmation, pipelines: dict[str, PipelineSna
 def _streak_sentence(row: IssueConfirmation) -> str:
     if row.status != STATUS_CLOSABLE:
         return ""
+    b200 = is_b200_issue(row.issue) or any(
+        snap.lane == LANE_B200 for snap in (row.evidence or {}).values()
+    )
+    if b200 and _has_daily_cuda_evidence(row):
+        if row.clean_streak is None:
+            return (
+                "Consecutive clean runs: n/a (older Scheduled Release B200 and/or "
+                "daily nightly history was not loaded)."
+            )
+        return (
+            "Consecutive clean runs (min of Scheduled Release B200 builds and "
+            f"daily scheduled nightlies): {row.clean_streak}."
+        )
+    if b200 and not _has_daily_cuda_evidence(row):
+        if row.clean_streak is None:
+            return (
+                "Consecutive clean Scheduled Release B200 builds: n/a "
+                "(older history was not loaded; closable is based only on the latest "
+                "Scheduled Release B200 build)."
+            )
+        unit = "Scheduled Release B200 build" if row.clean_streak == 1 else "Scheduled Release B200 builds"
+        return f"Consecutive clean Scheduled Release B200 builds: {row.clean_streak} {unit}."
     if row.clean_streak is None:
         return (
             "Consecutive clean scheduled nightlies: n/a "
@@ -603,6 +638,14 @@ def _streak_sentence(row: IssueConfirmation) -> str:
         )
     unit = "scheduled nightly" if row.clean_streak == 1 else "scheduled nightlies"
     return f"Consecutive clean scheduled nightlies: {row.clean_streak} {unit}."
+
+
+def _has_daily_cuda_evidence(row: IssueConfirmation) -> bool:
+    """True when a closable [B200][H100] row also used a daily CUDA nightly."""
+    for side, snap in (row.evidence or {}).items():
+        if snap.lane != LANE_B200 and side == "CUDA":
+            return True
+    return False
 
 
 def _close_comment(analysis: str, links: list[tuple[str, str]]) -> str:
@@ -752,8 +795,9 @@ def _real_still_failing(row: IssueConfirmation, pipelines: dict[str, PipelineSna
     """
     if row.status != STATUS_FAILING:
         return False
+    evidence = _evidence_pipelines(row, pipelines)
     for side in row.sides:
-        snap = pipelines.get(side)
+        snap = evidence.get(side)
         if snap is None or not snap.available:
             continue
         failed: list[str] = []

@@ -8,8 +8,9 @@ The Issue section replaces both the old **Issue Alert** chapter and the unmerged
 
 - Today's CUDA / NPU scheduled nightlies, CUDA weekly builds that fall in the report window, and local `nightly_jobs` failures.
 - Already-open issues. Close / still-failing confirmation uses `GET /repos/vllm-project/vllm-omni/issues?state=open&labels=ci-failure` (PRs excluded). Node-level duplicate matching uses the same read-only issue search as the old Issue Alert classifier.
+- Open `ci-failure` issues tagged `[B200]` (title, body, or labels) are confirmed against the latest **Scheduled Release B200** build on the release branch named in the issue (`release/vX.Y.Z`, `rc` / `.post` included), or `main` if none is named. The first line of the build message must be `Scheduled Release B200 build` (case-insensitive, ordinary whitespace allowed). `source` is ignored, so a `source=ui` release-branch B200 build still counts. Daily scheduled nightlies are not used as B200 evidence. A dual-tagged `[B200][H100]` (or H200 / H800 / L4) issue also requires the daily CUDA nightly. NPU nightlies are never B200 evidence.
 
-Nothing is invented. A missing token, a failed fetch, a skipped or not-run job, a weak job name, or a CUDA vs NPU mismatch does not add a closable row.
+Nothing is invented. A missing token, a failed fetch, a skipped or not-run job, a weak job name, or a CUDA vs NPU mismatch does not add a closable row. A `[B200]` issue with no loaded Scheduled Release B200 build is not closable and is not judged from today's nightly instead.
 
 ## Subsections
 
