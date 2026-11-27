@@ -49,11 +49,17 @@ from pytest_log_parse import (  # noqa: E402
 )
 from report_html_theme import EDITORIAL_THEME_CSS  # noqa: E402
 from issue_close_confirm import (  # noqa: E402
+    LANE_B200,
     STATUS_CLOSABLE,
+    PipelineSnapshot,
     attach_clean_streaks,
+    b200_branches_from_issues,
     collect_confirmations,
     fetch_open_ci_failure_issues,
     fetch_scheduled_nightly_history,
+    fetch_scheduled_release_b200_history,
+    is_b200_issue,
+    load_b200_snapshots,
     snapshots_from_bk_results,
 )
 from issue_section import (  # noqa: E402
@@ -4447,10 +4453,37 @@ def _load_issue_context(bk_results: dict[Any, Any]) -> IssueContext:
     pipelines = snapshots_from_bk_results(bk_results)
     issues, note = fetch_open_ci_failure_issues(_resolve_github_token())
     loaded = not (note and not issues)
-    rows = collect_confirmations(issues, pipelines) if loaded else []
+    b200_pipes: dict[str, PipelineSnapshot] = {}
+    if loaded:
+        b200_branches = b200_branches_from_issues(issues)
+        if b200_branches:
+            b200_pipes = load_b200_snapshots(b200_branches)
+    rows = (
+        collect_confirmations(issues, pipelines, b200_pipelines=b200_pipes)
+        if loaded
+        else []
+    )
     if any(row.status == STATUS_CLOSABLE for row in rows):
-        histories = {label: fetch_scheduled_nightly_history(snap) for label, snap in pipelines.items()}
-        attach_clean_streaks(rows, histories)
+        need_nightly = False
+        b200_histories: dict[str, list] = {}
+        for row in rows:
+            if row.status != STATUS_CLOSABLE:
+                continue
+            for side, snap in (row.evidence or {}).items():
+                if snap.lane == LANE_B200:
+                    branch = snap.branch or "main"
+                    if branch not in b200_histories:
+                        b200_histories[branch] = fetch_scheduled_release_b200_history(snap)
+                else:
+                    need_nightly = True
+            if not is_b200_issue(row.issue):
+                need_nightly = True
+        histories = (
+            {label: fetch_scheduled_nightly_history(snap) for label, snap in pipelines.items()}
+            if need_nightly
+            else {}
+        )
+        attach_clean_streaks(rows, histories, b200_histories=b200_histories)
     return IssueContext(
         issues=issues if loaded else [],
         pipelines=pipelines,

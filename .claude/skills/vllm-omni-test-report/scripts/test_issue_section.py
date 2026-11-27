@@ -13,7 +13,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from issue_close_confirm import (
+    LANE_B200,
     STATUS_CLOSABLE,
+    collect_confirmations,
     evaluate_issue,
 )
 from issue_section import (
@@ -24,7 +26,7 @@ from issue_section import (
     collect_bare_job_failures,
     render_issue_section_body,
 )
-from test_issue_close_confirm import _issue, _job, _snap
+from test_issue_close_confirm import _b200_snap, _issue, _job, _snap
 
 
 def _group(**kwargs):
@@ -161,6 +163,46 @@ class BucketTests(unittest.TestCase):
         )
         self.assertIn("fully green on #20013", section.to_close[0].analysis)
         self.assertTrue(any("20013" in url for _label, url in section.to_close[0].links))
+
+    def test_b200_closable_links_and_streak_use_release_b200_build(self):
+        issue = _issue(
+            10660,
+            "[Bug][B200]: Diffusion X2V · MiniMax H3 Function Test failed",
+            "Branch: release/v0.34.0\nJob title is \"Diffusion X2V · MiniMax H3 Function Test\".",
+        )
+        nightly = {
+            "CUDA": _snap("CUDA", [_job("Diffusion X2V · MiniMax H3 Function Test")], number=21145)
+        }
+        b200 = {
+            "release/v0.34.0": _b200_snap(
+                [_job("Diffusion X2V · MiniMax H3 Function Test")],
+                number=20140,
+            )
+        }
+        rows = collect_confirmations(
+            [issue],
+            nightly,
+            b200_pipelines=b200,
+            b200_histories={
+                "release/v0.34.0": [
+                    (20140, [_job("Diffusion X2V · MiniMax H3 Function Test", state="passed")]),
+                    (20135, [_job("Diffusion X2V · MiniMax H3 Function Test", state="passed")]),
+                ]
+            },
+        )
+        self.assertEqual(rows[0].status, STATUS_CLOSABLE)
+        self.assertEqual(rows[0].clean_streak, 2)
+        section = assemble_issue_section(
+            groups=[],
+            bare_jobs=[],
+            context=_ctx([issue], nightly, rows),
+            search_ran=True,
+        )
+        self.assertEqual(len(section.to_close), 1)
+        self.assertTrue(any("20140" in url for _label, url in section.to_close[0].links))
+        self.assertFalse(any("21145" in url for _label, url in section.to_close[0].links))
+        self.assertIn("Scheduled Release B200 #20140 (release/v0.34.0)", section.to_close[0].analysis)
+        self.assertIn("Consecutive clean Scheduled Release B200 builds: 2", section.to_close[0].analysis)
 
     def test_still_failing_is_update_and_insufficient_is_omitted(self):
         failing = _issue(11, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")

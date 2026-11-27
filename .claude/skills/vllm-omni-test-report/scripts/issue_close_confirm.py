@@ -7,6 +7,10 @@ there is positive evidence that the previously failing job is now fully
 green on every relevant pipeline. Missing data, a skipped or not-run job,
 a weak name match, or a CUDA vs NPU mismatch is not closable.
 
+Issues tagged ``[B200]`` are judged from Scheduled Release B200 builds (the
+named ``release/vX.Y.Z`` branch, or ``main``), not from the daily scheduled
+nightly. Daily nightlies are never used as a stand-in for that lane.
+
 This module does not render a chapter and never closes or comments on issues.
 """
 
@@ -18,6 +22,7 @@ import re
 import ssl
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +48,21 @@ _EMOJI_ALIAS_RE = re.compile(r":[a-z0-9_+\-]+:", re.I)
 _NPU_RE = re.compile(r"\bnpu\b", re.I)
 _CUDA_RE = re.compile(r"\b(cuda|h100|h200|h800|\bl4\b)\b", re.I)
 _PYTEST_COUNTS_RE = re.compile(r"\d+\s+(?:passed|failed|skipped|errors?)\b", re.I)
+_B200_TAG_RE = re.compile(r"\[\s*B200\s*\]", re.I)
+_DAILY_CUDA_TAG_RE = re.compile(r"\[\s*(H100|H200|H800|L4)\s*\]", re.I)
+# Same release-branch grammar as the duration classifier: exact release/vX.Y.Z
+# (optional rcN / .postN). Sidecars like release/v0.34.0-docker are excluded.
+_RELEASE_BRANCH_RE = re.compile(r"^release/v\d+\.\d+\.\d+(?:rc\d+|\.post\d+)?$")
+_RELEASE_BRANCH_IN_TEXT_RE = re.compile(
+    r"(?<![A-Za-z0-9._-])release/v\d+\.\d+\.\d+(?:rc\d+|\.post\d+)?(?![A-Za-z0-9._-])"
+)
+_B200_MESSAGE_TITLE = "scheduled release b200 build"
+# B200 runs ~monthly; page deeply enough to find the latest (and a short streak).
+_B200_LIST_PER_PAGE = 100
+_B200_LIST_MAX_PAGES = 15
+
+LANE_NIGHTLY = "scheduled-nightly"
+LANE_B200 = "scheduled-release-b200"
 
 # A job-name hint must be at least this distinctive to count as a match.
 _MIN_JOB_HINT_LEN = 18
@@ -55,7 +75,7 @@ STATUS_INSUFFICIENT = "insufficient"
 
 @dataclass
 class PipelineSnapshot:
-    """Latest scheduled nightly for one Buildkite pipeline."""
+    """Latest relevant build for one evidence lane (nightly or Release B200)."""
 
     label: str
     build_number: int | None = None
@@ -65,6 +85,8 @@ class PipelineSnapshot:
     note: str | None = None
     org: str = "vllm"
     pipeline: str = ""
+    lane: str = LANE_NIGHTLY
+    branch: str = "main"
 
 
 @dataclass
@@ -77,10 +99,149 @@ class IssueConfirmation:
     status: str
     reason: str
     clean_streak: int | None = None
+    evidence: dict[str, PipelineSnapshot] = field(default_factory=dict)
 
 
 # Back-compat alias used by earlier unit tests / importers.
 CloseCandidate = IssueConfirmation
+
+
+def _issue_blob(issue: dict[str, Any]) -> str:
+    labels = " ".join(
+        (lab.get("name") if isinstance(lab, dict) else str(lab)) or ""
+        for lab in (issue.get("labels") or [])
+    )
+    return f"{issue.get('title') or ''}\n{issue.get('body') or ''}\n{labels}"
+
+
+def is_b200_issue(issue: dict[str, Any]) -> bool:
+    """True when the issue is tagged ``[B200]`` in the title, body, or labels."""
+    return bool(_B200_TAG_RE.search(_issue_blob(issue)))
+
+
+def _has_daily_cuda_tag(issue: dict[str, Any]) -> bool:
+    """True when the issue is also tagged for a daily CUDA lane (e.g. ``[H100]``)."""
+    return bool(_DAILY_CUDA_TAG_RE.search(_issue_blob(issue)))
+
+
+def is_release_branch(branch: str) -> bool:
+    """True for ``release/v<version>`` branches this repo actually cuts."""
+    return bool(_RELEASE_BRANCH_RE.fullmatch((branch or "").strip()))
+
+
+def _normalized_message_title(message: str | None) -> str:
+    """First line of a build message, case-folded, ordinary whitespace collapsed.
+
+    ``source`` is ignored. Only the first line is considered, so a commit body
+    that quotes a scheduled title cannot reclassify the build.
+    """
+    line = (message or "").split("\n", 1)[0].replace("\r", "")
+    return re.sub(r"[ \t]+", " ", line).strip().casefold()
+
+
+def is_scheduled_release_b200(build: dict[str, Any]) -> bool:
+    """True when the first-line message is ``Scheduled Release B200 build``."""
+    return _normalized_message_title(build.get("message")) == _B200_MESSAGE_TITLE
+
+
+def b200_branches_for_issue(issue: dict[str, Any]) -> tuple[str, ...]:
+    """Release branches named in the issue, or ``main`` when none are named.
+
+    Matches actual ``release/vX.Y.Z`` (optional rc / .post) tokens. Does not
+    treat ``release/v0.34.0-docker`` or ``backport/10687-release-v0.34.0`` as
+    release branches.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _RELEASE_BRANCH_IN_TEXT_RE.finditer(_issue_blob(issue)):
+        branch = match.group(0)
+        if branch not in seen and is_release_branch(branch):
+            seen.add(branch)
+            found.append(branch)
+    return tuple(found) if found else ("main",)
+
+
+def _unavailable_b200_snapshot(branch: str, *, note: str | None = None) -> PipelineSnapshot:
+    return PipelineSnapshot(
+        label="CUDA",
+        available=False,
+        org="vllm",
+        pipeline="vllm-omni",
+        lane=LANE_B200,
+        branch=branch or "main",
+        note=note or f"Scheduled Release B200 build was not loaded on {branch}.",
+    )
+
+
+def evidence_pipelines_for_issue(
+    issue: dict[str, Any],
+    nightly: dict[str, PipelineSnapshot],
+    b200_by_branch: dict[str, PipelineSnapshot] | None = None,
+) -> dict[str, PipelineSnapshot]:
+    """Pipelines that may close this issue.
+
+    Ordinary issues keep the daily CUDA / NPU nightlies. A ``[B200]`` issue is
+    judged from Scheduled Release B200 builds on the named release branch (or
+    ``main``). Daily nightlies are not used as a stand-in for that lane. A
+    dual-tagged ``[B200][H100]`` (or H200 / H800 / L4) issue also requires the
+    daily CUDA nightly. NPU nightlies are never B200 evidence.
+    """
+    if not is_b200_issue(issue):
+        return nightly
+    by_branch = b200_by_branch or {}
+    branches = b200_branches_for_issue(issue)
+
+    def snap_for(branch: str) -> PipelineSnapshot:
+        snap = by_branch.get(branch)
+        if snap is not None:
+            return snap
+        return _unavailable_b200_snapshot(branch)
+
+    ev: dict[str, PipelineSnapshot] = {}
+    if _has_daily_cuda_tag(issue):
+        if len(branches) == 1:
+            ev["B200"] = snap_for(branches[0])
+        else:
+            for branch in branches:
+                ev[f"B200 ({branch})"] = snap_for(branch)
+        if "CUDA" in nightly:
+            ev["CUDA"] = nightly["CUDA"]
+    elif len(branches) == 1:
+        ev["CUDA"] = snap_for(branches[0])
+    else:
+        for branch in branches:
+            ev[f"CUDA ({branch})"] = snap_for(branch)
+    if _NPU_RE.search(_issue_blob(issue)) and "NPU" in nightly:
+        ev["NPU"] = nightly["NPU"]
+    return ev
+
+
+def _snap_ref(snap: PipelineSnapshot | None) -> str:
+    if snap is not None and snap.build_number is not None:
+        ref = f"#{snap.build_number}"
+        if snap.lane == LANE_B200:
+            branch = snap.branch or "main"
+            return f"Scheduled Release B200 {ref} ({branch})"
+        return ref
+    if snap is not None and snap.lane == LANE_B200:
+        branch = snap.branch or "main"
+        return f"latest Scheduled Release B200 build ({branch})"
+    return "latest nightly"
+
+
+def _missing_results_reason(
+    side: str,
+    snap: PipelineSnapshot | None,
+    issue: dict[str, Any],
+) -> str:
+    if snap is not None and snap.lane == LANE_B200:
+        return (
+            f"Latest {side} Scheduled Release B200 results "
+            f"on {snap.branch or 'main'} were not loaded."
+        )
+    if is_b200_issue(issue) and (snap is None or snap.lane == LANE_B200):
+        return f"Latest {side} Scheduled Release B200 results were not loaded."
+    return f"Latest {side} nightly results were not loaded."
 
 
 def normalize_job_name(name: str) -> str:
@@ -112,19 +273,34 @@ def extract_node_ids(text: str) -> list[str]:
     return out
 
 
-def infer_sides(issue: dict[str, Any], *, matched_sides: set[str] | None = None) -> set[str]:
+def infer_sides(
+    issue: dict[str, Any],
+    *,
+    matched_sides: set[str] | None = None,
+    pipeline_keys: set[str] | None = None,
+) -> set[str]:
     """Which pipelines must be green before the issue can be closable.
 
     Label / title / body mentions win. If the issue is silent on CUDA vs
     NPU, fall back to the pipelines where a job name actually matched.
+
+    ``[B200]`` issues require the B200 evidence keys already selected for
+    this issue (Scheduled Release B200, plus daily CUDA only when a daily
+    CUDA tag such as ``[H100]`` is also present).
     """
-    labels = " ".join(
-        (lab.get("name") if isinstance(lab, dict) else str(lab)) or ""
-        for lab in (issue.get("labels") or [])
-    )
-    text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}\n{labels}"
-    has_npu = bool(_NPU_RE.search(text))
-    has_cuda = bool(_CUDA_RE.search(text))
+    blob = _issue_blob(issue)
+    has_npu = bool(_NPU_RE.search(blob))
+    has_cuda = bool(_CUDA_RE.search(blob))
+    if is_b200_issue(issue):
+        # The evidence map already chose B200 (and optional daily CUDA / NPU) keys.
+        sides = set(pipeline_keys or ())
+        if has_npu:
+            sides.add("NPU")
+        if sides:
+            return sides
+        if matched_sides:
+            return set(matched_sides)
+        return set()
     if has_npu and not has_cuda:
         return {"NPU"}
     if has_cuda and not has_npu:
@@ -230,6 +406,7 @@ def _confirmation(
     status: str,
     reason: str,
     clean_streak: int | None = None,
+    evidence: dict[str, PipelineSnapshot] | None = None,
 ) -> IssueConfirmation:
     return IssueConfirmation(
         issue=issue,
@@ -240,6 +417,7 @@ def _confirmation(
         status=status,
         reason=reason,
         clean_streak=clean_streak,
+        evidence=dict(evidence or {}),
     )
 
 
@@ -247,7 +425,11 @@ def evaluate_issue(
     issue: dict[str, Any],
     pipelines: dict[str, PipelineSnapshot],
 ) -> IssueConfirmation:
-    """Confirm one issue against the latest loaded CUDA / NPU nightlies."""
+    """Confirm one issue against the pipelines provided for it.
+
+    Callers that already know the issue is ``[B200]`` should pass Scheduled
+    Release B200 snapshots, not the daily scheduled nightly.
+    """
     text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}"
     tests = extract_node_ids(text)
 
@@ -259,23 +441,42 @@ def evaluate_issue(
             jobs_by_side[label] = names
             matched_sides.add(label)
 
-    sides = tuple(sorted(infer_sides(issue, matched_sides=matched_sides)))
+    sides = tuple(
+        sorted(
+            infer_sides(
+                issue,
+                matched_sides=matched_sides,
+                pipeline_keys=set(pipelines),
+            )
+        )
+    )
+
+    def out(**kwargs: Any) -> IssueConfirmation:
+        kwargs.setdefault("evidence", pipelines)
+        return _confirmation(issue, tests=tests, jobs_by_side=jobs_by_side, **kwargs)
+
     if not sides:
-        return _confirmation(
-            issue,
+        return out(
             sides=(),
-            tests=tests,
-            jobs_by_side=jobs_by_side,
             results={},
             status=STATUS_INSUFFICIENT,
             reason="Could not infer a CUDA or NPU scope, or no distinctive job name was found.",
         )
-    if not any(jobs_by_side.get(side) for side in sides):
-        return _confirmation(
-            issue,
+    missing_reasons = [
+        _missing_results_reason(side, pipelines.get(side), issue)
+        for side in sides
+        if (pipelines.get(side) is None or not pipelines[side].available or not pipelines[side].jobs)
+    ]
+    if missing_reasons:
+        return out(
             sides=sides,
-            tests=tests,
-            jobs_by_side=jobs_by_side,
+            results={},
+            status=STATUS_INSUFFICIENT,
+            reason=" ".join(missing_reasons),
+        )
+    if not any(jobs_by_side.get(side) for side in sides):
+        return out(
+            sides=sides,
             results={},
             status=STATUS_INSUFFICIENT,
             reason="No distinctive job name in the issue matched a job on the required pipeline(s).",
@@ -288,49 +489,37 @@ def evaluate_issue(
     for side in sides:
         snap = pipelines.get(side)
         if snap is None or not snap.available or not snap.jobs:
-            return _confirmation(
-                issue,
+            return out(
                 sides=sides,
-                tests=tests,
-                jobs_by_side=jobs_by_side,
                 results=results,
                 status=STATUS_INSUFFICIENT,
-                reason=f"Latest {side} nightly results were not loaded.",
+                reason=_missing_results_reason(side, snap, issue),
             )
         names = jobs_by_side.get(side) or []
         if not names:
-            return _confirmation(
-                issue,
+            return out(
                 sides=sides,
-                tests=tests,
-                jobs_by_side=jobs_by_side,
                 results=results,
                 status=STATUS_INSUFFICIENT,
                 reason=f"No matching {side} job was identified.",
             )
         index = _jobs_by_name(snap.jobs)
         failed = _failed_nodes_from_jobs(snap.jobs)
-        build_ref = f"#{snap.build_number}" if snap.build_number is not None else "latest nightly"
+        build_ref = _snap_ref(snap)
         side_fail = False
         for name in names:
             rec = index.get(name)
             kind = job_kind(rec) if rec is not None else "unknown"
             if rec is None:
-                return _confirmation(
-                    issue,
+                return out(
                     sides=sides,
-                    tests=tests,
-                    jobs_by_side=jobs_by_side,
                     results=results,
                     status=STATUS_INSUFFICIENT,
                     reason=f"{side} job {name} was not present on {build_ref}.",
                 )
             if kind == "unknown":
-                return _confirmation(
-                    issue,
+                return out(
                     sides=sides,
-                    tests=tests,
-                    jobs_by_side=jobs_by_side,
                     results=results,
                     status=STATUS_INSUFFICIENT,
                     reason=f"{side} job {name} on {build_ref} has no clear pass/fail evidence.",
@@ -354,11 +543,8 @@ def evaluate_issue(
             )
 
     if saw_fail:
-        return _confirmation(
-            issue,
+        return out(
             sides=sides,
-            tests=tests,
-            jobs_by_side=jobs_by_side,
             results=results,
             status=STATUS_FAILING,
             reason="; ".join(fail_bits) + ".",
@@ -367,11 +553,8 @@ def evaluate_issue(
 
     if tests:
         reasons.append("tracked test node(s) are not in the current failure set")
-    return _confirmation(
-        issue,
+    return out(
         sides=sides,
-        tests=tests,
-        jobs_by_side=jobs_by_side,
         results=results,
         status=STATUS_CLOSABLE,
         reason="; ".join(reasons) + ".",
@@ -394,11 +577,29 @@ def count_consecutive_clean_runs(
     return streak
 
 
+def _history_for_side(
+    row: IssueConfirmation,
+    side: str,
+    histories: dict[str, list[tuple[int, list[dict[str, Any]]]]],
+    b200_histories: dict[str, list[tuple[int, list[dict[str, Any]]]]] | None,
+) -> list[tuple[int, list[dict[str, Any]]]]:
+    snap = (row.evidence or {}).get(side)
+    if snap is not None and snap.lane == LANE_B200:
+        by_branch = b200_histories or {}
+        return by_branch.get(snap.branch or "main") or by_branch.get(side) or []
+    return histories.get(side) or []
+
+
 def attach_clean_streaks(
     rows: list[IssueConfirmation],
     histories: dict[str, list[tuple[int, list[dict[str, Any]]]]],
+    b200_histories: dict[str, list[tuple[int, list[dict[str, Any]]]]] | None = None,
 ) -> None:
-    """Set ``clean_streak`` in place. Closable rows use min across required sides."""
+    """Set ``clean_streak`` in place. Closable rows use min across required sides.
+
+    ``[B200]`` sides count consecutive Scheduled Release B200 builds from
+    ``b200_histories`` (keyed by branch). Daily nightlies are not mixed in.
+    """
     for row in rows:
         if row.status == STATUS_FAILING:
             row.clean_streak = 0
@@ -410,7 +611,7 @@ def attach_clean_streaks(
         missing = False
         for side in row.sides:
             names = row.jobs_by_side.get(side) or []
-            hist = histories.get(side) or []
+            hist = _history_for_side(row, side, histories, b200_histories)
             if not names or not hist:
                 missing = True
                 break
@@ -433,6 +634,9 @@ def snapshots_from_bk_results(
         if number is not None and pipeline:
             url = f"https://buildkite.com/{org}/{pipeline}/builds/{number}"
         available = bool(build and jobs)
+        branch = "main"
+        if build and build.get("branch"):
+            branch = str(build.get("branch") or "main")
         out[label] = PipelineSnapshot(
             label=label,
             build_number=number,
@@ -442,6 +646,8 @@ def snapshots_from_bk_results(
             note=str(note) if note else None,
             org=str(org),
             pipeline=str(pipeline),
+            lane=LANE_NIGHTLY,
+            branch=branch,
         )
     return out
 
@@ -523,13 +729,233 @@ def fetch_scheduled_nightly_history(
     return history
 
 
+def select_scheduled_release_b200_builds(
+    builds: list[dict[str, Any]] | None,
+    *,
+    ceiling: int | None = None,
+    exclude: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Newest-first Scheduled Release B200 builds from an already-fetched list.
+
+    Matches the first line of ``message`` only (case-insensitive, ordinary
+    whitespace collapsed). Does not require ``source == schedule``. The
+    caller is responsible for listing the intended branch; this filter does
+    not inspect the branch name.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set(exclude or ())
+    for build in builds or []:
+        if not is_scheduled_release_b200(build):
+            continue
+        try:
+            number = int(build["number"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ceiling is not None and number > ceiling:
+            continue
+        if number in seen:
+            continue
+        seen.add(number)
+        out.append(build)
+    return out
+
+
+def _iter_pipeline_builds(
+    *,
+    org: str,
+    pipeline: str,
+    branch: str,
+    token: str,
+    http_json: Any,
+    max_pages: int = _B200_LIST_MAX_PAGES,
+    per_page: int = _B200_LIST_PER_PAGE,
+) -> list[dict[str, Any]]:
+    quoted = urllib.parse.quote(branch, safe="")
+    all_builds: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        url = (
+            f"https://api.buildkite.com/v2/organizations/{org}/pipelines/{pipeline}"
+            f"/builds?branch={quoted}&per_page={per_page}&page={page}"
+        )
+        batch = http_json(url, token)
+        if not isinstance(batch, list) or not batch:
+            break
+        all_builds.extend(batch)
+        if len(batch) < per_page:
+            break
+    return all_builds
+
+
+def fetch_scheduled_release_b200_history(
+    snap: PipelineSnapshot,
+    *,
+    token: str | None = None,
+    limit: int = HISTORY_LIMIT,
+) -> list[tuple[int, list[dict[str, Any]]]]:
+    """Newest-first Scheduled Release B200 history on ``snap.branch``.
+
+    Starts with the already-loaded snapshot. Older entries include job
+    *state* only. Daily scheduled nightlies are never mixed in.
+    """
+    history: list[tuple[int, list[dict[str, Any]]]] = []
+    seen: set[int] = set()
+    if snap.available and snap.build_number is not None:
+        history.append((snap.build_number, snap.jobs))
+        seen.add(snap.build_number)
+    tok = (token if token is not None else _bk_token()).strip()
+    branch = snap.branch or "main"
+    if not tok or not snap.org or not snap.pipeline:
+        return history
+    try:
+        from nightly_job_pytest_table import fetch_nightly_build, http_json
+    except ImportError:
+        return history
+    try:
+        builds = _iter_pipeline_builds(
+            org=snap.org,
+            pipeline=snap.pipeline,
+            branch=branch,
+            token=tok,
+            http_json=http_json,
+        )
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError):
+        return history
+    selected = select_scheduled_release_b200_builds(
+        builds,
+        ceiling=snap.build_number,
+        exclude=seen,
+    )
+    for build in selected:
+        if len(history) >= limit:
+            break
+        number = int(build["number"])
+        try:
+            raw = fetch_nightly_build(tok, number, org=snap.org, pipeline=snap.pipeline)
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            TimeoutError,
+            OSError,
+            RuntimeError,
+            json.JSONDecodeError,
+        ):
+            break
+        jobs = [
+            {"name": j.get("name") or "", "state": j.get("state") or ""}
+            for j in (raw.get("jobs") or [])
+            if j.get("name")
+        ]
+        history.append((number, jobs))
+        seen.add(number)
+    return history
+
+
+def load_b200_snapshots(
+    branches: list[str] | tuple[str, ...],
+    *,
+    token: str | None = None,
+    org: str = "vllm",
+    pipeline: str = "vllm-omni",
+) -> dict[str, PipelineSnapshot]:
+    """Load the latest Scheduled Release B200 build + job logs for each branch.
+
+    A missing token, a failed listing, or no matching build yields an
+    unavailable snapshot for that branch (the issue is not judged from the
+    daily nightly as a fallback).
+    """
+    tok = (token if token is not None else _bk_token()).strip()
+    out: dict[str, PipelineSnapshot] = {}
+    unique: list[str] = []
+    for branch in branches:
+        br = (branch or "main").strip() or "main"
+        if br not in unique:
+            unique.append(br)
+    if not tok:
+        note = "BUILDKITE_API_TOKEN / BUILDKITE_TOKEN is not set; Scheduled Release B200 was not loaded."
+        return {br: _unavailable_b200_snapshot(br, note=note) for br in unique}
+    try:
+        from nightly_job_pytest_table import (
+            collect_nightly_job_log_analyses,
+            fetch_nightly_build,
+            http_json,
+        )
+    except ImportError as exc:
+        note = f"Could not import Buildkite helpers ({exc})."
+        return {br: _unavailable_b200_snapshot(br, note=note) for br in unique}
+
+    for branch in unique:
+        try:
+            builds = _iter_pipeline_builds(
+                org=org,
+                pipeline=pipeline,
+                branch=branch,
+                token=tok,
+                http_json=http_json,
+            )
+            selected = select_scheduled_release_b200_builds(builds)
+            if not selected:
+                out[branch] = _unavailable_b200_snapshot(
+                    branch,
+                    note=(
+                        f"No Scheduled Release B200 build found on {branch} "
+                        f"within {_B200_LIST_MAX_PAGES * _B200_LIST_PER_PAGE} recent builds."
+                    ),
+                )
+                continue
+            number = int(selected[0]["number"])
+            raw = fetch_nightly_build(tok, number, org=org, pipeline=pipeline)
+            jobs = collect_nightly_job_log_analyses(raw, tok, org=org, pipeline=pipeline)
+            out[branch] = PipelineSnapshot(
+                label="CUDA",
+                build_number=number,
+                build_url=f"https://buildkite.com/{org}/{pipeline}/builds/{number}",
+                jobs=list(jobs or []),
+                available=bool(raw and jobs),
+                org=org,
+                pipeline=pipeline,
+                lane=LANE_B200,
+                branch=str(raw.get("branch") or branch),
+            )
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            TimeoutError,
+            OSError,
+            RuntimeError,
+            json.JSONDecodeError,
+        ) as exc:
+            out[branch] = _unavailable_b200_snapshot(
+                branch,
+                note=f"Failed to load Scheduled Release B200 on {branch}: {type(exc).__name__}.",
+            )
+    return out
+
+
+def b200_branches_from_issues(issues: list[dict[str, Any]]) -> list[str]:
+    """Unique B200 branches required by ``[B200]`` issues, in first-seen order."""
+    branches: list[str] = []
+    for issue in issues:
+        if not is_b200_issue(issue):
+            continue
+        for branch in b200_branches_for_issue(issue):
+            if branch not in branches:
+                branches.append(branch)
+    return branches
+
+
 def collect_confirmations(
     issues: list[dict[str, Any]],
     pipelines: dict[str, PipelineSnapshot],
     histories: dict[str, list[tuple[int, list[dict[str, Any]]]]] | None = None,
+    *,
+    b200_pipelines: dict[str, PipelineSnapshot] | None = None,
+    b200_histories: dict[str, list[tuple[int, list[dict[str, Any]]]]] | None = None,
 ) -> list[IssueConfirmation]:
-    rows = [evaluate_issue(issue, pipelines) for issue in issues]
-    attach_clean_streaks(rows, histories or {})
+    rows = [
+        evaluate_issue(issue, evidence_pipelines_for_issue(issue, pipelines, b200_pipelines))
+        for issue in issues
+    ]
+    attach_clean_streaks(rows, histories or {}, b200_histories=b200_histories)
     order = {STATUS_CLOSABLE: 0, STATUS_FAILING: 1, STATUS_INSUFFICIENT: 2}
     rows.sort(key=lambda row: (order.get(row.status, 9), int(row.issue.get("number") or 0)))
     return rows
