@@ -18,7 +18,7 @@ Nothing is invented. A missing token, a failed fetch, a skipped or not-run job, 
 | Summary | Short prose above the cards: how many items are in the three buckets, plus what was withheld and why. | — |
 | 待新增 | Collapsed card. The table has one to-be-filed item per row (proposed title, analysis, build URLs). | **开单确认** |
 | 待关闭 | Collapsed card. One closable issue per row. | **关闭确认** |
-| 待更新 | Collapsed card. One already-open issue per row, and only when its test or job still failed in this run. The comment is today's failure. | **更新评论** |
+| 待更新 | Collapsed card. One already-open issue per row, and only when its test or job still failed in this run. The comment is today's failure and attaches only that issue's pipeline build URL (CUDA → `vllm-omni`, NPU → `vllm-omni-npu-ci`), never the other hardware pipeline. | **更新评论** |
 
 Empty cards still show the title. Opening one shows the table headers and an empty row, with no confirm button.
 
@@ -32,7 +32,7 @@ Row buttons do not call the GitHub API:
 
 - **开单确认** opens that row's prefilled bug-report URL (`/issues/new?template=400-bug-report.yml&...`). GitHub creates the issue only after the operator submits the form.
 - **关闭确认** opens the existing issue and copies a ready-to-paste close note. It does not close the issue.
-- **更新评论** opens the existing issue and copies a ready-to-paste comment. It does not post the comment.
+- **更新评论** opens the existing issue and copies a ready-to-paste comment. It does not post the comment. The comment includes only the Buildkite build URL for the issue's own pipeline (title/label tags such as `[NPU]` / `[B200]` / H100 / CUDA, and `vllm-omni` vs `vllm-omni-npu-ci` slugs). Incidental mentions of the other hardware in the body do not attach that pipeline's URL.
 
 ## 一键操作
 

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from issue_close_confirm import (
     STATUS_CLOSABLE,
+    STATUS_FAILING,
     evaluate_issue,
 )
 from issue_section import (
@@ -241,6 +242,160 @@ class BucketTests(unittest.TestCase):
         )
         self.assertEqual(section.to_update, [])
         self.assertEqual(section.to_file, [])
+
+    def test_cuda_update_comment_attaches_only_cuda_build_url(self):
+        cuda_url = "https://buildkite.com/vllm/vllm-omni/builds/21259"
+        npu_url = "https://buildkite.com/vllm/vllm-omni-npu-ci/builds/13198"
+        issue = _issue(
+            11120,
+            "[Bug][Perf]: Nightly CI, Chatterbox TTS perf regressed by more than 10% on H100",
+            "TTS · Perf Test · Single-GPU failed.\n"
+            "Related ticket #10590 tracked an NPU A3/910 test_qwen3_tts_base regression.\n"
+            f"Buildkite build: {cuda_url}",
+        )
+        pipelines = {
+            "CUDA": _snap(
+                "CUDA",
+                [_job("TTS · Perf Test · Single-GPU", state="failed", failed=["tts.py::test_perf"])],
+                number=21259,
+            ),
+            "NPU": _snap(
+                "NPU",
+                [_job("TTS · Perf Test", state="failed", failed=["tts.py::test_perf"])],
+                number=13198,
+            ),
+        }
+        # Realistic pipeline slugs; the shared _snap helper uses a dummy "pipe" URL.
+        pipelines["CUDA"].build_url = cuda_url
+        pipelines["CUDA"].pipeline = "vllm-omni"
+        pipelines["NPU"].build_url = npu_url
+        pipelines["NPU"].pipeline = "vllm-omni-npu-ci"
+        row = evaluate_issue(issue, pipelines)
+        self.assertEqual(row.status, STATUS_FAILING)
+        self.assertEqual(row.sides, ("CUDA",))
+        section = assemble_issue_section(
+            groups=[],
+            bare_jobs=[],
+            context=_ctx([issue], pipelines, [row]),
+            search_ran=True,
+        )
+        comment = section.to_update[0].ready_comment
+        self.assertEqual(section.to_update[0].issue_number, 11120)
+        self.assertIn(cuda_url, comment)
+        self.assertNotIn(npu_url, comment)
+        self.assertNotIn("vllm-omni-npu-ci", comment)
+        self.assertNotIn("NPU job", comment)
+
+    def test_npu_update_comment_attaches_only_npu_build_url(self):
+        cuda_url = "https://buildkite.com/vllm/vllm-omni/builds/21259"
+        npu_url = "https://buildkite.com/vllm/vllm-omni-npu-ci/builds/13198"
+        issue = _issue(
+            11254,
+            "[Bug][NPU]: Nightly / CI failed - Omni · Qwen3-Omni · Duplex Test",
+            "Omni · Qwen3-Omni · Duplex Test failed.\n"
+            f"Buildkite build: {npu_url}",
+        )
+        pipelines = {
+            "CUDA": _snap(
+                "CUDA",
+                [_job("Omni · Qwen3-Omni · Duplex Test", state="failed", failed=["duplex.py::t"])],
+                number=21259,
+            ),
+            "NPU": _snap(
+                "NPU",
+                [_job("Omni · Qwen3-Omni · Duplex Test", state="failed", failed=["duplex.py::t"])],
+                number=13198,
+            ),
+        }
+        pipelines["CUDA"].build_url = cuda_url
+        pipelines["CUDA"].pipeline = "vllm-omni"
+        pipelines["NPU"].build_url = npu_url
+        pipelines["NPU"].pipeline = "vllm-omni-npu-ci"
+        row = evaluate_issue(issue, pipelines)
+        self.assertEqual(row.status, STATUS_FAILING)
+        self.assertEqual(row.sides, ("NPU",))
+        section = assemble_issue_section(
+            groups=[],
+            bare_jobs=[],
+            context=_ctx([issue], pipelines, [row]),
+            search_ran=True,
+        )
+        comment = section.to_update[0].ready_comment
+        self.assertEqual(section.to_update[0].issue_number, 11254)
+        self.assertIn(npu_url, comment)
+        self.assertNotIn(cuda_url, comment)
+        self.assertNotIn("vllm/vllm-omni/builds/21259", comment)
+        self.assertNotIn("CUDA job", comment)
+
+    def test_tracked_update_comment_drops_other_pipeline_links(self):
+        cuda_url = "https://buildkite.com/vllm/vllm-omni/builds/21259"
+        npu_url = "https://buildkite.com/vllm/vllm-omni-npu-ci/builds/13198"
+        issue = _issue(
+            11208,
+            "[Bug][Perf]: Nightly CI, MiniMax-H3 t2v_dlo_4gpu memory regressed on H100",
+            "Possible related issue #10989 (NPU 910 HunyuanVideo-1.5 perf).",
+        )
+        group = _group(
+            verdict="tracked",
+            best_issue=issue,
+            sources=[
+                "Buildkite (CUDA) nightly · #21259",
+                "Buildkite (NPU) nightly · #13198",
+            ],
+            links=[
+                ("Build · Buildkite (CUDA) nightly · #21259", cuda_url),
+                ("Step TTS · Perf Test · Single-GPU", f"{cuda_url}#cuda-step"),
+                ("Build · Buildkite (NPU) nightly · #13198", npu_url),
+                ("Step TTS · Perf Test", f"{npu_url}#npu-step"),
+            ],
+        )
+        section = assemble_issue_section(
+            groups=[group],
+            bare_jobs=[],
+            context=_ctx([issue], {}, []),
+            search_ran=True,
+        )
+        self.assertEqual(section.to_update[0].issue_number, 11208)
+        comment = section.to_update[0].ready_comment
+        self.assertIn(cuda_url, comment)
+        self.assertNotIn(npu_url, comment)
+        self.assertNotIn("vllm-omni-npu-ci", comment)
+        self.assertIn("Buildkite (CUDA) nightly · #21259", comment)
+        self.assertNotIn("Buildkite (NPU) nightly · #13198", comment)
+
+    def test_cuda_close_comment_attaches_only_cuda_build_url(self):
+        cuda_url = "https://buildkite.com/vllm/vllm-omni/builds/21259"
+        npu_url = "https://buildkite.com/vllm/vllm-omni-npu-ci/builds/13198"
+        issue = _issue(
+            10417,
+            "[Bug]: READY CI failed - Omni Function Test failed",
+            "Omni Function Test failed.\n"
+            "The current build's PR#10319 diff (NPU host sampler reset) is gated by is_npu().\n"
+            f"Buildkite build: {cuda_url}",
+        )
+        pipelines = {
+            "CUDA": _snap("CUDA", [_job("Omni Function Test")], number=21259),
+            "NPU": _snap("NPU", [_job("Omni Function Test")], number=13198),
+        }
+        pipelines["CUDA"].build_url = cuda_url
+        pipelines["CUDA"].pipeline = "vllm-omni"
+        pipelines["NPU"].build_url = npu_url
+        pipelines["NPU"].pipeline = "vllm-omni-npu-ci"
+        row = evaluate_issue(issue, pipelines)
+        self.assertEqual(row.status, STATUS_CLOSABLE)
+        self.assertEqual(row.sides, ("CUDA",))
+        section = assemble_issue_section(
+            groups=[],
+            bare_jobs=[],
+            context=_ctx([issue], pipelines, [row]),
+            search_ran=True,
+        )
+        comment = section.to_close[0].ready_comment
+        self.assertEqual(section.to_close[0].issue_number, 10417)
+        self.assertEqual(section.to_update, [])
+        self.assertIn(cuda_url, comment)
+        self.assertNotIn(npu_url, comment)
+        self.assertNotIn("vllm-omni-npu-ci", comment)
 
     def test_job_name_only_match_is_not_an_update(self):
         issue = _issue(42, "Diffusion X2V Wan2.2 Accuracy Test failed on H100")

@@ -42,6 +42,22 @@ _NODE_RE = re.compile(
 _EMOJI_ALIAS_RE = re.compile(r":[a-z0-9_+\-]+:", re.I)
 _NPU_RE = re.compile(r"\bnpu\b", re.I)
 _CUDA_RE = re.compile(r"\b(cuda|h100|h200|h800|\bl4\b)\b", re.I)
+# Title/label tags already used when filing issues. [B200] is a CUDA-family tag.
+_NPU_TAG_RE = re.compile(r"\[\s*NPU\s*\]", re.I)
+_CUDA_TAG_RE = re.compile(r"\[\s*(CUDA|B200|H100|H200|H800|L4)\s*\]", re.I)
+# Buildkite pipeline slugs only. Bare "vllm-omni" (docs, collect_env, the
+# GitHub repo) must not count as the CUDA pipeline, and vllm-omni-npu-ci
+# must not count as vllm-omni.
+_NPU_PIPELINE_RE = re.compile(
+    r"buildkite\.com/[^/\s]+/vllm-omni-npu-ci(?![A-Za-z0-9-])"
+    r"|(?<![A-Za-z0-9-])vllm/vllm-omni-npu-ci(?![A-Za-z0-9-])",
+    re.I,
+)
+_CUDA_PIPELINE_RE = re.compile(
+    r"buildkite\.com/[^/\s]+/vllm-omni(?!-npu-ci|-amd-ci)(?![A-Za-z0-9-])"
+    r"|(?<![A-Za-z0-9-])vllm/vllm-omni(?!-npu-ci|-amd-ci)(?![A-Za-z0-9-])",
+    re.I,
+)
 _PYTEST_COUNTS_RE = re.compile(r"\d+\s+(?:passed|failed|skipped|errors?)\b", re.I)
 
 # A job-name hint must be at least this distinctive to count as a match.
@@ -112,25 +128,70 @@ def extract_node_ids(text: str) -> list[str]:
     return out
 
 
-def infer_sides(issue: dict[str, Any], *, matched_sides: set[str] | None = None) -> set[str]:
-    """Which pipelines must be green before the issue can be closable.
-
-    Label / title / body mentions win. If the issue is silent on CUDA vs
-    NPU, fall back to the pipelines where a job name actually matched.
-    """
-    labels = " ".join(
+def _issue_labels(issue: dict[str, Any]) -> str:
+    return " ".join(
         (lab.get("name") if isinstance(lab, dict) else str(lab)) or ""
         for lab in (issue.get("labels") or [])
     )
-    text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}\n{labels}"
-    has_npu = bool(_NPU_RE.search(text))
-    has_cuda = bool(_CUDA_RE.search(text))
-    if has_npu and not has_cuda:
-        return {"NPU"}
-    if has_cuda and not has_npu:
-        return {"CUDA"}
-    if has_npu and has_cuda:
-        return {"CUDA", "NPU"}
+
+
+def _issue_blob(issue: dict[str, Any]) -> str:
+    return f"{issue.get('title') or ''}\n{issue.get('body') or ''}\n{_issue_labels(issue)}"
+
+
+def _title_labels(issue: dict[str, Any]) -> str:
+    return f"{issue.get('title') or ''}\n{_issue_labels(issue)}"
+
+
+def _pipeline_sides(text: str) -> set[str]:
+    """CUDA / NPU sides named by a Buildkite pipeline slug."""
+    sides: set[str] = set()
+    if _NPU_PIPELINE_RE.search(text or ""):
+        sides.add("NPU")
+    if _CUDA_PIPELINE_RE.search(text or ""):
+        sides.add("CUDA")
+    return sides
+
+
+def _mention_sides(text: str) -> set[str]:
+    """CUDA / NPU sides named by a hardware tag or word."""
+    sides: set[str] = set()
+    blob = text or ""
+    if _NPU_RE.search(blob) or _NPU_TAG_RE.search(blob):
+        sides.add("NPU")
+    if _CUDA_RE.search(blob) or _CUDA_TAG_RE.search(blob):
+        sides.add("CUDA")
+    return sides
+
+
+def side_from_text(text: str) -> str | None:
+    """Return CUDA or NPU when the text clearly names exactly one pipeline."""
+    sides = _pipeline_sides(text) | _mention_sides(text)
+    if sides == {"NPU"}:
+        return "NPU"
+    if sides == {"CUDA"}:
+        return "CUDA"
+    return None
+
+
+def infer_sides(issue: dict[str, Any], *, matched_sides: set[str] | None = None) -> set[str]:
+    """Which pipelines must be green before the issue can be closable.
+
+    Primary signals are title/label tags and wording (``[NPU]``, ``[B200]``,
+    H100, CUDA, …) and Buildkite pipeline slugs in the issue (``vllm-omni``
+    vs ``vllm-omni-npu-ci``). Incidental mentions of the other hardware in
+    the body — a related ticket, a decorator, a code path — do not expand
+    the set once a primary signal is present. If the issue is silent on
+    CUDA vs NPU, fall back to the full text and then to the pipelines
+    where a job name actually matched.
+    """
+    blob = _issue_blob(issue)
+    primary = _mention_sides(_title_labels(issue)) | _pipeline_sides(blob)
+    if primary:
+        return primary
+    mentioned = _mention_sides(blob)
+    if mentioned:
+        return mentioned
     if matched_sides:
         return set(matched_sides)
     return set()
