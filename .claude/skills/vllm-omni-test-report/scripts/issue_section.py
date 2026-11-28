@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,7 @@ from issue_close_confirm import (
     job_name_is_distinctive,
     match_jobs,
     node_still_failing,
+    side_from_text,
 )
 
 # Keep in sync with nightly_local_log_report.py and
@@ -238,6 +240,47 @@ def _dedupe_links(links: list[tuple[str, str]]) -> list[tuple[str, str]]:
         seen.add(url)
         out.append(((label or url).strip(), url))
     return out
+
+
+def _filter_links_for_issue(issue: dict[str, Any], links: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Keep build URLs that belong to the issue's CUDA/NPU pipeline."""
+    required = infer_sides(issue)
+    if not required:
+        return _dedupe_links(links)
+    kept: list[tuple[str, str]] = []
+    for label, url in links:
+        side = side_from_text(f"{label}\n{url}")
+        if side is None or side in required:
+            kept.append((label, url))
+    return _dedupe_links(kept)
+
+
+_BUILD_EVIDENCE_LINE_RE = re.compile(r"buildkite\.com/|buildkite\s*\(", re.I)
+
+
+def _filter_analysis_for_issue(issue: dict[str, Any], analysis: str) -> str:
+    """Drop source/build lines that point at the other hardware pipeline."""
+    required = infer_sides(issue)
+    if not required or not (analysis or "").strip():
+        return (analysis or "").strip()
+    kept: list[str] = []
+    for line in analysis.splitlines():
+        if _BUILD_EVIDENCE_LINE_RE.search(line):
+            side = side_from_text(line)
+            if side and side not in required:
+                continue
+        kept.append(line)
+    # Collapse runs of blank lines left by removals.
+    out: list[str] = []
+    blank = False
+    for line in kept:
+        if line.strip():
+            out.append(line)
+            blank = False
+        elif out and not blank:
+            out.append("")
+            blank = True
+    return "\n".join(out).strip()
 
 
 def _group_links(group: Any) -> list[tuple[str, str]]:
@@ -809,7 +852,8 @@ def assemble_issue_section(
             return
         number = int(number)
         acc = updates.get(number)
-        text = (analysis or "").strip()
+        text = _filter_analysis_for_issue(issue, (analysis or "").strip())
+        links = _filter_links_for_issue(issue, links)
         if acc is None:
             updates[number] = _UpdateAcc(issue=issue, analyses=[text] if text else [], links=list(links))
             return
@@ -869,13 +913,14 @@ def assemble_issue_section(
     insufficient = 0
     for row in context.confirmations:
         number = row.issue.get("number")
-        links = _confirmation_links(row, context.pipelines)
+        links = _filter_links_for_issue(row.issue, _confirmation_links(row, context.pipelines))
         if row.status == STATUS_INSUFFICIENT:
             insufficient += 1
             continue
         if row.status == STATUS_CLOSABLE:
             streak = _streak_sentence(row)
             analysis = row.reason if not streak else f"{row.reason}\n\n{streak}"
+            analysis = _filter_analysis_for_issue(row.issue, analysis)
             to_close.append(
                 IssueItem(
                     bucket="close",

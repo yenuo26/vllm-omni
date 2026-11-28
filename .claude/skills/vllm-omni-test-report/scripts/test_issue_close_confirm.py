@@ -114,6 +114,34 @@ class ExtractAndMatchTests(unittest.TestCase):
         )
         self.assertEqual(infer_sides(_issue(5, "generic fail")), set())
 
+    def test_infer_sides_ignores_incidental_body_mentions(self):
+        cuda = _issue(
+            11120,
+            "[Bug][Perf]: Chatterbox TTS perf regressed by more than 10% on H100",
+            "Related ticket #10590 tracked an NPU A3/910 test_qwen3_tts_base regression. "
+            "Buildkite build: https://buildkite.com/vllm/vllm-omni/builds/20932",
+        )
+        self.assertEqual(infer_sides(cuda), {"CUDA"})
+        npu = _issue(
+            11254,
+            "[Bug][NPU]: Omni Qwen3-Omni Duplex Test failed",
+            "The commit id or version of vllm-omni\n"
+            "See https://vllm-omni.readthedocs.io\n"
+            "Buildkite build: https://buildkite.com/vllm/vllm-omni-npu-ci/builds/13097",
+        )
+        self.assertEqual(infer_sides(npu), {"NPU"})
+        url_only = _issue(
+            11183,
+            "[Bug]: HunyuanImage3 Accuracy Test failed",
+            "Buildkite build: https://buildkite.com/vllm/vllm-omni/builds/21052\n"
+            '@hardware_test(res={"cuda": ["H100", "H200", "B200"], "npu": "A3"}, num_cards=4)',
+        )
+        self.assertEqual(infer_sides(url_only), {"CUDA"})
+        body_only_npu = _issue(6, "[Bug]: job failed", "This failed on the NPU nightly.")
+        self.assertEqual(infer_sides(body_only_npu), {"NPU"})
+        tagged_b200 = _issue(10661, "[Bug][B200]: MiniMax H3 Accuracy Test failed")
+        self.assertEqual(infer_sides(tagged_b200), {"CUDA"})
+
 
 class JobKindAndEvaluateTests(unittest.TestCase):
     def test_job_kind_ok_fail_unknown(self):
